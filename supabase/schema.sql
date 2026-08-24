@@ -129,6 +129,7 @@ CREATE TABLE chat_history (
   user_id              bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   guild_id              bigint,                 -- 참고용 (판정 로직 자체는 user_id 기준, 서버 무관)
   content                text NOT NULL,
+  role                   text NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'assistant')),
   detected_emotion       emotion,                -- 감정 판정 결과 (판정 안 됐으면 NULL)
   created_at             timestamptz NOT NULL DEFAULT now()
 );
@@ -461,3 +462,13 @@ BEGIN
   RETURN QUERY SELECT v_triggered;
 END;
 $$;
+
+-- ------------------------------------------------------------
+-- 17. chat_history에 role 컬럼 추가 (대화 기억 기능)
+--     자연어 생성 시 최근 최대 5턴(유저 발화 + 햄미 답장)을 같이 모델 입력에
+--     넣어주기 위해, 이제 햄미 자신의 답장도 role='assistant'로 같이 저장한다.
+--     기존 행은 전부 유저 발화였으므로 DEFAULT 'user'로 자동 채워진다.
+-- ------------------------------------------------------------
+
+ALTER TABLE chat_history
+  ADD COLUMN role text NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'assistant'));
