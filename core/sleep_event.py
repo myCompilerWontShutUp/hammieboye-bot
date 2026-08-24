@@ -49,7 +49,7 @@ async def _post_announcement(winners: list[int]) -> None:
     if _client is None:
         return
     mentions = " ".join(f"<@{user_id}>" for user_id in winners)
-    text = f"오늘 하루 끝!! {mentions} 오늘 젤 많이 놀아줘서 조아써 뾱!! 이제 잘 시간이야... 쿨쿨 뾱 찍"
+    text = f"오늘 하루 끝!! {mentions} 오늘 젤 많이 놀아줘서 조아써!! 이제 잘 시간이야... 쿨쿨"
 
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:

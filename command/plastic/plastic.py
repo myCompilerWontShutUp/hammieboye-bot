@@ -14,10 +14,10 @@ _SUCCESS_RATE = 0.5
 # 섹션 4-5: 쿨타임 고정 메시지를 이 횟수까지는 그냥 보여주고, 그다음부터 남용 페널티
 _COOLDOWN_ABUSE_FREE_COUNT = 3
 
-_COOLDOWN_MESSAGE = "아직 쿨타임이야!! 쪼금만 기다려줘 뾱"
-_FAIL_MESSAGE = "어이쿠 놓쳤다!! 다음엔 꼭 잡을게 뾱뾱"
-_SUCCESS_MESSAGE = "잡았다!! 신나는 춤 쟈쟈쟉!! 뾱뾱"
-_SUCCESS_STREAK_MESSAGE = "3번 연속 성공!!! 완전 신난다 쟈쟈쟉쟈쟈쟉!! 뾱뾱뾱"
+_COOLDOWN_MESSAGE = "아직 쿨타임이야!! 쪼금만 기다려줘"
+_FAIL_MESSAGE = "어이쿠 놓쳤다!! 다음엔 꼭 잡을게"
+_SUCCESS_MESSAGE = "잡았다!! 신나는 춤을 춰!!"
+_SUCCESS_STREAK_MESSAGE = "3번 연속 성공!!! 완전 신난다!!"
 
 
 async def handle(user_id: int) -> str:
