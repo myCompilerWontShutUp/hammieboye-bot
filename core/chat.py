@@ -5,7 +5,7 @@ import discord
 from command.base import normalize
 from command.help.help import handle as help_handle
 from command.info.info import handle as info_handle
-from core import call_event, intent
+from core import affection_guide, call_event, intent
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.history import get_recent, log
@@ -97,6 +97,8 @@ async def _route_by_intent(
         return await info_handle(user_id)
     if label == "self_intro":
         return intent.SELF_INTRO
+    if label == "affection_guide":
+        return await affection_guide.get_guide()
     return None
 
 

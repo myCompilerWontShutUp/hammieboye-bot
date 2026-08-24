@@ -14,15 +14,19 @@ _INSTRUCTIONS = """\
 아래 중 하나를 정확히 골라라.
 
 - help: 명령어 목록/도움말을 요청함 (예: "명령어 뭐 있어?", "뭐 할 수 있어?", "도움말 보여줘")
-- info: 자기 자신의 호감도/정보를 확인하려 함 (예: "내 호감도 보여줘", "나 정보 좀 알려줘", "나 몇 번 대화했어?")
+- info: 자기 자신의 지금 현재 호감도/정보 수치를 그대로 보여달라고 함 (예: "내 호감도 보여줘", "나 정보 좀 알려줘", "나 몇 번 대화했어?")
 - self_intro: Hammie가 누구인지, 정체·소개를 물어봄 (예: "너 누구야?", "자기소개 해줘", "너에 대해 알려줘")
+- affection_guide: 호감도를 올리는 방법/공략을 물어봄 (예: "호감도 어떻게 올려?", "호감도 올리는 방법 알려줘", "너랑 친해지려면 뭐 해야 돼?")
 - none: 위 어디에도 해당하지 않는 일반 대화\
 """
 
 _SCHEMA = {
     "type": "object",
     "properties": {
-        "intent": {"type": "string", "enum": ["help", "info", "self_intro", "none"]},
+        "intent": {
+            "type": "string",
+            "enum": ["help", "info", "self_intro", "affection_guide", "none"],
+        },
     },
     "required": ["intent"],
     "additionalProperties": False,
