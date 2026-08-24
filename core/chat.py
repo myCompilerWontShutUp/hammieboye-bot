@@ -8,7 +8,7 @@ from command.info.info import handle as info_handle
 from core import affection_guide, call_event, intent
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
-from db.history import get_recent, log
+from db.history import get_recent, get_recent_turns, log
 from responses.engine import NEGATIVE_EMOTIONS, get_response
 
 # CLAUDE.md 섹션 4-1: 분당 자연어 최대 10회, 초과분 1회당 -1
@@ -18,6 +18,9 @@ _RATE_LIMIT_WINDOW = timedelta(seconds=60)
 # CLAUDE.md 섹션 4-2: 히스토리(30분/최대 50개) 내 누적 3번 반복되면 그다음부터 -1
 _HISTORY_WINDOW = timedelta(minutes=30)
 _REPEAT_THRESHOLD = 3
+
+# 자연어 생성 시 직전 맥락으로 같이 넣어줄 최근 대화 턴 수 (유저+햄미 답장 합산)
+_CONTEXT_TURN_LIMIT = 5
 
 # CLAUDE.md 섹션 2: 음수 호감도 구간표. 완전 무응답이 아니라 짧은 행동 텍스트로 반응한다.
 _BITE_THRESHOLD = -20
@@ -36,6 +39,9 @@ async def handle_natural_language(
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     now = datetime.now(timezone.utc)
     recent = await get_recent(user_id, since=now - _HISTORY_WINDOW)
+    # 이번 메시지를 로그에 남기기 전에 미리 떠 와야, 자연어 생성 맥락에 방금 온
+    # 메시지가 중복으로 들어가지 않는다.
+    context_turns = await get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT)
 
     total_delta = 0
     current_affection = affection
@@ -78,7 +84,8 @@ async def handle_natural_language(
         base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
         return _finalize(base, total_delta, current_affection)
 
-    result = await get_response(text)
+    result = await get_response(text, history=context_turns)
+    await log(user_id, guild_id, result.text, role="assistant")
     if result.emotion is not None:
         emotion_delta = await _apply_emotion_effects(user_id, result.emotion)
         total_delta += emotion_delta
