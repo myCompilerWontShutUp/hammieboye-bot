@@ -33,7 +33,7 @@ _NEGATIVE_EMOTION_DAILY_THRESHOLD = 5
 
 async def handle_natural_language(
     user_id: int, guild_id: int, text: str, affection: int
-) -> str | discord.Embed:
+) -> str | discord.Embed | tuple[str, discord.Embed]:
     now = datetime.now(timezone.utc)
     recent = await get_recent(user_id, since=now - _HISTORY_WINDOW)
 
@@ -87,7 +87,9 @@ async def handle_natural_language(
     return _finalize(result.text, total_delta, current_affection)
 
 
-async def _route_by_intent(user_id: int, text: str) -> str | discord.Embed | None:
+async def _route_by_intent(
+    user_id: int, text: str
+) -> str | discord.Embed | tuple[str, discord.Embed] | None:
     label = await intent.classify(text)
     if label == "help":
         return await help_handle(user_id)
@@ -98,8 +100,11 @@ async def _route_by_intent(user_id: int, text: str) -> str | discord.Embed | Non
     return None
 
 
-def _finalize(response: str | discord.Embed, delta: int, current: int) -> str | discord.Embed:
-    if delta == 0 or isinstance(response, discord.Embed):
+def _finalize(
+    response: str | discord.Embed | tuple[str, discord.Embed], delta: int, current: int
+) -> str | discord.Embed | tuple[str, discord.Embed]:
+    # embed(또는 embed를 포함한 tuple) 응답에는 이미 호감도가 필드로 보이므로 알림을 따로 안 붙인다.
+    if delta == 0 or isinstance(response, (discord.Embed, tuple)):
         return response
     return response + format_affection_notice(delta, current)
 

@@ -23,16 +23,21 @@ def _strip_call_prefix(content: str) -> str | None:
 
 async def _resolve_response(
     user_id: int, guild_id: int, text: str, affection: int
-) -> str | discord.Embed:
+) -> str | discord.Embed | tuple[str, discord.Embed]:
     for command in COMMANDS:
         if command.matches(text):
             return await command.handler(user_id)
     return await handle_natural_language(user_id, guild_id, text, affection)
 
 
-async def _reply(message: discord.Message, response: str | discord.Embed) -> None:
+async def _reply(
+    message: discord.Message, response: str | discord.Embed | tuple[str, discord.Embed]
+) -> None:
     # 누가 무엇을 물어봐서 나온 답인지 구분하기 쉽도록, 항상 답장(reply)으로 보낸다.
-    if isinstance(response, discord.Embed):
+    if isinstance(response, tuple):
+        text, embed = response
+        await message.reply(content=text, embed=embed)
+    elif isinstance(response, discord.Embed):
         await message.reply(embed=response)
     else:
         await message.reply(response)
