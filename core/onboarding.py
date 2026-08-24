@@ -4,12 +4,12 @@ from command.base import normalize
 _CONSENT_PHRASE = "동의"
 
 NOTICE = (
-    "안녕! 나는 햄미야 뾱!! 너랑 친해지려면 채팅 횟수, 도와준 횟수, "
+    "안녕! 나는 햄미야!! 너랑 친해지려면 채팅 횟수, 도와준 횟수, "
     "호감도, 동의 여부·날짜 같은 걸 저장해야 대! 괜찮으면 `해미야 동의`라고 "
-    "말해줘 쟈쟈쟉!!"
+    "말해줘!!"
 )
 
-CONFIRMED = "조아!! 이제부터 친하게 지내자 뾱!! 잘 부탁해 햄햄!!"
+CONFIRMED = "조아!! 이제부터 친하게 지내자!! 잘 부탁해!!"
 
 
 def is_consent_phrase(text: str) -> bool:

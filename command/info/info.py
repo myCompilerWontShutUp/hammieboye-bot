@@ -23,4 +23,4 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
         recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3])
         embed.add_field(name="최근 대화(30분 이내)", value=recent_texts, inline=False)
 
-    return "햄미가 알려주는 내 정보 뾱", embed
+    return "햄미가 알려주는 내 정보", embed
