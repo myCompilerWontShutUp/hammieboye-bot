@@ -5,7 +5,7 @@ from discord import app_commands
 
 from command.info.info import handle as info_handle
 from command.plastic.plastic import handle as plastic_handle
-from core import membership, onboarding, ranking
+from core import intro, membership, onboarding, ranking
 from db.daily_stats import increment_messages_today
 from db.guild_channels import set_last_channel
 from db.users import ensure_user
@@ -71,3 +71,11 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         text, embed = await ranking.build_embed()
         await interaction.response.send_message(content=text, embed=embed)
+
+    @tree.command(name="소개", description="서버 멤버의 정보를 소개한다")
+    @app_commands.describe(이름="찾을 사람의 서버 별명(입력하면 자동완성이 떠요) 또는 멘션")
+    @app_commands.autocomplete(이름=intro.autocomplete_이름)
+    async def intro_command(interaction: discord.Interaction, 이름: str) -> None:
+        if not await _prepare(interaction):
+            return
+        await intro.handle(interaction, 이름)
