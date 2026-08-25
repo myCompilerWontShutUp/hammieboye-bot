@@ -42,6 +42,29 @@ async def increment_messages_today(user_id: int) -> int:
     return await rpc("increment_messages_today", {"p_user_id": user_id})
 
 
+# 자연어 대화 일일 상한(신규): 호감도x2, 최대 500
+_NL_CAP_MULTIPLIER = 2
+_NL_CAP_MAX = 500
+
+
+async def ensure_nl_cap(user_id: int, affection: int) -> dict:
+    """오늘의 nl_cap을 확보한다. 정규적으로는 매일 06:30에 refresh_conversation_caps()가
+    전체 유저 일괄로 동결하지만, 그 시점 이후 새로 등록된 유저 등 아직 값이 없는 경우엔
+    지금 시점 호감도로 즉석 계산해서 그 값을 그대로 저장(동결)한다. 한 번 저장되면 그 값을
+    다시 재계산하지 않고 그대로 쓴다 (당일 06:30 값 고정 원칙)."""
+    stats = await ensure_daily_stats(user_id)
+    if stats["nl_cap"] is not None:
+        return stats
+    cap = min(max(affection, 0) * _NL_CAP_MULTIPLIER, _NL_CAP_MAX)
+    return await update_daily_stats(user_id, {"nl_cap": cap})
+
+
+async def refresh_conversation_caps() -> None:
+    """매일 06:30(기상 시각)에 등록된 모든 유저의 nl_cap을 그 순간 호감도로 동결하고
+    nl_count/over_cap_attempts를 리셋한다."""
+    await rpc("refresh_daily_conversation_caps", {})
+
+
 async def get_top_talkers_today() -> list[dict]:
     """오늘(KST) 당일 순증감이 음수가 아닌 사용자들을, 대화 횟수 내림차순으로 반환한다."""
     today = kst_today_str()

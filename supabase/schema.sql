@@ -10,6 +10,8 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS withdrawn_users CASCADE;
+DROP TABLE IF EXISTS admin_command_log CASCADE;
 DROP TABLE IF EXISTS guild_sleep_state CASCADE;
 DROP TABLE IF EXISTS guild_channels CASCADE;
 DROP TABLE IF EXISTS global_call_events CASCADE;
@@ -18,6 +20,7 @@ DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
+DROP FUNCTION IF EXISTS refresh_daily_conversation_caps();
 DROP FUNCTION IF EXISTS register_sleep_mention(bigint);
 DROP FUNCTION IF EXISTS add_affection_uncapped(bigint, integer, text);
 DROP FUNCTION IF EXISTS apply_global_penalty(integer);
@@ -112,11 +115,21 @@ CREATE TABLE daily_stats (
 
   -- 당일 획득 호감도. daily_gain은 "얻은 양"만 누적(+20 상한 계산용, 항상 0 이상).
   -- daily_net은 하락분까지 반영한 순증감(음수 가능, 3-5의 "당일 획득 호감도 음수" 제외 판정용).
+  -- daily_gain_natural은 daily_gain의 부분집합으로, 명령어(예: 플라스틱 병)로 얻은 몫은 제외한
+  -- "자연어로 얻은" 몫만 누적한다 (/내정보 "오늘 획득한 호감도" 표시 전용, 신규).
   daily_gain                       integer NOT NULL DEFAULT 0,
+  daily_gain_natural                integer NOT NULL DEFAULT 0,
   daily_net                         integer NOT NULL DEFAULT 0,
   gain_methods                      jsonb NOT NULL DEFAULT '[]'::jsonb, -- 당일 획득 방법 목록
 
   messages_today                    integer NOT NULL DEFAULT 0,     -- 오늘 나눈 대화 수 (3-5 최다 대화자 판정용)
+
+  -- 자연어 대화 일일 상한 (신규). nl_cap은 매일 06:30에 그 순간 호감도로 동결되며(NULL=아직 미계산,
+  -- 첫 사용 시점에 즉석 계산해 고정), nl_count는 실제로 생성까지 도달한 자연어 메시지 수,
+  -- over_cap_attempts는 상한 소진 후 추가로 시도한 자연어 횟수(1~4 고정문구/5 경고/6+ 무시+페널티).
+  nl_cap                            integer,
+  nl_count                           integer NOT NULL DEFAULT 0,
+  over_cap_attempts                  integer NOT NULL DEFAULT 0,
 
   -- 병 던지기(3-1) 관련 카운터
   plastic_streak                    integer NOT NULL DEFAULT 0,     -- 연속 성공 횟수 (실패 시 0으로 리셋)
@@ -182,6 +195,22 @@ CREATE TABLE affection_log (
 CREATE INDEX idx_affection_log_user_value ON affection_log (user_id, new_value, delta, created_at DESC);
 
 -- ------------------------------------------------------------
+-- 6-1. admin_command_log — 관리자 콘솔("주인님-가라사대") 명령어 실행 이력 (신규)
+--    상태를 바꾸는 명령어만 기록한다(변경 전/후 값 포함). 조회 전용 명령어는 기록하지 않는다.
+-- ------------------------------------------------------------
+
+CREATE TABLE admin_command_log (
+  id             bigserial PRIMARY KEY,
+  command          text NOT NULL,
+  args              text,
+  before_value       text,
+  after_value         text,
+  created_at           timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_admin_command_log_created ON admin_command_log (created_at DESC);
+
+-- ------------------------------------------------------------
 -- 7. global_call_events — 글로벌 부름 이벤트 (CLAUDE.md 섹션 3-2)
 --    "가장 먼저 반응한 1명"을 원자적으로 판정하기 위한 클레임 테이블.
 --    scheduled_at(예정 시각)에 맞춰 게시하고 posted_at/expires_at을 채운다.
@@ -194,7 +223,9 @@ CREATE TABLE global_call_events (
   posted_at            timestamptz,
   expires_at            timestamptz,             -- posted_at + 10분
 
-  claimed_by           bigint REFERENCES users(user_id), -- 가장 먼저 반응한 사용자 (NULL = 아직 없음)
+  -- 가장 먼저 반응한 사용자 (NULL = 아직 없음). ON DELETE SET NULL: 탈퇴(/탈퇴)로 유저 행이
+  -- 삭제돼도 과거 이벤트 기록 자체는 남기고 참조만 NULL로 끊는다 (탈퇴가 FK 위반으로 실패하면 안 됨).
+  claimed_by           bigint REFERENCES users(user_id) ON DELETE SET NULL,
   claimed_at            timestamptz,
   reward_amount          integer,                   -- 1~10 랜덤 지급량 (클레임 시 확정)
   penalty_applied         boolean NOT NULL DEFAULT false, -- 무응답 페널티 중복 적용 방지
@@ -236,6 +267,20 @@ CREATE TABLE guild_sleep_state (
 );
 
 -- ------------------------------------------------------------
+-- 9-1. withdrawn_users — 탈퇴(/탈퇴) 시각 최소 기록 (신규)
+--    탈퇴 시 users(및 CASCADE로 daily_stats/chat_history/affection_log)는 즉시 삭제하지만,
+--    24시간 재가입 금지 판정을 위한 최소 타임스탬프 하나만 별도로 남긴다. 실질적인 수집
+--    데이터(호감도·대화내용 등)가 아니라 순수 운영 판정용 기록이라 §1-1의 "동의 이전 최소
+--    식별 기록은 고지 대상 수집이 아니다" 원칙과 같은 선상이다. users를 참조하지 않는다
+--    (탈퇴한 유저의 users 행은 이미 삭제됐으므로).
+-- ------------------------------------------------------------
+
+CREATE TABLE withdrawn_users (
+  user_id         bigint PRIMARY KEY,
+  withdrawn_at      timestamptz NOT NULL
+);
+
+-- ------------------------------------------------------------
 -- 10. 원자적 호감도 증감 RPC (일일 +20 상한 적용, affection_log 기록)
 --     상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
 --     이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
@@ -273,6 +318,11 @@ BEGIN
 
   UPDATE daily_stats
   SET daily_gain = daily_gain + GREATEST(v_applied, 0),
+      daily_gain_natural = daily_gain_natural + CASE
+        WHEN v_applied > 0 AND p_method IS DISTINCT FROM 'plastic_bottle'
+          THEN v_applied
+        ELSE 0
+      END,
       daily_net = daily_net + v_applied,
       gain_methods = CASE
         WHEN v_applied > 0 AND p_method IS NOT NULL
@@ -450,6 +500,30 @@ END;
 $$;
 
 -- ------------------------------------------------------------
+-- 16-1. 자연어 대화 일일 상한 갱신 RPC (신규)
+--     매일 06:30(기상 시각)에 등록된 모든 유저의 그날 daily_stats 행을 만들고
+--     nl_cap을 그 순간 호감도 기준(호감도x2, 최대 500, 음수 호감도는 0으로 클램프)으로
+--     동결한다. nl_count/over_cap_attempts도 새 날짜 기준으로 0으로 리셋한다.
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION refresh_daily_conversation_caps()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+BEGIN
+  INSERT INTO daily_stats (user_id, stat_date, nl_cap, nl_count, over_cap_attempts)
+  SELECT user_id, v_stat_date, LEAST(GREATEST(affection, 0) * 2, 500), 0, 0 FROM users
+  ON CONFLICT (user_id, stat_date)
+  DO UPDATE SET
+    nl_cap = EXCLUDED.nl_cap,
+    nl_count = 0,
+    over_cap_attempts = 0;
+END;
+$$;
+
+-- ------------------------------------------------------------
 -- 17. 취침 중 맨션 깨움 이벤트: 원자적 카운트/판정 RPC
 --     FOR UPDATE 행 잠금으로 한 번의 호출 안에서 "밤이 바뀌었으면 리셋
 --     → +1 → 임계치 도달 시 1회만 발동"을 전부 직렬화한다.
@@ -512,6 +586,8 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_stats ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE affection_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_command_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE global_call_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE withdrawn_users ENABLE ROW LEVEL SECURITY;

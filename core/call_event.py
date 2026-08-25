@@ -25,9 +25,12 @@ _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # CLAUDE.md 섹션 3-2
 _DAILY_EVENT_COUNT = 5
-_WINDOW_START = time(9, 0)
-_WINDOW_END = time(21, 0)
+WINDOW_START = time(9, 0)
+WINDOW_END = time(21, 0)
 _EVENT_WINDOW = timedelta(minutes=10)
+
+# 부름 이벤트 인접 최소 간격(관리자 g-call-event 수동 생성에서도 동일하게 준수, 사용자 확정)
+MIN_GAP_MINUTES = 30
 
 _PROMPT_TEXTS = (
     "배고파... 뭐 먹을 거 없나?",
@@ -62,13 +65,21 @@ def init(client: discord.Client) -> None:
 
 
 async def schedule_today() -> None:
-    """매일 08:00(KST)에 그날 보낼 5개 시각을 한 번에 전부 결정해둔다."""
-    times = random_times_in_window(_DAILY_EVENT_COUNT, _WINDOW_START, _WINDOW_END)
+    """매일 06:30(KST)에 그날 보낼 5개 시각을 한 번에 전부 결정해둔다 (인접 간격 최소 30분 보장)."""
+    times = random_times_in_window(
+        _DAILY_EVENT_COUNT, WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES
+    )
     today_kst = datetime.now(KST).date()
     for t in times:
         scheduled_at = datetime.combine(today_kst, t, tzinfo=KST)
-        prompt_text = random.choice(_PROMPT_TEXTS)
-        await schedule(scheduled_at, prompt_text)
+        await schedule_one(scheduled_at)
+
+
+async def schedule_one(scheduled_at: datetime) -> dict:
+    """이벤트 하나를 지정 시각에 예약한다. 정규 스케줄링과 관리자 수동 생성(g-call-event) 둘 다 이걸 쓴다 —
+    똑같은 방식으로 등록되므로 이후 tick()의 게시/보상/페널티 처리도 실제 이벤트와 완전히 동일하다."""
+    prompt_text = random.choice(_PROMPT_TEXTS)
+    return await schedule(scheduled_at, prompt_text)
 
 
 async def tick() -> None:

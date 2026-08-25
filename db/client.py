@@ -62,6 +62,14 @@ async def update(table: str, params: dict[str, str], data: dict) -> list[dict]:
         return await resp.json()
 
 
+async def delete(table: str, params: dict[str, str]) -> list[dict]:
+    session = _get_session()
+    headers = {"Prefer": "return=representation"}
+    async with session.delete(f"{_BASE_URL}/{table}", params=params, headers=headers) as resp:
+        resp.raise_for_status()
+        return await resp.json()
+
+
 async def rpc(name: str, args: dict) -> object:
     session = _get_session()
     async with session.post(f"{_BASE_URL}/rpc/{name}", json=args) as resp:

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from db.client import rpc, select, update, upsert
+from db.client import delete, rpc, select, update, upsert
 
 
 async def ensure_user(user_id: int) -> dict:
@@ -38,3 +38,9 @@ async def set_plastic_cooldown(user_id: int, until: datetime) -> dict:
         {"plastic_cooldown_until": until.isoformat()},
     )
     return rows[0]
+
+
+async def delete_user(user_id: int) -> None:
+    """탈퇴(/탈퇴) 시 유저 행을 완전히 삭제한다. daily_stats/chat_history/affection_log는
+    CASCADE로 같이 삭제된다."""
+    await delete("users", {"user_id": f"eq.{user_id}"})
