@@ -10,6 +10,7 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS user_achievements CASCADE;
 DROP TABLE IF EXISTS withdrawn_users CASCADE;
 DROP TABLE IF EXISTS admin_command_log CASCADE;
 DROP TABLE IF EXISTS guild_sleep_state CASCADE;
@@ -278,6 +279,20 @@ CREATE TABLE guild_sleep_state (
 CREATE TABLE withdrawn_users (
   user_id         bigint PRIMARY KEY,
   withdrawn_at      timestamptz NOT NULL
+);
+
+-- ------------------------------------------------------------
+-- 9-2. user_achievements — 업적 획득 기록 (신규)
+--    achievement_id는 애플리케이션 쪽 achievements/ 패키지의 고정 문자열 ID와 대응한다
+--    (자유 텍스트, ENUM 아님 — 새 업적 추가 시 마이그레이션 불필요). 유저당 같은 업적은
+--    한 번만 기록되고(PK), earned_at으로 획득 순서를 판단한다. 탈퇴 시 CASCADE 삭제.
+-- ------------------------------------------------------------
+
+CREATE TABLE user_achievements (
+  user_id         bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  achievement_id    text NOT NULL,
+  earned_at           timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, achievement_id)
 );
 
 -- ------------------------------------------------------------
@@ -591,3 +606,4 @@ ALTER TABLE global_call_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE withdrawn_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_achievements ENABLE ROW LEVEL SECURITY;

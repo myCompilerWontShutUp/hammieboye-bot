@@ -30,19 +30,71 @@ from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.users import ensure_user, get_user
 
 _KST = timezone(timedelta(hours=9))
-_PREFIX = "주인님-가라사대 "
 _INITIAL_AFFECTION = 10
 # 관리자 콘솔에서 햄미가 직접 "말하는" 문구는 (일반 대화의 반말과 달리) 존댓말로 쓴다 —
 # 말투 자체(발음 뭉개기, !!/??)는 그대로 유지하고 어미만 존댓말로 바꾼다 (사용자 확정).
 _ABUSE_RESPONSE = "주인님이 아니시네요!! (콱)"
+
+# 신규(2026-08-25): 매 메시지 접두어 방식을 폐기하고 "토글로 켜고 끄는 세션" 방식으로 전환.
+# 트리거 문구는 정규화 없이 문자 그대로 정확히 일치해야 한다 ("주인님가라사대"처럼 공백이 없거나
+# "주인님 가라사대 테스트"처럼 등록 안 된 명령어가 뒤에 붙으면 둘 다 트리거로 인정 안 됨 — 이 경우
+# 응답도 페널티도 없이 완전히 무시한다).
+_PROMPT_PHRASE = "주인님 가라사대"
+_PROMPT_PREFIX = "주인님 가라사대 "
+_SESSION_TIMEOUT = timedelta(seconds=60)
+_SESSION_OPEN_MESSAGE = "넵! 명령을 내려주세요!"
+
+# 세션은 채널 단위로 유효하다 (사용자 확정) — 관리자가 다른 채널에서 평범히 채팅해도
+# 그 채널에 세션이 없으면 영향 없음. 관리자는 한 명뿐이라 전역 변수 하나로 충분하다.
+_session_channel_id: int | None = None
+_session_expires_at: datetime | None = None
 
 
 class _AdminError(Exception):
     pass
 
 
-def is_admin_command(content: str) -> bool:
-    return content.startswith(_PREFIX)
+def _open_session(channel_id: int) -> None:
+    global _session_channel_id, _session_expires_at
+    _session_channel_id = channel_id
+    _session_expires_at = datetime.now(timezone.utc) + _SESSION_TIMEOUT
+
+
+def _close_session() -> None:
+    global _session_channel_id, _session_expires_at
+    _session_channel_id = None
+    _session_expires_at = None
+
+
+def _session_active_in(channel_id: int) -> bool:
+    if _session_channel_id != channel_id or _session_expires_at is None:
+        return False
+    if datetime.now(timezone.utc) >= _session_expires_at:
+        _close_session()  # 60초 타임아웃 — 조용히 종료 (지연 판정, 별도 타이머 불필요)
+        return False
+    return True
+
+
+def _match_open_trigger(content: str) -> tuple[bool, list[str]] | None:
+    """content가 트리거 패턴 1(바로 그 문구) 또는 2(문구+등록된 명령어)와 정확히 일치하면
+    (즉시 실행 여부, 토큰들)을 반환한다. 어느 쪽에도 안 걸리면 None (완전히 무시 대상)."""
+    stripped = content.strip()
+    if stripped == _PROMPT_PHRASE:
+        return False, []
+    if stripped.startswith(_PROMPT_PREFIX):
+        tokens = stripped[len(_PROMPT_PREFIX) :].strip().split()
+        if tokens and tokens[0] in _COMMANDS:
+            return True, tokens
+    return None
+
+
+def should_intercept(message: discord.Message) -> bool:
+    """관리자 세션이 채널에서 활성 상태이거나(접두어 없이 오는 다음 메시지들), 이번 메시지
+    자체가 트리거 패턴과 정확히 일치할 때만 True. dispatcher가 이 메시지를 admin.handle로
+    보낼지 말지 결정하는 게이트."""
+    if message.author.id == ADMIN_USER_ID and _session_active_in(message.channel.id):
+        return True
+    return _match_open_trigger(message.content) is not None
 
 
 def _parse_int(token: str, label: str) -> int:
@@ -70,9 +122,13 @@ async def _handle_la_up(args: list[str]) -> str:
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    new_affection = await add_affection_uncapped(user_id, amount, "admin_la_up")
+    result = await add_affection_uncapped(user_id, amount, "admin_la_up")
+    new_affection = result["new_affection"]
     await log_command("la-up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    return f"네!! {user_id}님의 호감도를 +{amount} 올려드렸어요!! (현재 {new_affection})"
+    response = f"네!! {user_id}님의 호감도를 +{amount} 올려드렸어요!! (현재 {new_affection})"
+    if result["achievement_notice"]:
+        response += f"\n{result['achievement_notice']}"
+    return response
 
 
 async def _handle_la_down(args: list[str]) -> str:
@@ -81,7 +137,8 @@ async def _handle_la_down(args: list[str]) -> str:
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    new_affection = await add_affection_uncapped(user_id, -amount, "admin_la_down")
+    result = await add_affection_uncapped(user_id, -amount, "admin_la_down")
+    new_affection = result["new_affection"]
     await log_command("la-down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     return f"네!! {user_id}님의 호감도를 -{amount} 내렸어요!! (현재 {new_affection})"
 
@@ -364,33 +421,59 @@ async def _send(
         logging.exception("Failed to send admin console response")
 
 
-async def handle(message: discord.Message) -> None:
-    """`주인님-가라사대 ...` 접두어로 시작한 메시지를 처리한다 (관리자 콘솔, §13-F).
-
-    LLM/OpenAI API 호출 없이 순수 문자열 매칭 + DB 조작으로만 처리한다.
-    관리자가 아니면 명령을 실행하지 않고 깨물기 + 호감도 -1로 응징한다.
-    """
-    if message.author.id != ADMIN_USER_ID:
-        await ensure_user(message.author.id)
-        result = await add_affection(message.author.id, -1)
-        notice = format_affection_notice(result["applied_amount"], result["new_affection"])
-        await _send(message, False, f"{_ABUSE_RESPONSE}{notice}")
-        return
-
-    tokens = message.content[len(_PREFIX) :].strip().split()
-    if not tokens:
-        await _send(message, False, "명령어를 같이 적어주세요!! 예: 주인님-가라사대 c true")
-        return
-
-    spec = _COMMANDS.get(tokens[0])
-    if spec is None:
-        await _send(message, False, f"모르는 명령어예요!! ({tokens[0]})")
-        return
-
-    dm, remaining_args = _extract_boolean(tokens[1:], spec.arity)
+async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[str]) -> None:
+    dm, remaining_args = _extract_boolean(tokens, spec.arity)
     try:
         response = await spec.handler(remaining_args)
     except _AdminError as e:
         response = str(e)
-
     await _send(message, dm, response)
+
+
+async def _penalize_abuse(message: discord.Message) -> None:
+    await ensure_user(message.author.id)
+    result = await add_affection(message.author.id, -1)
+    notice = format_affection_notice(result["applied_amount"], result["new_affection"])
+    await _send(message, False, f"{_ABUSE_RESPONSE}{notice}")
+
+
+async def handle(message: discord.Message) -> None:
+    """관리자 콘솔(§13-F, 2026-08-25 세션 방식으로 재설계)을 처리한다.
+
+    `주인님 가라사대`(또는 `주인님 가라사대 {명령어}`)로 세션을 채널 단위로 연다. 세션이
+    열려있는 동안은 접두어 없이 보낸 메시지도 그대로 명령어로 해석한다 — 등록된 명령어면
+    실행하고 60초 타이머를 다시 늘리고, 등록 안 된 말이면 응답 없이 세션만 조용히 닫는다.
+    60초 동안 아무 명령도 없으면 마찬가지로 조용히 닫힌다.
+
+    LLM/OpenAI API 호출 없이 순수 문자열 매칭 + DB 조작으로만 처리한다.
+    관리자가 아니면(트리거 문구를 정확히 쳤을 때만) 명령을 실행하지 않고 깨물기 +
+    호감도 -1로 응징한다.
+    """
+    is_admin = message.author.id == ADMIN_USER_ID
+
+    if is_admin and _session_active_in(message.channel.id):
+        tokens = message.content.strip().split()
+        spec = _COMMANDS.get(tokens[0]) if tokens else None
+        if spec is None:
+            _close_session()  # 등록 안 된 명령 -> 세션 조용히 종료, 응답 없음
+            return
+        await _dispatch(message, spec, tokens[1:])
+        _open_session(message.channel.id)  # 타이머 연장 (세션 유지)
+        return
+
+    match = _match_open_trigger(message.content)
+    if match is None:
+        return  # 트리거 패턴과 정확히 일치하지 않음 -> 완전히 무시 (응답도 페널티도 없음)
+
+    if not is_admin:
+        await _penalize_abuse(message)
+        return
+
+    immediate, tokens = match
+    _open_session(message.channel.id)
+    if not immediate:
+        await _send(message, False, _SESSION_OPEN_MESSAGE)
+        return
+
+    spec = _COMMANDS[tokens[0]]  # _match_open_trigger에서 이미 검증됨
+    await _dispatch(message, spec, tokens[1:])

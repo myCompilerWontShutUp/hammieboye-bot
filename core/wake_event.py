@@ -78,12 +78,18 @@ async def handle_mention(message: discord.Message) -> None:
         line1, line2 = random.choice(_ANNOYED_PAIRS)
         result = await add_affection(user_id, _ANNOYED_DELTA)
         notice = format_affection_notice(result["applied_amount"], result["new_affection"])
+        achievement_notice = result["achievement_notice"]
     else:
         line1, line2 = random.choice(_NIGHTMARE_PAIRS)
-        new_affection = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD)
-        notice = format_affection_notice(_NIGHTMARE_DELTA, new_affection)
+        result = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD)
+        notice = format_affection_notice(_NIGHTMARE_DELTA, result["new_affection"])
+        achievement_notice = result["achievement_notice"]
+
+    reply_text = f"{line1}\n{line2}{notice}"
+    if achievement_notice:
+        reply_text += f"\n{achievement_notice}"
 
     try:
-        await message.reply(f"{line1}\n{line2}{notice}")
+        await message.reply(reply_text)
     except discord.HTTPException:
         logging.exception("Failed to reply to wake event in guild %s", guild_id)

@@ -147,35 +147,36 @@ async def _expire_unclaimed_events() -> None:
         await mark_penalty_applied(event["id"])
 
 
-async def handle_potential_response(user_id: int, guild_id: int, text: str) -> int:
+async def handle_potential_response(user_id: int, guild_id: int, text: str) -> tuple[int, str | None]:
     """자연어 메시지 하나가 활성 부름 이벤트에 대한 반응인지 확인하고, 해당하면 보상/페널티를 적용한다.
 
     이 함수는 항상 호출되며(호감도가 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
-    반환값은 이번 호출로 실제 적용된 호감도 증감분(없으면 0) — 호출부에서 알림 문구에 합산한다.
+    반환값은 (이번 호출로 실제 적용된 호감도 증감분, 새로 얻은 업적 안내 문구 또는 None) —
+    호출부에서 알림 문구에 합산한다.
     """
     events = await _get_active_events_cached()
     if not events:
-        return 0
+        return 0, None
     event = events[0]
 
     classification = await _classify_response(event["prompt_text"], text)
 
     if classification == "negative":
         result = await add_affection(user_id, -5)
-        return result["applied_amount"]
+        return result["applied_amount"], None
 
     if classification != "relevant":
-        return 0
+        return 0, None
 
     reward = random.randint(1, 10)
     won = await claim(event["id"], user_id, reward)
     if not won:
-        return 0
+        return 0, None
 
     _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
     result = await add_affection(user_id, reward, "call_event")
     await _announce_winner(event, user_id, guild_id)
-    return result["applied_amount"]
+    return result["applied_amount"], result["achievement_notice"]
 
 
 async def _classify_response(prompt_text: str, reply_text: str) -> str | None:

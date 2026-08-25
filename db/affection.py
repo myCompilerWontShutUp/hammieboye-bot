@@ -1,3 +1,4 @@
+from db.achievements import maybe_award_first_affection_rise
 from db.client import rpc
 
 
@@ -5,22 +6,33 @@ async def add_affection(user_id: int, amount: int, method: str | None = None) ->
     """호감도를 원자적으로 증감시킨다 (일일 +20 상한은 DB 함수가 알아서 처리).
 
     amount는 양수(획득)/음수(하락) 둘 다 가능. 반환값은
-    {applied_amount, new_affection, new_daily_gain}.
+    {applied_amount, new_affection, new_daily_gain, achievement_notice}.
+    achievement_notice는 이번 호출로 "햄미 러브 유"(호감도 첫 상승) 업적을 새로 얻었으면
+    안내 문구, 아니면 None.
     """
     rows = await rpc(
         "add_affection",
         {"p_user_id": user_id, "p_amount": amount, "p_method": method},
     )
-    return rows[0]
+    result = rows[0]
+    result["achievement_notice"] = await maybe_award_first_affection_rise(
+        user_id, result["applied_amount"]
+    )
+    return result
 
 
-async def add_affection_uncapped(user_id: int, amount: int, method: str | None = None) -> int:
-    """일일 +20 획득 상한 계산을 건너뛰고 무조건 적용한다 (예: 취침 중 깨움 이벤트의 악몽 감사 +5)."""
+async def add_affection_uncapped(user_id: int, amount: int, method: str | None = None) -> dict:
+    """일일 +20 획득 상한 계산을 건너뛰고 무조건 적용한다 (예: 취침 중 깨움 이벤트의 악몽 감사 +5).
+
+    반환값은 {new_affection, achievement_notice} — uncapped RPC는 부분지급이 없어 amount가
+    곧 실제 적용량이다.
+    """
     rows = await rpc(
         "add_affection_uncapped",
         {"p_user_id": user_id, "p_amount": amount, "p_method": method},
     )
-    return rows[0]["new_affection"]
+    achievement_notice = await maybe_award_first_affection_rise(user_id, amount)
+    return {"new_affection": rows[0]["new_affection"], "achievement_notice": achievement_notice}
 
 
 async def apply_global_penalty(amount: int) -> None:

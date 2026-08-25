@@ -8,7 +8,7 @@ from command.plastic.plastic import handle as plastic_handle
 from core import membership, onboarding, ranking
 from db.daily_stats import increment_messages_today
 from db.guild_channels import set_last_channel
-from db.users import ensure_user, increment_chat_count
+from db.users import ensure_user
 
 
 async def _prepare(interaction: discord.Interaction) -> bool:
@@ -32,10 +32,9 @@ async def _prepare(interaction: discord.Interaction) -> bool:
         await interaction.response.send_message(onboarding.random_guide())
         return False
 
-    await asyncio.gather(
-        increment_chat_count(interaction.user.id),
-        increment_messages_today(interaction.user.id),
-    )
+    # 앞으로 "총 대화한 횟수"(chat_count)는 슬래시 명령어를 제외한다(사용자 확정) — 여기서는
+    # daily_stats의 오늘 대화 횟수(messages_today, 3-5 최다 대화자 판정용)만 집계한다.
+    await increment_messages_today(interaction.user.id)
     return True
 
 
