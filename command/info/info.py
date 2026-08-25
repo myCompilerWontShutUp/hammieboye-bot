@@ -47,15 +47,14 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
     recent = await get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30))
     earned = await get_earned(user_id)
 
-    embed = discord.Embed(title="📋 햄미와 나", color=EMBED_COLOR)
+    embed = discord.Embed(title="🐹 햄미와 나", color=EMBED_COLOR)
 
+    embed.add_field(name="​", value="​", inline=False)
+    
     embed.add_field(name="💕 햄미의 호감도", value=f"**{user['affection']}**", inline=False)
 
-    # 다음 섹션과 구분되도록 빈 줄(zero-width space) 필드로 여백을 준다.
-    embed.add_field(name="​", value="​", inline=False)
-
     embed.add_field(
-        name="💬 햄미와 나의 기록",
+        name="📋 햄미와 나의 기록",
         value=(
             f"- 도와준 횟수: **{user['help_count']}**\n"
             f"- 대화한 횟수: **{user['chat_count']}**\n"
@@ -63,8 +62,6 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
         ),
         inline=False,
     )
-
-    embed.add_field(name="​", value="​", inline=False)
 
     embed.add_field(
         name="📅 오늘의 기록",
@@ -74,8 +71,6 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
         ),
         inline=False,
     )
-
-    embed.add_field(name="​", value="​", inline=False)
 
     achievement_lines = [f"- 획득한 업적: **{len(earned)}/{achievements.TOTAL_COUNT}**"]
     for row in earned:
