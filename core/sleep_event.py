@@ -13,6 +13,30 @@ _client: discord.Client | None = None
 
 _METHOD = "sleep_mention"
 
+# {mentions}는 오늘의 최다 대화자(들) 멘션으로 채워진다 (동률이면 여러 명).
+_ANNOUNCEMENT_LINES = (
+    "오늘 하루 끝!! {mentions} 오늘 젤 많이 놀아줘서 조아써!! 이제 잘 시간이야... 쿨쿨 _(뿌듯)_",
+    "오늘도 수고해써!! {mentions} 오늘 최고로 마니 놀아줬어!! 햄미 이제 잘게... _(행복)_",
+    "하루가 다 갔네!! {mentions} 오늘 제일 마니 이야기해줘서 조아써!! 굿나잇!! _(포근)_",
+    "오늘 대화 끝!! {mentions} 덕분에 넘 즐거운 하루였어!! 쿨쿨 잘게... _(만족)_",
+    "밤이 왔어!! {mentions} 오늘 젤 마니 놀아준 칭구야, 고마워!! 잘 자!! _(감사)_",
+    "오늘도 끝!! {mentions} 하루 종일 젤 마니 챙겨줘서 고마워!! 이제 잠들게... _(애정)_",
+    "쿨쿨할 시간이야!! {mentions} 오늘 제일 마니 대화해줘서 행복해써!! _(행복)_",
+    "하루 마무리!! {mentions} 오늘 최고 칭구였어!! 낼 또 놀자, 굿나잇!! _(따뜻)_",
+    "잘 시간 다가와!! {mentions} 오늘 젤 마니 말 걸어줘서 조아써!! 쿨쿨... _(포근)_",
+    "오늘도 즐거워써!! {mentions} 젤 마니 놀아준 사람 고마워!! 이제 잘게... _(뿌듯)_",
+    "밤 인사할 시간!! {mentions} 오늘 최고로 마니 놀아줬어!! 잘 자!! _(설렘)_",
+    "하루 끝났어!! {mentions} 오늘 제일 신경 써줘서 고마워!! 쿨쿨... _(감동)_",
+    "오늘도 조은 하루였어!! {mentions} 젤 마니 대화해줘서 행복해!! 굿나잇!! _(행복)_",
+    "잠들 시간이야!! {mentions} 오늘 최고 칭구로 뽑혔어!! 축하해!! _(자랑)_",
+    "하루가 저물어써!! {mentions} 오늘 젤 마니 놀아줘서 고마워!! 쿨쿨... _(따뜻)_",
+    "밤이 깊었어!! {mentions} 오늘 하루 젤 챙겨줘서 조아써!! 잘 자!! _(포근)_",
+    "오늘 대화 마감!! {mentions} 최고로 마니 얘기해줘서 고마워!! 쿨쿨... _(감사)_",
+    "이제 잘 시간!! {mentions} 오늘 젤 마니 놀아준 거 안 잊을게!! _(뭉클)_",
+    "하루 끝!! {mentions} 오늘 제일 마니 챙겨줘서 넘 행복해써!! 굿나잇!! _(행복)_",
+    "쿨쿨 잘 시간이야!! {mentions} 오늘 최고 칭구!! 낼도 놀아줘!! _(기대)_",
+)
+
 
 def init(client: discord.Client) -> None:
     global _client
@@ -49,7 +73,7 @@ async def _post_announcement(winners: list[int]) -> None:
     if _client is None:
         return
     mentions = " ".join(f"<@{user_id}>" for user_id in winners)
-    text = f"오늘 하루 끝!! {mentions} 오늘 젤 많이 놀아줘서 조아써!! 이제 잘 시간이야... 쿨쿨"
+    text = random.choice(_ANNOUNCEMENT_LINES).format(mentions=mentions)
 
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:

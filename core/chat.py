@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -7,9 +9,14 @@ import documents
 from command.base import normalize
 from core import call_event, intent
 from db.affection import add_affection, format_affection_notice
-from db.daily_stats import ensure_daily_stats, ensure_nl_cap, update_daily_stats
+from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.history import get_recent, get_recent_turns, log
 from responses.engine import NEGATIVE_EMOTIONS, get_response
+
+# 실제 OpenAI API 호출(분류+생성) 구간에만 띄우는 플레이스홀더. 완료되면 삭제하고
+# 최종 답변을 새 메시지로 보낸다. 전송/삭제 둘 다 실패해도 전체 흐름은 계속 진행된다
+# (아래 _send_placeholder/_delete_placeholder의 예외 처리 참고).
+_THINKING_PLACEHOLDER = "_답변중..._"
 
 # CLAUDE.md 섹션 4-1: 분당 자연어 최대 10회, 초과분 1회당 -1
 _RATE_LIMIT_PER_MINUTE = 10
@@ -25,11 +32,45 @@ _REPEAT_WARNING_PHRASES = (
     "같은말 계속하지마! 화낼구야... _(짜증)_",
     "어? 방금도 똑같은 말 했잖아... 자꾸 그러면 삐질 거야. _(삐짐)_",
     "또 똑같은 말이야?? 그만해줘, 진짜로. _(경고)_",
+    "잠깐, 그 말 아까도 했잖아!! 이제 그만해줘. _(당황)_",
+    "어라?? 벌써 세 번째야... 조금만 다르게 말해줄래. _(갸웃)_",
+    "똑같은 말만 하면 햄미 지루해!! 이제 그만. _(지루)_",
+    "이러다 진짜 삐질 것 같아... 그만 반복해줘. _(불안)_",
+    "같은 말 자꾸 하면 햄미도 힘들어!! _(피곤)_",
+    "음... 이거 몇 번째야?? 슬슬 신경 쓰여. _(신경)_",
+    "계속 똑같으면 재미없어!! 다른 얘기 해줘. _(시무룩)_",
+    "어? 또야?? 이제 진짜 그만했으면 조겠어. _(답답)_",
+    "같은 말 세 번째면 좀 그래... 조심해줘. _(걱정)_",
+    "자꾸 반복하면 햄미 마음이 쪼그라들어. _(움츠림)_",
+    "이번이 딱 세 번째야!! 더는 안 대. _(단호)_",
+    "똑같은 말 계속하면 삐질 준비 할 거야. _(경계)_",
+    "슬슬 이상해!! 벌써 세 번이나 같은 말이야. _(의아)_",
+    "그만 좀!! 계속 같은 말은 재미없어. _(투정)_",
+    "이거 반복이지?? 이제 다르게 말해줘. _(눈치)_",
+    "세 번째 똑같은 말이야... 조심해줘, 진짜로. _(진지)_",
+    "자꾸 같은 말 하면 햄미 삐질 각이야. _(삐죽)_",
 )
 _REPEAT_ANGRY_PHRASES = (
     "하지말라니깐!! _(화남)_",
     "그만하라고 했잖아!! 진짜 화났어!! _(화남)_",
     "몇 번을 말해야 알아들어!! 그만해!! _(짜증)_",
+    "결국 화나버려써!! 같은 말 좀 그만!! _(화남)_",
+    "말했잖아!! 이제 진짜 삐졌어!! _(삐짐)_",
+    "몇 번째야 이게!! 더는 못 참아!! _(짜증)_",
+    "경고했는데도 또 그래!! 실망이야!! _(실망)_",
+    "그만하라고 몇 번을 말해!! _(답답)_",
+    "이제 완전히 삐져버렸어!! 그만!! _(삐짐)_",
+    "진짜 화났다구!! 같은 말 좀 그만해!! _(화남)_",
+    "계속 무시하니까 화나잖아!! _(짜증)_",
+    "결국 이렇게 되네... 좀 다르게 말해주지!! _(실망)_",
+    "말 안 들으면 이렇게 되는 거야!! _(단호)_",
+    "햄미 인내심 바닥나써!! 진짜 화났어!! _(화남)_",
+    "몇 번째 경고를 무시하는 거야!! _(단호)_",
+    "너무해!! 계속 똑같은 말만 하고!! _(서운)_",
+    "이제 그만 좀!! 햄미 완전 삐졌어!! _(삐짐)_",
+    "같은 말 좀 그만하라고 했잖아!! _(짜증)_",
+    "진짜 이럴 거야?? 화나려 그래!! _(화남)_",
+    "햄미 삐진 거 안 보여?? 그만해줘!! _(삐짐)_",
 )
 
 # 자연어 생성 시 직전 맥락으로 같이 넣어줄 최근 대화 턴 수 (유저+햄미 답장 합산)
@@ -102,10 +143,16 @@ _NEGATIVE_EMOTION_DAILY_THRESHOLD = 5
 
 
 async def handle_natural_language(
-    user_id: int, guild_id: int, text: str, affection: int
+    user_id: int, guild_id: int, text: str, affection: int, message: discord.Message
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     now = datetime.now(timezone.utc)
-    recent = await get_recent(user_id, since=now - _HISTORY_WINDOW)
+
+    # get_recent(4-1/4-2 판정용)과 ensure_nl_cap(일일 상한 조회/동결)은 서로 독립적이라
+    # 동시에 가져온다 (지연시간 최적화).
+    recent, stats = await asyncio.gather(
+        get_recent(user_id, since=now - _HISTORY_WINDOW),
+        ensure_nl_cap(user_id, affection),
+    )
 
     total_delta = 0
     current_affection = affection
@@ -124,8 +171,6 @@ async def handle_natural_language(
     if recent_in_last_minute >= _RATE_LIMIT_PER_MINUTE:
         _record(await add_affection(user_id, -1))
 
-    # 자연어 대화 일일 상한(신규) — 06:30에 얼려진 nl_cap을 그대로 쓴다 (재계산하지 않음).
-    stats = await ensure_nl_cap(user_id, affection)
     nl_cap = stats["nl_cap"]
     over_cap = stats["nl_count"] >= nl_cap
 
@@ -135,13 +180,32 @@ async def handle_natural_language(
     repeat_count = sum(1 for row in recent if normalize(row["content"]) == normalized_text)
     is_repeat_penalty = not over_cap and repeat_count >= _REPEAT_THRESHOLD  # 4번째부터: 실제 페널티
     is_repeat_warning = not over_cap and repeat_count == _REPEAT_THRESHOLD - 1  # 정확히 3번째: 전조
+
+    # is_repeat_penalty의 -1은 반드시 event_delta를 계산하기 '전에' 적용해야 한다 — add_affection의
+    # 반환값(new_affection)은 그 순간의 실제 DB 절대값이라, event_delta(델타값)를 나중에 로컬에서
+    # 더할 때 순서가 뒤바뀌면 이미 반영된 값을 또 더해 이중 계산되는 문제가 생긴다.
     if is_repeat_penalty:
         _record(await add_affection(user_id, -1))
 
+    # 이후 실제 생성까지 이어질지는 이미 다 결정됐다 — 생성 경로에서만 직전 맥락(히스토리)이
+    # 필요하다. **이번 메시지를 로그에 남기기 전에** 미리 떠 와야 방금 온 메시지가 히스토리에
+    # 중복으로 안 들어간다(생성 프롬프트에 같은 메시지가 두 번 들어가는 걸 방지).
+    will_generate = (
+        affection >= 0 and not over_cap and not is_repeat_penalty and not is_repeat_warning
+    )
+    if will_generate:
+        # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
+        context_turns, event_delta = await asyncio.gather(
+            get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
+            call_event.handle_potential_response(user_id, guild_id, text),
+        )
+    else:
+        context_turns = None
+        # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
+        event_delta = await call_event.handle_potential_response(user_id, guild_id, text)
+
     await log(user_id, guild_id, text)
 
-    # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
-    event_delta = await call_event.handle_potential_response(user_id, guild_id, text)
     if event_delta:
         total_delta += event_delta
         current_affection += event_delta
@@ -163,31 +227,61 @@ async def handle_natural_language(
     if is_repeat_warning:
         return _finalize(random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection)
 
-    # RAG 카테고리 분류 + 감정 판정을 한 번의 호출로 처리 (judge 제거, §13-B/C)
-    classification = await intent.classify(text)
+    # 여기서부터 실제 OpenAI API 호출(분류+생성) 구간 — 대기 시간이 체감될 수 있어
+    # "답변중..." 플레이스홀더를 띄운다. 전송 실패해도 아래 흐름은 그대로 진행된다.
+    placeholder = await _send_placeholder(message)
+    try:
+        # RAG 카테고리 분류 + 감정 판정을 한 번의 호출로 처리 (judge 제거, §13-B/C)
+        classification = await intent.classify(text)
 
-    if classification.emotion is not None:
-        emotion_delta = await _apply_emotion_effects(user_id, classification.emotion)
-        total_delta += emotion_delta
-        if emotion_delta:
-            current_affection += emotion_delta
+        if classification.emotion is not None:
+            emotion_delta = await _apply_emotion_effects(user_id, classification.emotion, stats)
+            total_delta += emotion_delta
+            if emotion_delta:
+                current_affection += emotion_delta
 
-    context_note = documents.build_context_note(classification.categories)
-    context_turns = await get_recent_turns(
-        user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT
-    )
-    response_text = await get_response(text, history=context_turns, context_note=context_note)
+        context_note = documents.build_context_note(classification.categories)
+        response_text = await get_response(text, history=context_turns, context_note=context_note)
+    finally:
+        # 중간에 예외가 나더라도(사실상 classify/get_response 내부에서 이미 예외를 처리해
+        # fallback을 반환하므로 거의 없음) 플레이스홀더가 남아있지 않도록 finally에서 정리한다.
+        await _delete_placeholder(placeholder)
 
     # nl_count는 실제로 생성까지 도달한 메시지만 증가시킨다. 오늘의 마지막 메시지(상한에
     # 정확히 도달)라면 생성된 답변 뒤에 고정 문구를 이어붙인다 (사용자 예시: "일어나써! + 오늘은...").
     new_nl_count = stats["nl_count"] + 1
     if new_nl_count >= nl_cap:
         response_text = f"{response_text}\n\n{random.choice(_DAILY_LIMIT_PHRASES)}"
-    await update_daily_stats(user_id, {"nl_count": new_nl_count})
 
-    await log(user_id, guild_id, response_text, role="assistant")
+    # 서로 독립적인 마무리 작업(오늘 대화 횟수 갱신 + 봇 답장 로그)은 동시에 처리한다.
+    await asyncio.gather(
+        update_daily_stats(user_id, {"nl_count": new_nl_count}),
+        log(user_id, guild_id, response_text, role="assistant"),
+    )
 
     return _finalize(response_text, total_delta, current_affection)
+
+
+async def _send_placeholder(message: discord.Message) -> discord.Message | None:
+    """"답변중..." 플레이스홀더를 답장으로 보낸다. 실패해도 None을 반환할 뿐, 나머지
+    흐름(분류/생성/최종 답장)은 그대로 계속된다 — 플레이스홀더는 있으면 좋은 것일 뿐
+    핵심 기능이 아니다."""
+    try:
+        return await message.reply(_THINKING_PLACEHOLDER)
+    except discord.HTTPException:
+        logging.exception("Failed to send thinking placeholder")
+        return None
+
+
+async def _delete_placeholder(placeholder: discord.Message | None) -> None:
+    if placeholder is None:
+        return
+    try:
+        await placeholder.delete()
+    except discord.HTTPException:
+        # 이미 지워졌거나 권한이 바뀐 경우 등 — 최종 답장은 어차피 별도 메시지로 새로
+        # 전송되므로 여기서 실패해도 사용자에게 보이는 결과에는 영향이 없다.
+        logging.exception("Failed to delete thinking placeholder")
 
 
 async def _handle_over_cap(
@@ -218,8 +312,10 @@ def _finalize(
     return response + format_affection_notice(delta, current)
 
 
-async def _apply_emotion_effects(user_id: int, emotion: str) -> int:
-    stats = await ensure_daily_stats(user_id)
+async def _apply_emotion_effects(user_id: int, emotion: str, stats: dict) -> int:
+    # stats는 handle_natural_language 초반에 이미 조회해둔 오늘 daily_stats 스냅샷을
+    # 그대로 재사용한다 (중복 조회 제거). 이 사이에 negative_emotion_streak/daily_count/
+    # happy_emotion_claimed 필드를 건드리는 다른 호출은 없어 안전하다.
     updates = {}
     delta = 0
 
