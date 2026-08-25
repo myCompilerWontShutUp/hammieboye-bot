@@ -12,7 +12,7 @@ from db.history import get_recent
 from db.users import get_user
 
 # "햄미가 알려주는 내 정보"라는 딱딱한 고정 문구 대신, 매번 다른 인트로 한 줄을
-# 무작위로 고른다 (API로 생성 후 검수해서 고정, 사용자 요청).
+# 무작위로 고른다 (API로 생성 후 검수해서 고정, 사용자 요청). 내가 나를 볼 때(/내정보) 전용.
 _INTRO_LINES = (
     "햄미 정보 살짝 보여줄게!! _(찡긋)_",
     "햄미의 요모조모 알려줄게!! _(두근)_",
@@ -36,25 +36,68 @@ _INTRO_LINES = (
     "햄미 정보 출발한다구!! _(출발)_",
 )
 
+# 다른 사람을 소개할 때(/소개) 전용 고정 문구 풀. "{name}"에는 항상 "님"을 붙여서 끼워 넣으므로
+# ("님"은 항상 받침이 있는 글자라 을/는/이 조사가 이름 원문의 받침 유무와 무관하게 고정된다),
+# 어떤 이름이 와도 조사가 안 어색하다.
+_INTRO_OTHER_LINES = (
+    "내가 {name}님을 소개해주께!! _(으쓱)_",
+    "짜잔!! {name}님 정보 가져왔어!! _(자랑)_",
+    "{name}님에 대해 알려줄게!! _(신남)_",
+    "이 사람이 바로 {name}님이야!! _(소개)_",
+    "{name}님 소개 나갑니다!! _(당당)_",
+    "궁금했지?? {name}님 정보야!! _(장난)_",
+    "{name}님을 데려왔어!! 구경해봐!! _(들뜸)_",
+    "짜잔, {name}님이야!! _(방긋)_",
+    "{name}님 정보 살짝 보여줄게!! _(찡긋)_",
+    "이건 {name}님의 이야기야!! _(진지)_",
+    "{name}님을 자랑스럽게 소개할게!! _(뿌듯)_",
+    "여기 {name}님 정보 대령이요!! _(공손)_",
+    "{name}님, 잘 부탁해!! 소개해줄게!! _(설렘)_",
+    "{name}님 스포일러 나간다!! _(흥미)_",
+    "이 친구가 {name}님이야!! _(반가움)_",
+    "{name}님 정보 배달 완료!! _(뿌듯)_",
+    "{name}님을 한번 살펴볼까?? _(호기심)_",
+    "여기, {name}님의 기록이야!! _(자랑)_",
+    "{name}님 소개할 시간이야!! _(기대)_",
+    "{name}님 정보 짠!! 놀랐지?? _(장난)_",
+)
+
+_SELF_DESCRIPTION = "지금까지 너랑 쌓아온 기록들이야!!"
+_OTHER_DESCRIPTION_TEMPLATE = "햄미가 {name}님에 대해 알고 있는 것들이야!!"
+
 
 def _format_date(iso_str: str) -> str:
     return datetime.fromisoformat(iso_str).astimezone(KST).strftime("%Y. %m. %d")
 
 
-async def handle(user_id: int) -> tuple[str, discord.Embed]:
+def _format_footer(now: datetime) -> str:
+    # GMT/KST 같은 시간대 표기 없이, 한국시간 기준 날짜 + 12시간제 시각(AM/PM)만 적는다.
+    period = "AM" if now.hour < 12 else "PM"
+    return f"{now.strftime('%Y. %m. %d.')} {now.strftime('%I:%M')} {period}"
+
+
+async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, discord.Embed]:
+    """target_name이 None이면 본인(/내정보) 조회, 아니면 그 이름의 다른 사람(/소개) 조회."""
+    is_self = target_name is None
+
     user = await get_user(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
     recent = await get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30))
     earned = await get_earned(user_id)
 
-    embed = discord.Embed(title="나의 정보", description="​", color=EMBED_COLOR)
+    title = "나의 정보" if is_self else f"{target_name}님의 정보"
+    description = _SELF_DESCRIPTION if is_self else _OTHER_DESCRIPTION_TEMPLATE.format(name=target_name)
+    record_field_name = "📋 햄미와 나의 기록" if is_self else f"📋 햄미와 {target_name}님의 기록"
+    achievement_field_name = "🏆 우리들의 업적" if is_self else f"🏆 {target_name}님의 업적"
+
+    embed = discord.Embed(title=title, description=description, color=EMBED_COLOR)
 
     # 섹션 사이 여백은 각 필드 값 "끝"에 줄바꿈 + zero-width space를 붙여서 만든다 — 트레일링
     # 공백만 있는 줄은 렌더러가 트리밍할 수 있어서, ZWS로 "진짜 내용이 있는 빈 줄"을 만든다.
     embed.add_field(name="💕 햄미의 호감도", value=f"**{user['affection']}**\n​", inline=False)
 
     embed.add_field(
-        name="📋 햄미와 나의 기록",
+        name=record_field_name,
         value=(
             f"- 도와준 횟수: **{user['help_count']}**\n"
             f"- 대화한 횟수: **{user['chat_count']}**\n"
@@ -78,11 +121,13 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
         if module is None:
             continue
         achievement_lines.append(f"- {module.NAME} ({_format_date(row['earned_at'])})")
-    embed.add_field(name="🏆 우리들의 업적", value="\n".join(achievement_lines) + "\n​", inline=False)
+    embed.add_field(name=achievement_field_name, value="\n".join(achievement_lines) + "\n​", inline=False)
 
     recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3]) if recent else "- (최근 30분 내 대화 없음)"
     embed.add_field(name="🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
 
-    embed.set_footer(text=datetime.now(KST).strftime("%Y. %m. %d"))
+    embed.set_footer(text=_format_footer(datetime.now(KST)))
 
-    return random.choice(_INTRO_LINES), embed
+    if is_self:
+        return random.choice(_INTRO_LINES), embed
+    return random.choice(_INTRO_OTHER_LINES).format(name=target_name), embed
