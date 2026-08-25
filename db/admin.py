@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from db.client import rpc, select
+from db.client import insert, rpc, select
 
 _KST_OFFSET = timedelta(hours=9)
 
@@ -9,9 +9,11 @@ KNOWN_TABLES = (
     "daily_stats",
     "chat_history",
     "affection_log",
+    "admin_command_log",
     "global_call_events",
     "guild_channels",
     "guild_sleep_state",
+    "withdrawn_users",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -20,15 +22,26 @@ _ORDER_COLUMN = {
     "daily_stats": "created_at",
     "chat_history": "created_at",
     "affection_log": "created_at",
+    "admin_command_log": "created_at",
     "global_call_events": "created_at",
     "guild_channels": "updated_at",
     "guild_sleep_state": "updated_at",
+    "withdrawn_users": "withdrawn_at",
 }
 
 
 async def set_affection(user_id: int, value: int) -> int:
     """la-set/la-reset 전용: daily_stats/affection_log를 건드리지 않고 절대값으로 SET."""
     return await rpc("set_affection", {"p_user_id": user_id, "p_value": value})
+
+
+async def log_command(command: str, args: str, before: str | None, after: str | None) -> None:
+    """관리자 콘솔(주인님-가라사대)에서 상태를 바꾸는 명령어 실행 이력을 남긴다.
+    조회 전용 명령어(s-*/c*)는 변경이 없으므로 호출하지 않는다."""
+    await insert(
+        "admin_command_log",
+        {"command": command, "args": args, "before_value": before, "after_value": after},
+    )
 
 
 def _kst_day_bounds_utc() -> tuple[str, str]:

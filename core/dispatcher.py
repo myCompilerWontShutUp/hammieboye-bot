@@ -7,9 +7,9 @@ from core import admin, call_event, greeting, onboarding, presence, slash_comman
 from core.chat import handle_natural_language
 from core.client import create_tree
 from core.scheduler import is_sleep_time, start_daily, start_interval
-from db.daily_stats import increment_messages_today
+from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import set_last_channel
-from db.users import ensure_user, increment_chat_count, set_consent
+from db.users import ensure_user, increment_chat_count
 
 _TICK_INTERVAL_SECONDS = 30
 
@@ -72,6 +72,7 @@ def setup_dispatcher(client: discord.Client) -> None:
         start_daily(0, 0, presence.enter_sleep)  # 취침 시작: 자리비움 전환
         start_daily(6, 30, presence.wake_up)  # 기상: 온라인 전환
         start_daily(6, 30, call_event.schedule_today)  # 기상 시각: 그날 5개 시각 산출
+        start_daily(6, 30, refresh_conversation_caps)  # 기상 시각: 자연어 대화 일일 상한 동결
         start_daily(6, 30, greeting.post_daily_greeting)  # 기상 시각: 아침 인사 + 기념일 언급
         start_daily(23, 59, sleep_event.announce_and_reward)  # 취침 전 최다 대화자 언급
         start_interval(_TICK_INTERVAL_SECONDS, call_event.tick)  # 예정 게시 + 무응답 만료 점검
@@ -102,11 +103,8 @@ def setup_dispatcher(client: discord.Client) -> None:
 
         user = await ensure_user(message.author.id)
         if not user["consent_given"]:
-            if onboarding.is_consent_phrase(user_message):
-                await set_consent(message.author.id)
-                await message.reply(onboarding.CONFIRMED)
-            else:
-                await message.reply(onboarding.NOTICE)
+            # 동의(가입)는 이제 오직 `/가입` 슬래시 커맨드로만 가능하다 — 자연어 문구 인정 폐기.
+            await message.reply(onboarding.random_guide())
             return
 
         await increment_chat_count(message.author.id)

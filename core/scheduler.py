@@ -42,9 +42,24 @@ def start_interval(seconds: float, callback: _DailyCallback) -> tasks.Loop:
     return loop
 
 
-def random_times_in_window(count: int, start: time, end: time) -> list[time]:
-    """[start, end) 구간 안에서 서로 다른 count개의 시각을 무작위로 뽑아 오름차순으로 반환한다."""
+def random_times_in_window(
+    count: int, start: time, end: time, min_gap_minutes: int = 0
+) -> list[time]:
+    """[start, end) 구간 안에서 서로 다른 count개의 시각을 무작위로 뽑아 오름차순으로 반환한다.
+
+    min_gap_minutes > 0이면 인접한 두 시각 사이 간격이 항상 그 값 이상이 되도록 보장한다
+    (부름 이벤트 최소 간격 30분, 사용자 확정). 재시도(rejection sampling) 없이, 구간을
+    (count-1)*min_gap만큼 줄인 뒤 뽑아서 각 포인트에 순서대로 간격을 더하는 방식으로
+    간격을 원천적으로 보장한다.
+    """
     start_seconds = start.hour * 3600 + start.minute * 60 + start.second
     end_seconds = end.hour * 3600 + end.minute * 60 + end.second
-    picks = sorted(random.sample(range(start_seconds, end_seconds), count))
-    return [time(hour=s // 3600, minute=(s % 3600) // 60, second=s % 60) for s in picks]
+    min_gap_seconds = min_gap_minutes * 60
+
+    reduced_end = end_seconds - (count - 1) * min_gap_seconds
+    if reduced_end <= start_seconds:
+        raise ValueError("min_gap_minutes가 너무 커서 구간 안에 count개를 배치할 수 없다")
+
+    picks = sorted(random.sample(range(start_seconds, reduced_end), count))
+    adjusted = [p + i * min_gap_seconds for i, p in enumerate(picks)]
+    return [time(hour=s // 3600, minute=(s % 3600) // 60, second=s % 60) for s in adjusted]
