@@ -1,11 +1,38 @@
 -- ============================================================
--- hammieboye-bot Supabase 스키마
--- CLAUDE.md의 사용자별 호감도/기억 시스템 스펙을 반영한 DDL.
--- Supabase 프로젝트의 SQL Editor에 그대로 붙여넣어 실행한다.
+-- hammieboye-bot Supabase 스키마 (2026-08-25 대규모 재설계, 전체 리셋판)
+-- CLAUDE.md 섹션 1~13의 최신 스펙을 반영한 DDL.
+-- 기존 프로젝트를 초기화하는 스크립트이므로, 위쪽 DROP 구문이 기존
+-- 테이블/함수/타입을 전부 지운다. Supabase 프로젝트의 SQL Editor에
+-- 그대로 붙여넣어 실행한다 (기존 데이터는 전부 사라짐).
 -- ============================================================
 
 -- ------------------------------------------------------------
--- 0. 공통 유틸
+-- 0. 기존 객체 전체 삭제 (전체 리셋)
+-- ------------------------------------------------------------
+
+DROP TABLE IF EXISTS guild_sleep_state CASCADE;
+DROP TABLE IF EXISTS guild_channels CASCADE;
+DROP TABLE IF EXISTS global_call_events CASCADE;
+DROP TABLE IF EXISTS affection_log CASCADE;
+DROP TABLE IF EXISTS chat_history CASCADE;
+DROP TABLE IF EXISTS daily_stats CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+
+DROP FUNCTION IF EXISTS register_sleep_mention(bigint);
+DROP FUNCTION IF EXISTS add_affection_uncapped(bigint, integer, text);
+DROP FUNCTION IF EXISTS apply_global_penalty(integer);
+DROP FUNCTION IF EXISTS claim_call_event(bigint, bigint, integer);
+DROP FUNCTION IF EXISTS increment_messages_today(bigint);
+DROP FUNCTION IF EXISTS increment_chat_count(bigint);
+DROP FUNCTION IF EXISTS add_affection(bigint, integer, text);
+DROP FUNCTION IF EXISTS set_affection(bigint, bigint);
+DROP FUNCTION IF EXISTS set_updated_at();
+DROP FUNCTION IF EXISTS kst_today();
+
+DROP TYPE IF EXISTS emotion;
+
+-- ------------------------------------------------------------
+-- 1. 공통 유틸
 -- ------------------------------------------------------------
 
 -- 모든 "하루" 기준은 한국시간(KST, UTC+9) 자정이다.
@@ -31,7 +58,7 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 1. 감정 ENUM (CLAUDE.md 확정본, 긍정 10 + 부정 10)
+-- 2. 감정 ENUM (긍정 10 + 부정 10)
 -- ------------------------------------------------------------
 
 CREATE TYPE emotion AS ENUM (
@@ -44,7 +71,7 @@ CREATE TYPE emotion AS ENUM (
 );
 
 -- ------------------------------------------------------------
--- 2. users — 영구 수집 항목 (CLAUDE.md 섹션 1-1)
+-- 3. users — 영구 수집 항목 (CLAUDE.md 섹션 1-1)
 --    Discord user ID 기준, 서버 무관 통합 레코드.
 -- ------------------------------------------------------------
 
@@ -74,7 +101,7 @@ CREATE TRIGGER trg_users_updated_at
   EXECUTE FUNCTION set_updated_at();
 
 -- ------------------------------------------------------------
--- 3. daily_stats — 구간(세션) 수집 항목 (CLAUDE.md 섹션 1-2)
+-- 4. daily_stats — 구간(세션) 수집 항목 (CLAUDE.md 섹션 1-2)
 --    사용자 x 날짜(KST) 조합마다 한 행. "리셋"은 별도 삭제 없이
 --    날짜가 바뀌면 새 행을 만드는 방식으로 자연스럽게 처리한다.
 -- ------------------------------------------------------------
@@ -87,7 +114,7 @@ CREATE TABLE daily_stats (
   -- daily_net은 하락분까지 반영한 순증감(음수 가능, 3-5의 "당일 획득 호감도 음수" 제외 판정용).
   daily_gain                       integer NOT NULL DEFAULT 0,
   daily_net                         integer NOT NULL DEFAULT 0,
-  gain_methods                      jsonb NOT NULL DEFAULT '[]'::jsonb, -- 당일 획득 방법 목록 (예: ["plastic_bottle", "call_event"])
+  gain_methods                      jsonb NOT NULL DEFAULT '[]'::jsonb, -- 당일 획득 방법 목록
 
   messages_today                    integer NOT NULL DEFAULT 0,     -- 오늘 나눈 대화 수 (3-5 최다 대화자 판정용)
 
@@ -118,10 +145,10 @@ CREATE TRIGGER trg_daily_stats_updated_at
 CREATE INDEX idx_daily_stats_date ON daily_stats (stat_date);
 
 -- ------------------------------------------------------------
--- 4. chat_history — 히스토리 대화 내용 (CLAUDE.md 섹션 1-2, 30분/최대 50개)
---    보관 기간·개수 제한은 애플리케이션에서 조회 시점에
---    (created_at > now() - interval '30 minutes') 조건 + LIMIT 50 으로 강제한다.
---    오래된 행은 주기적으로 정리(cron)하거나, 조회 조건으로만 걸러도 무방하다.
+-- 5. chat_history — 히스토리 대화 내용 (CLAUDE.md 섹션 1-2, 30분/최대 50개)
+--    role='user'는 실제 사용자 발화, role='assistant'는 햄미 자신의
+--    답장(대화 기억용, UX 개선 10). 보관 기간·개수 제한은 애플리케이션이
+--    조회 시점에 (created_at > now() - interval '30 minutes') + LIMIT으로 강제한다.
 -- ------------------------------------------------------------
 
 CREATE TABLE chat_history (
@@ -137,22 +164,42 @@ CREATE TABLE chat_history (
 CREATE INDEX idx_chat_history_user_recent ON chat_history (user_id, created_at DESC);
 
 -- ------------------------------------------------------------
--- 5. global_call_events — 글로벌 부름 이벤트 (CLAUDE.md 섹션 3-2)
+-- 6. affection_log — 호감도 변경 이력 (신규, §13-D 글로벌 랭킹 동점 판정용)
+--    호감도가 바뀔 때마다 한 줄씩 남긴다. add_affection/add_affection_uncapped
+--    RPC 안에서 같이 기록되며, la-set/la-reset(관리자, set_affection RPC)은
+--    여기 기록되지 않는다 (§13-F 확정: daily_stats/affection_log 둘 다 미접촉).
+-- ------------------------------------------------------------
+
+CREATE TABLE affection_log (
+  id           bigserial PRIMARY KEY,
+  user_id       bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  delta          integer NOT NULL,     -- 이번에 실제 적용된 증감분
+  new_value      bigint NOT NULL,       -- 적용 후 호감도
+  method          text,                   -- 획득/하락 방법 식별자 (있으면)
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_affection_log_user_value ON affection_log (user_id, new_value, delta, created_at DESC);
+
+-- ------------------------------------------------------------
+-- 7. global_call_events — 글로벌 부름 이벤트 (CLAUDE.md 섹션 3-2)
 --    "가장 먼저 반응한 1명"을 원자적으로 판정하기 위한 클레임 테이블.
+--    scheduled_at(예정 시각)에 맞춰 게시하고 posted_at/expires_at을 채운다.
 -- ------------------------------------------------------------
 
 CREATE TABLE global_call_events (
   id               bigserial PRIMARY KEY,
   prompt_text        text NOT NULL,             -- 게시된 메시지 원문
-  posted_at           timestamptz NOT NULL DEFAULT now(),
-  expires_at           timestamptz NOT NULL,      -- posted_at + 10분
+  scheduled_at        timestamptz NOT NULL DEFAULT now(),
+  posted_at            timestamptz,
+  expires_at            timestamptz,             -- posted_at + 10분
 
   claimed_by           bigint REFERENCES users(user_id), -- 가장 먼저 반응한 사용자 (NULL = 아직 없음)
   claimed_at            timestamptz,
   reward_amount          integer,                   -- 1~10 랜덤 지급량 (클레임 시 확정)
+  penalty_applied         boolean NOT NULL DEFAULT false, -- 무응답 페널티 중복 적용 방지
 
   -- 서버별로 게시된 메시지 위치. 다른 서버 메시지를 수정할 때 사용.
-  -- 예: {"111111111111111111": {"channel_id": "222...", "message_id": "333..."}}
   messages               jsonb NOT NULL DEFAULT '{}'::jsonb,
 
   created_at              timestamptz NOT NULL DEFAULT now()
@@ -161,10 +208,38 @@ CREATE TABLE global_call_events (
 CREATE INDEX idx_global_call_events_active ON global_call_events (expires_at) WHERE claimed_by IS NULL;
 
 -- ------------------------------------------------------------
--- 6. 원자적 호감도 증감 RPC (CLAUDE.md 섹션 9-1-1 대응)
---    상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
---    이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
---    +20 일일 상한이 절대 뚫리지 않는다.
+-- 8. guild_channels — 서버별 "마지막 활동 채널"
+--    부름/취침 이벤트처럼 봇이 먼저 말을 거는 기능이 어느 채널에
+--    올릴지 결정할 때 쓴다. 매 메시지마다 최신값으로 덮어쓴다.
+-- ------------------------------------------------------------
+
+CREATE TABLE guild_channels (
+  guild_id         bigint PRIMARY KEY,
+  last_channel_id   bigint NOT NULL,
+  updated_at         timestamptz NOT NULL DEFAULT now()
+);
+
+-- ------------------------------------------------------------
+-- 9. guild_sleep_state — 서버별 "취침 중 맨션 깨움" 이벤트 상태
+--    취침 시간대(00:00~06:30)에 봇을 맨션하면 그 서버 한정으로 카운트가
+--    쌓이고, 그날 서버마다 새로 뽑힌 랜덤 임계치(1~10)에 도달하면 깨움
+--    이벤트가 1회 발생한다.
+-- ------------------------------------------------------------
+
+CREATE TABLE guild_sleep_state (
+  guild_id         bigint PRIMARY KEY,
+  sleep_date        date NOT NULL,
+  threshold          integer NOT NULL,
+  mention_count       integer NOT NULL DEFAULT 0,
+  triggered            boolean NOT NULL DEFAULT false,
+  updated_at            timestamptz NOT NULL DEFAULT now()
+);
+
+-- ------------------------------------------------------------
+-- 10. 원자적 호감도 증감 RPC (일일 +20 상한 적용, affection_log 기록)
+--     상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
+--     이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
+--     +20 일일 상한이 절대 뚫리지 않는다.
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION add_affection(
@@ -179,23 +254,20 @@ DECLARE
   v_stat_date date := kst_today();
   v_current_gain integer;
   v_applied integer;
+  v_new_affection bigint;
 BEGIN
-  -- 오늘자 daily_stats 행이 없으면 생성
   INSERT INTO daily_stats (user_id, stat_date)
   VALUES (p_user_id, v_stat_date)
   ON CONFLICT (user_id, stat_date) DO NOTHING;
 
-  -- 동시 요청 직렬화를 위한 행 잠금
   SELECT daily_gain INTO v_current_gain
   FROM daily_stats
   WHERE user_id = p_user_id AND stat_date = v_stat_date
   FOR UPDATE;
 
   IF p_amount > 0 THEN
-    -- 오늘 이미 채운 만큼을 빼고 남은 여유분만큼만 적용 (부분 지급)
     v_applied := LEAST(p_amount, GREATEST(20 - v_current_gain, 0));
   ELSE
-    -- 하락에는 상한이 없다
     v_applied := p_amount;
   END IF;
 
@@ -211,19 +283,87 @@ BEGIN
 
   UPDATE users
   SET affection = affection + v_applied
-  WHERE user_id = p_user_id;
+  WHERE user_id = p_user_id
+  RETURNING affection INTO v_new_affection;
+
+  IF v_applied <> 0 THEN
+    INSERT INTO affection_log (user_id, delta, new_value, method)
+    VALUES (p_user_id, v_applied, v_new_affection, p_method);
+  END IF;
 
   RETURN QUERY
   SELECT v_applied,
-         (SELECT affection FROM users WHERE user_id = p_user_id),
+         v_new_affection,
          (SELECT daily_gain FROM daily_stats WHERE user_id = p_user_id AND stat_date = v_stat_date);
 END;
 $$;
 
 -- ------------------------------------------------------------
--- 7. 글로벌 부름 이벤트 원자적 클레임 RPC (CLAUDE.md 섹션 9-1-2 대응)
---    여러 서버에서 동시에 응답이 들어와도 단 한 번의 UPDATE만 성공한다.
---    반환값 true = 이 호출이 "가장 먼저"로 인정됨.
+-- 11. 일일 상한 미적용 호감도 증감 RPC (affection_log 기록)
+--     daily_gain은 건드리지 않고 users.affection과 daily_net만 갱신한다
+--     (취침 깨움 이벤트 악몽 감사 +5, §13-F la-up/la-down 등).
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION add_affection_uncapped(
+  p_user_id bigint,
+  p_amount  integer,
+  p_method  text DEFAULT NULL
+)
+RETURNS TABLE (new_affection bigint)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_new_affection bigint;
+BEGIN
+  INSERT INTO daily_stats (user_id, stat_date)
+  VALUES (p_user_id, v_stat_date)
+  ON CONFLICT (user_id, stat_date) DO NOTHING;
+
+  UPDATE daily_stats
+  SET daily_net = daily_net + p_amount,
+      gain_methods = CASE
+        WHEN p_amount > 0 AND p_method IS NOT NULL
+          THEN gain_methods || to_jsonb(p_method)
+        ELSE gain_methods
+      END
+  WHERE user_id = p_user_id AND stat_date = v_stat_date;
+
+  UPDATE users
+  SET affection = affection + p_amount
+  WHERE user_id = p_user_id
+  RETURNING affection INTO v_new_affection;
+
+  IF p_amount <> 0 THEN
+    INSERT INTO affection_log (user_id, delta, new_value, method)
+    VALUES (p_user_id, p_amount, v_new_affection, p_method);
+  END IF;
+
+  RETURN QUERY SELECT v_new_affection;
+END;
+$$;
+
+-- ------------------------------------------------------------
+-- 12. 절대값 호감도 설정 RPC (신규, §13-F la-set/la-reset 전용)
+--     daily_stats/affection_log를 전혀 건드리지 않고 users.affection만
+--     직접 SET한다 (델타가 아니라 절대값 지정이라 "획득/상승" 개념 자체가
+--     적용되지 않음 — 확정 사항).
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION set_affection(p_user_id bigint, p_value bigint)
+RETURNS bigint
+LANGUAGE sql
+AS $$
+  UPDATE users
+  SET affection = p_value
+  WHERE user_id = p_user_id
+  RETURNING affection;
+$$;
+
+-- ------------------------------------------------------------
+-- 13. 글로벌 부름 이벤트 원자적 클레임 RPC
+--     여러 서버에서 동시에 응답이 들어와도 단 한 번의 UPDATE만 성공한다.
+--     반환값 true = 이 호출이 "가장 먼저"로 인정됨.
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION claim_call_event(
@@ -251,8 +391,7 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 8. 채팅 횟수 원자적 증가 RPC (Phase 0-1 대응)
---    읽고-더하고-쓰는 방식 대신 DB에서 한 번에 +1 해서 동시 요청에도 안전하다.
+-- 14. 채팅 횟수 원자적 증가 RPC
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION increment_chat_count(p_user_id bigint)
@@ -266,7 +405,7 @@ AS $$
 $$;
 
 -- ------------------------------------------------------------
--- 10. 오늘 대화 횟수 원자적 증가 RPC (Phase 5, 3-5 최다 대화자 판정용)
+-- 15. 오늘 대화 횟수 원자적 증가 RPC (3-5 최다 대화자 판정용)
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION increment_messages_today(p_user_id bigint)
@@ -287,35 +426,7 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 11. guild_channels — 서버별 "마지막 활동 채널" (Phase 5)
---     부름/취침 이벤트처럼 봇이 먼저 말을 거는 기능이 어느 채널에
---     올릴지 결정할 때 쓴다. 매 메시지마다 최신값으로 덮어쓴다.
--- ------------------------------------------------------------
-
-CREATE TABLE guild_channels (
-  guild_id         bigint PRIMARY KEY,
-  last_channel_id   bigint NOT NULL,
-  updated_at         timestamptz NOT NULL DEFAULT now()
-);
-
--- ------------------------------------------------------------
--- 12. global_call_events 확장 (Phase 5)
---     기존에는 "생성 = 즉시 게시"를 가정했지만, 이제 08:00에 그날
---     보낼 5개 시각을 미리 정해두고 그 시각이 될 때까지 기다렸다가
---     게시한다. scheduled_at(예정 시각)과 posted_at(실제 게시 시각)을
---     분리하고, penalty_applied로 무응답 페널티 중복 적용을 막는다.
--- ------------------------------------------------------------
-
-ALTER TABLE global_call_events
-  ADD COLUMN scheduled_at timestamptz NOT NULL DEFAULT now(),
-  ADD COLUMN penalty_applied boolean NOT NULL DEFAULT false,
-  ALTER COLUMN posted_at DROP DEFAULT,
-  ALTER COLUMN posted_at DROP NOT NULL,
-  ALTER COLUMN expires_at DROP NOT NULL;
-
--- ------------------------------------------------------------
--- 13. 전체 사용자 일괄 호감도 증감 RPC (3-2: 무응답 시 전원 -1)
---     UPDATE 한 번으로 처리해서 부분 실패/레이스 걱정이 없다.
+-- 16. 전체 사용자 일괄 호감도 증감 RPC (3-2: 무응답 시 전원 -1)
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION apply_global_penalty(p_amount integer)
@@ -332,88 +443,16 @@ BEGIN
   SELECT user_id, v_stat_date, p_amount FROM users
   ON CONFLICT (user_id, stat_date)
   DO UPDATE SET daily_net = daily_stats.daily_net + EXCLUDED.daily_net;
-END;
-$$;
 
-ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
-
--- ------------------------------------------------------------
--- 9. RLS (Row Level Security)
---    봇은 service_role 키로 접속하므로 RLS를 우회하고 정상 동작한다.
---    Supabase는 테이블을 기본적으로 REST API(anon/public)에 노출하므로,
---    아래처럼 RLS만 켜고 별도 정책을 추가하지 않으면 anon 키로는
---    아무 것도 조회/수정할 수 없어 안전하다 (기본 거부).
--- ------------------------------------------------------------
-
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE daily_stats ENABLE ROW LEVEL SECURITY;
-ALTER TABLE chat_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE global_call_events ENABLE ROW LEVEL SECURITY;
-
--- ------------------------------------------------------------
--- 14. guild_sleep_state — 서버별 "취침 중 맨션 깨움" 이벤트 상태 (UX 개선 8)
---     취침 시간대(00:00~06:30)에 봇을 맨션하면 그 서버 한정으로 카운트가
---     쌓이고, 그날 서버마다 새로 뽑힌 랜덤 임계치(1~10)에 도달하면 깨움
---     이벤트가 1회 발생한다. sleep_date가 오늘(KST)이 아니면 다음 맨션
---     때 자동으로 새 밤으로 취급해 임계치를 다시 뽑고 리셋한다.
--- ------------------------------------------------------------
-
-CREATE TABLE guild_sleep_state (
-  guild_id         bigint PRIMARY KEY,
-  sleep_date        date NOT NULL,                 -- 이 상태가 유효한 밤의 기준 날짜(KST)
-  threshold          integer NOT NULL,               -- 오늘 밤 깨움에 필요한 맨션 횟수(1~10, 매일 재추첨)
-  mention_count       integer NOT NULL DEFAULT 0,     -- 오늘 밤 누적된 맨션 횟수(메시지 1개 = 1회, 연속 맨션 포함)
-  triggered            boolean NOT NULL DEFAULT false, -- 오늘 밤 이미 깨움 이벤트가 발생했는지(= 방해금지 모드)
-  updated_at            timestamptz NOT NULL DEFAULT now()
-);
-
-ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
-
--- ------------------------------------------------------------
--- 15. 일일 상한 미적용 호감도 증감 RPC (UX 개선 8)
---     취침 중 깨움 이벤트의 악몽 감사(+5)는 CLAUDE.md 규정상 하루 +20
---     획득 상한에 포함되지 않아야 하므로, daily_gain은 건드리지 않고
---     users.affection과 daily_net(3-5 순증감 판정용)만 갱신한다.
--- ------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION add_affection_uncapped(
-  p_user_id bigint,
-  p_amount  integer,
-  p_method  text DEFAULT NULL
-)
-RETURNS TABLE (new_affection bigint)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  v_stat_date date := kst_today();
-BEGIN
-  INSERT INTO daily_stats (user_id, stat_date)
-  VALUES (p_user_id, v_stat_date)
-  ON CONFLICT (user_id, stat_date) DO NOTHING;
-
-  UPDATE daily_stats
-  SET daily_net = daily_net + p_amount,
-      gain_methods = CASE
-        WHEN p_amount > 0 AND p_method IS NOT NULL
-          THEN gain_methods || to_jsonb(p_method)
-        ELSE gain_methods
-      END
-  WHERE user_id = p_user_id AND stat_date = v_stat_date;
-
-  UPDATE users
-  SET affection = affection + p_amount
-  WHERE user_id = p_user_id;
-
-  RETURN QUERY SELECT affection FROM users WHERE user_id = p_user_id;
+  INSERT INTO affection_log (user_id, delta, new_value, method)
+  SELECT user_id, p_amount, affection, 'global_penalty' FROM users;
 END;
 $$;
 
 -- ------------------------------------------------------------
--- 16. 취침 중 맨션 깨움 이벤트: 원자적 카운트/판정 RPC (디버깅 보완, CLAUDE.md 9-1 대응)
---     읽고-더하고-쓰는 방식(Python에서 get_or_reset_state → +1 → update)은 같은
---     서버에서 서로 다른 유저가 거의 동시에 맨션하면 레이스 컨디션(카운트 유실,
---     이중 발동)에 취약하다. FOR UPDATE 행 잠금으로 한 번의 호출 안에서
---     "밤이 바뀌었으면 리셋 → +1 → 임계치 도달 시 1회만 발동"을 전부 직렬화한다.
+-- 17. 취침 중 맨션 깨움 이벤트: 원자적 카운트/판정 RPC
+--     FOR UPDATE 행 잠금으로 한 번의 호출 안에서 "밤이 바뀌었으면 리셋
+--     → +1 → 임계치 도달 시 1회만 발동"을 전부 직렬화한다.
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION register_sleep_mention(p_guild_id bigint)
@@ -437,7 +476,6 @@ BEGIN
   WHERE guild_id = p_guild_id
   FOR UPDATE;
 
-  -- 밤이 바뀌었으면(오늘 처음 맨션이면) 임계치를 새로 뽑고 리셋한다.
   IF v_row_date <> v_today THEN
     v_threshold := 1 + floor(random() * 10)::integer;
     v_count := 0;
@@ -464,11 +502,16 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 17. chat_history에 role 컬럼 추가 (대화 기억 기능)
---     자연어 생성 시 최근 최대 5턴(유저 발화 + 햄미 답장)을 같이 모델 입력에
---     넣어주기 위해, 이제 햄미 자신의 답장도 role='assistant'로 같이 저장한다.
---     기존 행은 전부 유저 발화였으므로 DEFAULT 'user'로 자동 채워진다.
+-- 18. RLS (Row Level Security)
+--     봇은 service_role 키로 접속하므로 RLS를 우회하고 정상 동작한다.
+--     RLS만 켜고 별도 정책을 추가하지 않으면 anon 키로는 아무 것도
+--     조회/수정할 수 없어 안전하다 (기본 거부).
 -- ------------------------------------------------------------
 
-ALTER TABLE chat_history
-  ADD COLUMN role text NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'assistant'));
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE daily_stats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE affection_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE global_call_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
