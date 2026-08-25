@@ -47,43 +47,43 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
     recent = await get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30))
     earned = await get_earned(user_id)
 
-    embed = discord.Embed(title="🐹 햄미와 나", color=EMBED_COLOR)
+    embed = discord.Embed(title=" ", color=EMBED_COLOR)  # 제목은 공백 하나로 비워둔다 (사용자 확정)
+    embed.description = "​"
 
+    # 섹션 사이는 스페이서 필드(너무 크게 벌어짐) 대신, 다음 필드 값 맨 위에 줄바꿈 하나만
+    # 넣어서 나눈다.
     embed.add_field(name="💕 햄미의 호감도", value=f"**{user['affection']}**", inline=False)
 
-    embed.add_field(name="​", value="​", inline=True)
     embed.add_field(
         name="📋 햄미와 나의 기록",
         value=(
-            f"- 도와준 횟수: **{user['help_count']}**\n"
+            f"\n- 도와준 횟수: **{user['help_count']}**\n"
             f"- 대화한 횟수: **{user['chat_count']}**\n"
-            f"- 처음 만난 날: **{_format_date(user['first_seen_at'])}**"
+            f"- 처음 만난 날: {_format_date(user['first_seen_at'])}"
         ),
         inline=False,
     )
 
-    embed.add_field(name="​", value="​", inline=True)
     embed.add_field(
         name="📅 오늘의 기록",
         value=(
-            f"- 대화 횟수: **{stats['nl_count']}/{stats['nl_cap']}**\n"
-            f"- 획득 호감: **{stats['daily_gain_natural']}/20**"
+            f"\n- 대화 횟수: **{stats['nl_count']}**/{stats['nl_cap']}\n"
+            f"- 획득 호감: **{stats['daily_gain_natural']}**/20"
         ),
         inline=False,
     )
 
-    achievement_lines = [f"- 획득한 업적: **{len(earned)}/{achievements.TOTAL_COUNT}**"]
+    achievement_lines = [f"- 획득한 업적: **{len(earned)}**/{achievements.TOTAL_COUNT}"]
     for row in earned:
         module = achievements.REGISTRY.get(row["achievement_id"])
         if module is None:
             continue
         achievement_lines.append(f"- {module.NAME} ({_format_date(row['earned_at'])})")
-    embed.add_field(name="​", value="​", inline=True)
-    embed.add_field(name="🏆 우리들의 업적", value="\n".join(achievement_lines), inline=False)
+    embed.add_field(name="🏆 우리들의 업적", value="\n" + "\n".join(achievement_lines), inline=False)
 
-    if recent:
-        recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3])
-        embed.add_field(name="​", value="​", inline=True)
-        embed.add_field(name="🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
+    recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3]) if recent else "- (최근 30분 내 대화 없음)"
+    embed.add_field(name="🕐 최근 대화 (30분 이내)", value=f"\n{recent_texts}", inline=False)
+
+    embed.set_footer(text=datetime.now(KST).strftime("%Y. %m. %d"))
 
     return random.choice(_INTRO_LINES), embed
