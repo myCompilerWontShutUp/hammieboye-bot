@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 
+import achievements
 from command.base import EMBED_COLOR
+from core.scheduler import KST
+from db.achievements import get_earned
 from db.daily_stats import ensure_nl_cap
 from db.history import get_recent
 from db.users import get_user
@@ -34,27 +37,56 @@ _INTRO_LINES = (
 )
 
 
+def _format_date(iso_str: str) -> str:
+    return datetime.fromisoformat(iso_str).astimezone(KST).strftime("%Y. %m. %d")
+
+
 async def handle(user_id: int) -> tuple[str, discord.Embed]:
     user = await get_user(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
     recent = await get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30))
+    earned = await get_earned(user_id)
 
     embed = discord.Embed(title="📋 햄미와 나", color=EMBED_COLOR)
 
-    # 누적(영구) 정보 3개는 한 줄에 나란히 (inline 3개는 한 줄에 딱 맞게 배치됨).
-    embed.add_field(name="💕 호감도", value=str(user["affection"]), inline=True)
-    embed.add_field(name="💬 채팅 횟수", value=str(user["chat_count"]), inline=True)
-    embed.add_field(name="🤝 도와준 횟수", value=str(user["help_count"]), inline=True)
+    embed.add_field(name="💕 햄미의 호감도", value=f"**{user['affection']}**", inline=False)
 
-    # 오늘의 기록은 한 필드에 묶어서 보여준다 — 작은 숫자 2개를 따로 inline으로 쪼개면
-    # 줄바꿈이 어색하게 갈라져서 가독성이 떨어지므로, 하나의 줄로 합쳐 표시한다.
+    # 다음 섹션과 구분되도록 빈 줄(zero-width space) 필드로 여백을 준다.
+    embed.add_field(name="​", value="​", inline=False)
+
     embed.add_field(
-        name="📅 오늘의 기록",
-        value=f"대화 {stats['nl_count']}/{stats['nl_cap']}회 · 획득 호감도 {stats['daily_gain_natural']}/20",
+        name="💬 햄미와 나의 기록",
+        value=(
+            f"- 도와준 횟수: **{user['help_count']}**\n"
+            f"- 대화한 횟수: **{user['chat_count']}**\n"
+            f"- 처음 만난 날: **{_format_date(user['first_seen_at'])}**"
+        ),
         inline=False,
     )
 
+    embed.add_field(name="​", value="​", inline=False)
+
+    embed.add_field(
+        name="📅 오늘의 기록",
+        value=(
+            f"- 대화 횟수: **{stats['nl_count']}/{stats['nl_cap']}**\n"
+            f"- 획득 호감: **{stats['daily_gain_natural']}/20**"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(name="​", value="​", inline=False)
+
+    achievement_lines = [f"- 획득한 업적: **{len(earned)}/{achievements.TOTAL_COUNT}**"]
+    for row in earned:
+        module = achievements.REGISTRY.get(row["achievement_id"])
+        if module is None:
+            continue
+        achievement_lines.append(f"- {module.NAME} ({_format_date(row['earned_at'])})")
+    embed.add_field(name="🏆 우리들의 업적", value="\n".join(achievement_lines), inline=False)
+
     if recent:
+        embed.add_field(name="​", value="​", inline=False)
         recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3])
         embed.add_field(name="🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
 

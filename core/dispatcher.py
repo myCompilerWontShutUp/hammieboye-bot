@@ -90,7 +90,7 @@ def setup_dispatcher(client: discord.Client) -> None:
             return
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
             return
-        if admin.is_admin_command(message.content):
+        if admin.should_intercept(message):
             # 관리자 콘솔은 취침 시간대와 무관하게 항상 동작한다 (§13-F 확정).
             await admin.handle(message)
             return

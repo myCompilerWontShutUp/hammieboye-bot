@@ -1,4 +1,4 @@
-from documents import affection_guide, commands, prefixes, profile
+from documents import achievements, affection_guide, commands, prefixes, profile
 
 # 카테고리 이름 -> 문서 텍스트를 만드는 함수. core/intent.py의 분류 결과가 이 키들을 그대로 쓴다.
 REGISTRY = {
@@ -6,6 +6,7 @@ REGISTRY = {
     "commands": commands.get_text,
     "prefixes": prefixes.get_text,
     "affection_guide": affection_guide.get_text,
+    "achievements": achievements.get_text,
 }
 
 _NO_HALLUCINATION_NOTE = (

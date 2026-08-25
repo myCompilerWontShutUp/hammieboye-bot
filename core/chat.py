@@ -5,9 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 
+import achievements
 import documents
 from command.base import normalize
 from core import call_event, intent
+from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.history import get_recent, get_recent_turns, log
@@ -195,14 +197,16 @@ async def handle_natural_language(
     )
     if will_generate:
         # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
-        context_turns, event_delta = await asyncio.gather(
+        context_turns, (event_delta, event_achievement) = await asyncio.gather(
             get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
             call_event.handle_potential_response(user_id, guild_id, text),
         )
     else:
         context_turns = None
         # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
-        event_delta = await call_event.handle_potential_response(user_id, guild_id, text)
+        event_delta, event_achievement = await call_event.handle_potential_response(
+            user_id, guild_id, text
+        )
 
     await log(user_id, guild_id, text)
 
@@ -210,22 +214,30 @@ async def handle_natural_language(
         total_delta += event_delta
         current_affection += event_delta
 
+    # 부름 이벤트로 얻은 업적 알림은 이후 어떤 분기로 빠지든(음수 호감도/상한/반복 페널티 등)
+    # 최종 응답에 항상 붙어야 한다 — 이 리스트를 모든 _finalize 호출에 그대로 넘긴다.
+    achievement_notices = [event_achievement] if event_achievement else []
+
     # 음수 호감도면 분류/생성 등 OpenAI API를 아예 호출하지 않고 고정 문구로만 답한다 (섹션 2).
     if affection < 0:
         base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
-        return _finalize(base, total_delta, current_affection)
+        return _finalize(base, total_delta, current_affection, achievement_notices)
 
     # 오늘의 자연어 대화 상한을 이미 다 썼으면, 분류/생성 등 API를 아예 호출하지 않고
     # 고정 문구로만 답한다 (신규).
     if over_cap:
-        return await _handle_over_cap(user_id, stats, total_delta, current_affection)
+        return await _handle_over_cap(user_id, stats, total_delta, current_affection, achievement_notices)
 
     # 반복 발화 전조/페널티 시점엔 자연어 생성 없이 톤이 맞는 고정 반응으로 답한다 —
     # 태연하게 생성된 답변에 호감도 하락 알림만 붙이면 어색하다 (사용자 피드백).
     if is_repeat_penalty:
-        return _finalize(random.choice(_REPEAT_ANGRY_PHRASES), total_delta, current_affection)
+        return _finalize(
+            random.choice(_REPEAT_ANGRY_PHRASES), total_delta, current_affection, achievement_notices
+        )
     if is_repeat_warning:
-        return _finalize(random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection)
+        return _finalize(
+            random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
+        )
 
     # 여기서부터 실제 OpenAI API 호출(분류+생성) 구간 — 대기 시간이 체감될 수 있어
     # "답변중..." 플레이스홀더를 띄운다. 전송 실패해도 아래 흐름은 그대로 진행된다.
@@ -235,10 +247,14 @@ async def handle_natural_language(
         classification = await intent.classify(text)
 
         if classification.emotion is not None:
-            emotion_delta = await _apply_emotion_effects(user_id, classification.emotion, stats)
+            emotion_delta, emotion_achievement = await _apply_emotion_effects(
+                user_id, classification.emotion, stats
+            )
             total_delta += emotion_delta
             if emotion_delta:
                 current_affection += emotion_delta
+            if emotion_achievement:
+                achievement_notices.append(emotion_achievement)
 
         context_note = documents.build_context_note(classification.categories)
         response_text = await get_response(text, history=context_turns, context_note=context_note)
@@ -246,6 +262,10 @@ async def handle_natural_language(
         # 중간에 예외가 나더라도(사실상 classify/get_response 내부에서 이미 예외를 처리해
         # fallback을 반환하므로 거의 없음) 플레이스홀더가 남아있지 않도록 finally에서 정리한다.
         await _delete_placeholder(placeholder)
+
+    # "말풍선 한가득"(처음으로 자연어 대화) — 실제 생성까지 도달한 경우에만 확인한다.
+    if await award_achievement(user_id, achievements.speech_bubble.ID):
+        achievement_notices.append(f"🏆 업적 달성: {achievements.speech_bubble.NAME}!!")
 
     # nl_count는 실제로 생성까지 도달한 메시지만 증가시킨다. 오늘의 마지막 메시지(상한에
     # 정확히 도달)라면 생성된 답변 뒤에 고정 문구를 이어붙인다 (사용자 예시: "일어나써! + 오늘은...").
@@ -259,7 +279,7 @@ async def handle_natural_language(
         log(user_id, guild_id, response_text, role="assistant"),
     )
 
-    return _finalize(response_text, total_delta, current_affection)
+    return _finalize(response_text, total_delta, current_affection, achievement_notices)
 
 
 async def _send_placeholder(message: discord.Message) -> discord.Message | None:
@@ -285,39 +305,57 @@ async def _delete_placeholder(placeholder: discord.Message | None) -> None:
 
 
 async def _handle_over_cap(
-    user_id: int, stats: dict, total_delta: int, current_affection: int
+    user_id: int,
+    stats: dict,
+    total_delta: int,
+    current_affection: int,
+    achievement_notices: list[str],
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     attempts = stats["over_cap_attempts"] + 1
     await update_daily_stats(user_id, {"over_cap_attempts": attempts})
 
     if attempts <= _OVER_CAP_FREE_ATTEMPTS:
-        return _finalize(random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection)
+        return _finalize(
+            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices
+        )
     if attempts == _OVER_CAP_WARNING_ATTEMPT:
         return _finalize(
-            random.choice(_DAILY_LIMIT_WARNING_PHRASES), total_delta, current_affection
+            random.choice(_DAILY_LIMIT_WARNING_PHRASES),
+            total_delta,
+            current_affection,
+            achievement_notices,
         )
 
     result = await add_affection(user_id, -1)
     total_delta += result["applied_amount"]
     current_affection = result["new_affection"]
-    return _finalize(_OVER_CAP_IGNORE_RESPONSE, total_delta, current_affection)
+    return _finalize(_OVER_CAP_IGNORE_RESPONSE, total_delta, current_affection, achievement_notices)
 
 
 def _finalize(
-    response: str | discord.Embed | tuple[str, discord.Embed], delta: int, current: int
+    response: str | discord.Embed | tuple[str, discord.Embed],
+    delta: int,
+    current: int,
+    achievement_notices: list[str] | None = None,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     # embed(또는 embed를 포함한 tuple) 응답에는 이미 호감도가 필드로 보이므로 알림을 따로 안 붙인다.
-    if delta == 0 or isinstance(response, (discord.Embed, tuple)):
+    if isinstance(response, (discord.Embed, tuple)):
         return response
-    return response + format_affection_notice(delta, current)
+    text = response
+    if delta != 0:
+        text += format_affection_notice(delta, current)
+    for notice in achievement_notices or ():
+        text += f"\n{notice}"
+    return text
 
 
-async def _apply_emotion_effects(user_id: int, emotion: str, stats: dict) -> int:
+async def _apply_emotion_effects(user_id: int, emotion: str, stats: dict) -> tuple[int, str | None]:
     # stats는 handle_natural_language 초반에 이미 조회해둔 오늘 daily_stats 스냅샷을
     # 그대로 재사용한다 (중복 조회 제거). 이 사이에 negative_emotion_streak/daily_count/
     # happy_emotion_claimed 필드를 건드리는 다른 호출은 없어 안전하다.
     updates = {}
     delta = 0
+    achievement_notice = None
 
     if emotion in NEGATIVE_EMOTIONS:
         streak_before = stats["negative_emotion_streak"]
@@ -337,8 +375,9 @@ async def _apply_emotion_effects(user_id: int, emotion: str, stats: dict) -> int
         result = await add_affection(user_id, 1, _HAPPY_METHOD)
         delta += result["applied_amount"]
         updates["happy_emotion_claimed"] = True
+        achievement_notice = result["achievement_notice"]
 
     if updates:
         await update_daily_stats(user_id, updates)
 
-    return delta
+    return delta, achievement_notice

@@ -1,6 +1,8 @@
 import random
 from datetime import datetime, timedelta, timezone
 
+import achievements
+from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.users import get_user, set_plastic_cooldown
@@ -243,6 +245,7 @@ async def handle(user_id: int) -> str:
         "plastic_streak": new_streak,
         "cooldown_abuse_counts": _reset_cooldown_abuse(stats),
     }
+    achievement_notices: list[str] = []
 
     if new_streak == 1:
         message = random.choice(_SUCCESS_STREAK1_MESSAGES)
@@ -258,6 +261,13 @@ async def handle(user_id: int) -> str:
         total_delta += result["applied_amount"]
         current_affection = result["new_affection"]
         update_fields["plastic_success_claimed"] = True
+        if result["achievement_notice"]:
+            achievement_notices.append(result["achievement_notice"])
+
+    # "페트병 댄스"는 성공 전체를 통틀어 최초 1회(오늘 이미 획득했어도 매일 초기화되는
+    # plastic_success_claimed와 달리, award()가 전체 기간 기준으로 알아서 중복 방지한다).
+    if await award_achievement(user_id, achievements.plastic_dance.ID):
+        achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance.NAME}!!")
 
     # 하루 동안 페트병으로 얻을 수 있는 호감도는 최대 4(성공 +1, 연속 3회 보너스 +3)로
     # 고정된다 — 4회차 이상 연속 성공해도 이 보너스는 딱 한 번만 지급된다.
@@ -266,8 +276,15 @@ async def handle(user_id: int) -> str:
         total_delta += result["applied_amount"]
         current_affection = result["new_affection"]
         update_fields["plastic_streak_bonus_claimed"] = True
+        if result["achievement_notice"]:
+            achievement_notices.append(result["achievement_notice"])
+
+    if new_streak >= _STREAK_TARGET and await award_achievement(user_id, achievements.plastic_dance_god.ID):
+        achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
 
     await update_daily_stats(user_id, update_fields)
+    for notice in achievement_notices:
+        message += f"\n{notice}"
     return _with_notice(message, total_delta, current_affection)
 
 
