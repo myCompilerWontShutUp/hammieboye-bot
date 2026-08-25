@@ -116,7 +116,7 @@ _COLLECTION_NOTICE = (
 
 _LEAVE_CONFIRM_PROMPT = (
     "정말 탈퇴할 거야?? 탈퇴하면 호감도·채팅 기록 등 모든 데이터가 즉시 삭제되고, "
-    "24시간 동안은 다시 가입할 수 없어. 아래 버튼을 누르면 탈퇴가 진행돼!!"
+    "24시간 동안은 다시 가입할 수 없어. 아래 버튼을 누르면 탈퇴가 진행돼... _(훌쩍)_"
 )
 _LEAVE_TIMEOUT_MESSAGE = "시간 초과됐어!! 탈퇴가 취소됐어. _(안도)_"
 _NOT_JOINED_LEAVE_MESSAGE = "어라, 아직 가입도 안 했잖아!! 탈퇴할 게 없어~ _(갸웃)_"
@@ -161,6 +161,8 @@ async def _touch_channel(interaction: discord.Interaction) -> None:
 
 
 async def handle_join(interaction: discord.Interaction) -> None:
+    if interaction.user.bot:  # 실제 사용자만 응답 대상 (확인사항 2)
+        return
     await _touch_channel(interaction)
     user_id = interaction.user.id
 
@@ -188,11 +190,15 @@ async def handle_join(interaction: discord.Interaction) -> None:
 
 
 async def handle_join_info(interaction: discord.Interaction) -> None:
+    if interaction.user.bot:  # 실제 사용자만 응답 대상 (확인사항 2)
+        return
     await _touch_channel(interaction)
     await interaction.response.send_message(_COLLECTION_NOTICE, ephemeral=True)
 
 
 async def handle_leave(interaction: discord.Interaction) -> None:
+    if interaction.user.bot:  # 실제 사용자만 응답 대상 (확인사항 2)
+        return
     await _touch_channel(interaction)
 
     user = await get_user(interaction.user.id)

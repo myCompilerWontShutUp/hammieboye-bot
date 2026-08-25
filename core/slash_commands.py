@@ -1,3 +1,5 @@
+import asyncio
+
 import discord
 from discord import app_commands
 
@@ -11,17 +13,29 @@ from db.users import ensure_user, increment_chat_count
 
 async def _prepare(interaction: discord.Interaction) -> bool:
     """동의 게이트 + 채팅 횟수 집계. 명령어 실행을 진행해도 되면 True."""
-    if interaction.guild is not None and interaction.channel_id is not None:
-        await set_last_channel(interaction.guild.id, interaction.channel_id)
+    # 실제 사용자만 응답 대상이다 — 다른 봇이 이 슬래시 커맨드를 호출한 경우는 무시한다
+    # (일반 메시지 경로의 message.author.bot 체크와 동일한 원칙, 확인사항 2).
+    if interaction.user.bot:
+        return False
 
-    user = await ensure_user(interaction.user.id)
+    # set_last_channel과 ensure_user는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
+    if interaction.guild is not None and interaction.channel_id is not None:
+        _, user = await asyncio.gather(
+            set_last_channel(interaction.guild.id, interaction.channel_id),
+            ensure_user(interaction.user.id),
+        )
+    else:
+        user = await ensure_user(interaction.user.id)
+
     if not user["consent_given"]:
         # 자연어 경로(개인화 불가)와 경험을 통일하기 위해 공개로 응답한다 (사용자 확정).
         await interaction.response.send_message(onboarding.random_guide())
         return False
 
-    await increment_chat_count(interaction.user.id)
-    await increment_messages_today(interaction.user.id)
+    await asyncio.gather(
+        increment_chat_count(interaction.user.id),
+        increment_messages_today(interaction.user.id),
+    )
     return True
 
 

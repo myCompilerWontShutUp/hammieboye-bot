@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -79,7 +80,13 @@ def setup_dispatcher(client: discord.Client) -> None:
 
     @client.event
     async def on_message(message: discord.Message) -> None:
-        if message.author.bot:
+        # 실제 사용자에게만 응답한다 — 봇 계정(message.author.bot)뿐 아니라 웹훅으로 온
+        # 메시지("앱"으로 표시되는 것들, message.author.bot이 항상 True로 뜨리라는 보장이
+        # 없어 명시적으로 한 번 더 확인)와 디스코드 시스템 메시지(입장/고정/부스트 알림 등)도
+        # 전부 걸러낸다. 일반 답장(reply)은 MessageType.reply라 default와 함께 허용해야 한다.
+        if message.author.bot or message.webhook_id is not None:
+            return
+        if message.type not in (discord.MessageType.default, discord.MessageType.reply):
             return
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
             return
@@ -98,19 +105,23 @@ def setup_dispatcher(client: discord.Client) -> None:
         if not user_message:
             return
 
-        # 부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는, 유저가 봇을 실제로 부른 채널을 기준으로 정한다.
-        await set_last_channel(message.guild.id, message.channel.id)
-
-        user = await ensure_user(message.author.id)
+        # 부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는, 유저가 봇을 실제로 부른 채널을 기준으로
+        # 정한다. ensure_user와는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
+        _, user = await asyncio.gather(
+            set_last_channel(message.guild.id, message.channel.id),
+            ensure_user(message.author.id),
+        )
         if not user["consent_given"]:
             # 동의(가입)는 이제 오직 `/가입` 슬래시 커맨드로만 가능하다 — 자연어 문구 인정 폐기.
             await message.reply(onboarding.random_guide())
             return
 
-        await increment_chat_count(message.author.id)
-        await increment_messages_today(message.author.id)
+        await asyncio.gather(
+            increment_chat_count(message.author.id),
+            increment_messages_today(message.author.id),
+        )
 
         response = await handle_natural_language(
-            message.author.id, message.guild.id, user_message, user["affection"]
+            message.author.id, message.guild.id, user_message, user["affection"], message
         )
         await _reply(message, response)

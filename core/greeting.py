@@ -1,4 +1,5 @@
 import logging
+import random
 from datetime import date, datetime, timedelta
 
 import discord
@@ -15,7 +16,30 @@ _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 _BIRTH_DATE = date(2017, 12, 22)
 
-_FALLBACK_GREETING = "조은 아침이야! 햄미 일어나써 🐹"
+# 평소엔 매일 새로 생성하는 아침 인사(날짜/생일/기념일 인식이 필요해 LLM 생성을 유지한다).
+# 이 풀은 API 호출 자체가 실패했을 때만 쓰는 폴백 — 날짜 인식 없이도 자연스러운 인사 20개.
+_FALLBACK_GREETINGS = (
+    "조은 아침이야! 햄미 일어나써 🐹 _(방긋)_",
+    "일어나써!! 오늘도 조은 하루 보내자!! _(신남)_",
+    "굿모닝!! 햄미 눈 떠써!! _(기지개)_",
+    "아침이다!! 오늘도 페트병 흔들 준비 완료!! _(활기)_",
+    "잘 잤어!! 오늘도 잘 부탁해!! _(포근)_",
+    "일어났다구!! 다들 좋은 아침!! _(방실)_",
+    "조은 아침!! 오늘 하루도 힘내자!! _(응원)_",
+    "쿨쿨 잘 자고 이제 일어나써!! _(기지개)_",
+    "굿모닝이야!! 오늘도 신나게 놀자!! _(신남)_",
+    "일어나써!! 다들 잘 잤어?? _(궁금)_",
+    "아침이야!! 햄미 벌써 눈이 초롱초롱해!! _(초롱)_",
+    "좋은 아침!! 오늘도 햄미랑 놀자!! _(기대)_",
+    "일어났어!! 오늘 하루도 화이팅!! _(파이팅)_",
+    "잘 자고 일어나써!! 다들 좋은 하루!! _(방긋)_",
+    "아침이다아!! 햄미 기운 넘쳐!! _(활기)_",
+    "굿모닝!! 오늘은 또 어떤 하루가 될까!! _(설렘)_",
+    "일어나써!! 조은 아침 맞이하자!! _(반가움)_",
+    "잘 잤다!! 오늘도 신나게 시작해보자!! _(신남)_",
+    "아침이야!! 다들 잘 일어났어?? _(방실)_",
+    "좋은 아침이야!! 오늘도 잘 부탁해!! _(포근)_",
+)
 
 # 고정 양력 기념일. (월, 일) -> 예시 문구. 예시일 뿐이라 LLM이 매번 표현을 바꿔서 전달한다.
 _FIXED_ANNIVERSARIES: dict[tuple[int, int], str] = {
@@ -135,7 +159,7 @@ async def _generate(task: str) -> str:
         return result.output_text.strip()
     except Exception:
         logging.exception("Daily greeting generation failed")
-        return _FALLBACK_GREETING
+        return random.choice(_FALLBACK_GREETINGS)
 
 
 async def post_daily_greeting() -> None:

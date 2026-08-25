@@ -32,6 +32,30 @@ _EVENT_WINDOW = timedelta(minutes=10)
 # 부름 이벤트 인접 최소 간격(관리자 g-call-event 수동 생성에서도 동일하게 준수, 사용자 확정)
 MIN_GAP_MINUTES = 30
 
+# 활성 이벤트는 하루 5번, 10분씩만 존재하는데도 handle_potential_response가 자연어
+# 메시지마다 매번 조회하면 대부분의 시간에 낭비되는 DB 왕복이다. 아주 짧게(수 초) 캐싱해서
+# 지연시간을 줄인다 — claim()/부정반응 -5는 여전히 DB RPC로 원자적으로 처리되므로(claim의
+# claimed_by IS NULL/expires_at 체크가 진짜 정합성 보장 지점), 이 캐시가 살짝 stale해도
+# 이중 지급/만료 이벤트 오판정 같은 문제는 생기지 않는다.
+_ACTIVE_EVENTS_CACHE_TTL = timedelta(seconds=5)
+_active_events_cache: list[dict] = []
+_active_events_cache_until: datetime | None = None
+
+
+async def _get_active_events_cached() -> list[dict]:
+    global _active_events_cache, _active_events_cache_until
+    now = datetime.now(timezone.utc)
+    if _active_events_cache_until is not None and now < _active_events_cache_until:
+        return _active_events_cache
+    _active_events_cache = await get_active_events()
+    _active_events_cache_until = now + _ACTIVE_EVENTS_CACHE_TTL
+    return _active_events_cache
+
+
+def _invalidate_active_events_cache() -> None:
+    global _active_events_cache_until
+    _active_events_cache_until = None
+
 _PROMPT_TEXTS = (
     "배고파... 뭐 먹을 거 없나?",
     "목말라... 물이 다 떨어졌어",
@@ -114,6 +138,7 @@ async def _post_one(event: dict) -> None:
 
     now = datetime.now(timezone.utc)
     await mark_posted(event["id"], now, now + _EVENT_WINDOW, messages)
+    _invalidate_active_events_cache()  # 방금 게시됨 → 캐시가 곧바로 "활성 있음"을 반영하도록
 
 
 async def _expire_unclaimed_events() -> None:
@@ -128,7 +153,7 @@ async def handle_potential_response(user_id: int, guild_id: int, text: str) -> i
     이 함수는 항상 호출되며(호감도가 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
     반환값은 이번 호출로 실제 적용된 호감도 증감분(없으면 0) — 호출부에서 알림 문구에 합산한다.
     """
-    events = await get_active_events()
+    events = await _get_active_events_cached()
     if not events:
         return 0
     event = events[0]
@@ -147,6 +172,7 @@ async def handle_potential_response(user_id: int, guild_id: int, text: str) -> i
     if not won:
         return 0
 
+    _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
     result = await add_affection(user_id, reward, "call_event")
     await _announce_winner(event, user_id, guild_id)
     return result["applied_amount"]
