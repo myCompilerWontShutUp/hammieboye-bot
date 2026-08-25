@@ -49,10 +49,10 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
 
     embed = discord.Embed(title="🐹 햄미와 나", color=EMBED_COLOR)
 
-    embed.add_field(name="\n💕 햄미의 호감도", value=f"**{user['affection']}**", inline=False)
+    embed.add_field(name="\n\n💕 햄미의 호감도", value=f"**{user['affection']}**", inline=False)
 
     embed.add_field(
-        name="📋 햄미와 나의 기록",
+        name="\n\n📋 햄미와 나의 기록",
         value=(
             f"- 도와준 횟수: **{user['help_count']}**\n"
             f"- 대화한 횟수: **{user['chat_count']}**\n"
@@ -62,7 +62,7 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
     )
 
     embed.add_field(
-        name="\n📅 오늘의 기록",
+        name="\n\n📅 오늘의 기록",
         value=(
             f"- 대화 횟수: **{stats['nl_count']}/{stats['nl_cap']}**\n"
             f"- 획득 호감: **{stats['daily_gain_natural']}/20**"
@@ -76,11 +76,10 @@ async def handle(user_id: int) -> tuple[str, discord.Embed]:
         if module is None:
             continue
         achievement_lines.append(f"- {module.NAME} ({_format_date(row['earned_at'])})")
-    embed.add_field(name="\n🏆 우리들의 업적", value="\n".join(achievement_lines), inline=False)
+    embed.add_field(name="\n\n🏆 우리들의 업적", value="\n".join(achievement_lines), inline=False)
 
     if recent:
-        embed.add_field(name="​", value="​", inline=False)
         recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3])
-        embed.add_field(name="\n🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
+        embed.add_field(name="\n\n🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
 
     return random.choice(_INTRO_LINES), embed
