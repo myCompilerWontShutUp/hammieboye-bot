@@ -50,10 +50,16 @@ def setup_dispatcher(client: discord.Client) -> None:
         scheduler_started = True
 
         # 슬래시 커맨드는 길드 단위로 등록해서 즉시 반영되게 한다 (§13-A 확정).
+        # 길드 하나가 실패(예: applications.commands 스코프 누락)해도 나머지 길드의
+        # 동기화와 아래 스케줄러 부트스트랩이 전부 막히면 안 되므로 길드별로 격리한다.
         for guild_id in ALLOWED_GUILD_IDS:
             guild = discord.Object(id=guild_id)
-            tree.copy_global_to(guild=guild)
-            await tree.sync(guild=guild)
+            try:
+                tree.copy_global_to(guild=guild)
+                synced = await tree.sync(guild=guild)
+                logging.info("Synced %d slash command(s) to guild %s", len(synced), guild_id)
+            except discord.HTTPException:
+                logging.exception("Failed to sync slash commands to guild %s", guild_id)
 
         call_event.init(client)
         sleep_event.init(client)
