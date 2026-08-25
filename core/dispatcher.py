@@ -2,10 +2,10 @@ import logging
 
 import discord
 
-from command_registry import COMMANDS
 from config import ALLOWED_GUILD_IDS, CALL_PREFIXES
-from core import call_event, greeting, onboarding, presence, sleep_event, wake_event
+from core import admin, call_event, greeting, onboarding, presence, slash_commands, sleep_event, wake_event
 from core.chat import handle_natural_language
+from core.client import create_tree
 from core.scheduler import is_sleep_time, start_daily, start_interval
 from db.daily_stats import increment_messages_today
 from db.guild_channels import set_last_channel
@@ -19,15 +19,6 @@ def _strip_call_prefix(content: str) -> str | None:
         if content.startswith(prefix):
             return content[len(prefix) :].strip()
     return None
-
-
-async def _resolve_response(
-    user_id: int, guild_id: int, text: str, affection: int
-) -> str | discord.Embed | tuple[str, discord.Embed]:
-    for command in COMMANDS:
-        if command.matches(text):
-            return await command.handler(user_id)
-    return await handle_natural_language(user_id, guild_id, text, affection)
 
 
 async def _reply(
@@ -45,6 +36,8 @@ async def _reply(
 
 def setup_dispatcher(client: discord.Client) -> None:
     scheduler_started = False
+    tree = create_tree(client)
+    slash_commands.register(tree)
 
     @client.event
     async def on_ready() -> None:
@@ -55,6 +48,12 @@ def setup_dispatcher(client: discord.Client) -> None:
         if scheduler_started:
             return
         scheduler_started = True
+
+        # 슬래시 커맨드는 길드 단위로 등록해서 즉시 반영되게 한다 (§13-A 확정).
+        for guild_id in ALLOWED_GUILD_IDS:
+            guild = discord.Object(id=guild_id)
+            tree.copy_global_to(guild=guild)
+            await tree.sync(guild=guild)
 
         call_event.init(client)
         sleep_event.init(client)
@@ -76,6 +75,10 @@ def setup_dispatcher(client: discord.Client) -> None:
         if message.author.bot:
             return
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
+            return
+        if admin.is_admin_command(message.content):
+            # 관리자 콘솔은 취침 시간대와 무관하게 항상 동작한다 (§13-F 확정).
+            await admin.handle(message)
             return
         if is_sleep_time():
             # 취침 시간(00:00~06:30)엔 원칙적으로 무슨 일이 있어도 응답하지 않지만,
@@ -103,7 +106,7 @@ def setup_dispatcher(client: discord.Client) -> None:
         await increment_chat_count(message.author.id)
         await increment_messages_today(message.author.id)
 
-        response = await _resolve_response(
+        response = await handle_natural_language(
             message.author.id, message.guild.id, user_message, user["affection"]
         )
         await _reply(message, response)

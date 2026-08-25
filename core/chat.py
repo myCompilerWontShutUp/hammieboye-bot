@@ -2,10 +2,9 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 
+import documents
 from command.base import normalize
-from command.help.help import handle as help_handle
-from command.info.info import handle as info_handle
-from core import affection_guide, call_event, intent
+from core import call_event, intent
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.history import get_recent, get_recent_turns, log
@@ -39,9 +38,6 @@ async def handle_natural_language(
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     now = datetime.now(timezone.utc)
     recent = await get_recent(user_id, since=now - _HISTORY_WINDOW)
-    # 이번 메시지를 로그에 남기기 전에 미리 떠 와야, 자연어 생성 맥락에 방금 온
-    # 메시지가 중복으로 들어가지 않는다.
-    context_turns = await get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT)
 
     total_delta = 0
     current_affection = affection
@@ -74,39 +70,28 @@ async def handle_natural_language(
         total_delta += event_delta
         current_affection += event_delta
 
-    # 우선순위 2, 3: 자연어를 고정 명령어/프롬프트 캐시(자기소개 등)로 리다이렉트할 수 있는지 먼저 확인한다.
-    routed = await _route_by_intent(user_id, text)
-    if routed is not None:
-        return _finalize(routed, total_delta, current_affection)
-
-    # 우선순위 4: 어디에도 해당 안 되면 자연어 생성으로 넘어간다.
+    # 음수 호감도면 분류/생성 등 OpenAI API를 아예 호출하지 않고 고정 문구로만 답한다 (섹션 2).
     if affection < 0:
         base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
         return _finalize(base, total_delta, current_affection)
 
-    result = await get_response(text, history=context_turns)
-    await log(user_id, guild_id, result.text, role="assistant")
-    if result.emotion is not None:
-        emotion_delta = await _apply_emotion_effects(user_id, result.emotion)
+    # RAG 카테고리 분류 + 감정 판정을 한 번의 호출로 처리 (judge 제거, §13-B/C)
+    classification = await intent.classify(text)
+
+    if classification.emotion is not None:
+        emotion_delta = await _apply_emotion_effects(user_id, classification.emotion)
         total_delta += emotion_delta
         if emotion_delta:
             current_affection += emotion_delta
-    return _finalize(result.text, total_delta, current_affection)
 
+    context_note = documents.build_context_note(classification.categories)
+    context_turns = await get_recent_turns(
+        user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT
+    )
+    response_text = await get_response(text, history=context_turns, context_note=context_note)
+    await log(user_id, guild_id, response_text, role="assistant")
 
-async def _route_by_intent(
-    user_id: int, text: str
-) -> str | discord.Embed | tuple[str, discord.Embed] | None:
-    label = await intent.classify(text)
-    if label == "help":
-        return await help_handle(user_id)
-    if label == "info":
-        return await info_handle(user_id)
-    if label == "self_intro":
-        return intent.SELF_INTRO
-    if label == "affection_guide":
-        return await affection_guide.get_guide()
-    return None
+    return _finalize(response_text, total_delta, current_affection)
 
 
 def _finalize(

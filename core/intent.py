@@ -1,64 +1,78 @@
 import json
 import logging
+from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
 from config import OPENAI_API_KEY, OPENAI_MODEL
+from responses.engine import NEGATIVE_EMOTIONS, POSITIVE_EMOTIONS
 
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# 자연어가 고정 명령어/프롬프트 캐시로 리다이렉트돼야 하는지 판단하는 라우터.
-# 자주 호출되므로(자연어 메시지마다 1번) 저렴한 OPENAI_MODEL(nano)을 쓴다.
-_INSTRUCTIONS = """\
-너는 디스코드 챗봇 "Hammie(햄미)"에게 온 자연어 메시지의 의도를 분류하는 라우터다.
-아래 중 하나를 정확히 골라라.
+_ALL_EMOTIONS = POSITIVE_EMOTIONS + NEGATIVE_EMOTIONS
+_CATEGORIES = ("profile", "commands", "prefixes", "affection_guide")
 
-- help: 명령어 목록/도움말을 요청함 (예: "명령어 뭐 있어?", "뭐 할 수 있어?", "도움말 보여줘")
-- info: 자기 자신의 지금 현재 호감도/정보 수치를 그대로 보여달라고 함 (예: "내 호감도 보여줘", "나 정보 좀 알려줘", "나 몇 번 대화했어?")
-- self_intro: Hammie가 누구인지, 정체·소개를 물어봄 (예: "너 누구야?", "자기소개 해줘", "너에 대해 알려줘")
-- affection_guide: 호감도를 올리는 방법/공략을 물어봄 (예: "호감도 어떻게 올려?", "호감도 올리는 방법 알려줘", "너랑 친해지려면 뭐 해야 돼?")
-- none: 위 어디에도 해당하지 않는 일반 대화\
-"""
+# 자연어마다 매번 호출되는 단일 분류기. RAG 문서 카테고리 판별(복수 선택)과
+# 감정 판정(기존 judge가 하던 것)을 한 번의 호출로 같이 처리해서 API 호출을 늘리지 않는다.
+_INSTRUCTIONS = """\
+너는 디스코드 챗봇 "Hammie(햄미)"에게 온 자연어 메시지를 분류하는 라우터다.
+아래 두 가지를 판단해라.
+
+[1] 카테고리 분류 (해당하는 것 전부 고른다, 복수 선택 가능. 하나도 해당 안 되면 빈 배열):
+- profile: 햄미 자신의 프로필(나이/생일/키/몸무게/좋아하는 것/싫어하는 것/성격 등)을 물어봄
+- commands: 햄미가 쓸 수 있는 명령어가 뭔지, 어떻게 쓰는지 물어봄
+- prefixes: 햄미를 어떻게 부르면 되는지(호출 단어)를 물어봄
+- affection_guide: 호감도를 올리는 방법/공략을 물어봄
+해당하는 카테고리가 하나도 없으면 categories를 빈 배열로 둬라 (일반 대화).
+
+[2] 감정 분류: 이 대화가 Hammie에게 어떤 감정을 불러일으켰는지 아래 20개 중
+정확히 하나를 emotion에 골라라 (반드시 하나 선택, null 금지).
+긍정: {positive}
+부정: {negative}\
+""".format(
+    positive=", ".join(POSITIVE_EMOTIONS),
+    negative=", ".join(NEGATIVE_EMOTIONS),
+)
 
 _SCHEMA = {
     "type": "object",
     "properties": {
-        "intent": {
-            "type": "string",
-            "enum": ["help", "info", "self_intro", "affection_guide", "none"],
+        "categories": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(_CATEGORIES)},
         },
+        "emotion": {"type": "string", "enum": list(_ALL_EMOTIONS)},
     },
-    "required": ["intent"],
+    "required": ["categories", "emotion"],
     "additionalProperties": False,
 }
 
-SELF_INTRO = """\
-나는 페트병 흔드는 작은 햄스터, **햄미**야!
-영어로는 **Hammie Boye**라고 해.
-12월 22일에 태어났고, 페트병 흔들기랑 간식 요구하기가 특기야. 인간 구경하는 것도 꽤 재미써~
-해바라기씨랑 페트병, 관심받는 거랑 장난치는 걸 조아해. 하지만 간식 없는 호의랑 갑자기 들어오는 손가락, 고양이는 시러!
-햄미의 좌우명은 언제나 하나야!! **Hamster >>>>> Human**\
-"""
+
+@dataclass
+class ClassifyResult:
+    categories: list[str]
+    emotion: str | None
 
 
-async def classify(text: str) -> str:
+async def classify(text: str) -> ClassifyResult:
     try:
         result = await _client.responses.create(
             model=OPENAI_MODEL,
             instructions=_INSTRUCTIONS,
             input=text,
-            max_output_tokens=50,
-            reasoning={"effort": "minimal"},
+            max_output_tokens=150,
+            reasoning={"effort": "none"},
             text={
                 "format": {
                     "type": "json_schema",
-                    "name": "intent",
+                    "name": "classification",
                     "schema": _SCHEMA,
                     "strict": True,
                 }
             },
         )
-        return json.loads(result.output_text)["intent"]
+        data = json.loads(result.output_text)
+        return ClassifyResult(categories=data["categories"], emotion=data["emotion"])
     except Exception:
-        logging.exception("Intent classification failed")
-        return "none"
+        logging.exception("Classification failed")
+        return ClassifyResult(categories=[], emotion=None)
