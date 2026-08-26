@@ -1,5 +1,5 @@
 import random
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 
 from discord.ext import tasks
@@ -13,17 +13,39 @@ KST = timezone(timedelta(hours=9))
 SLEEP_START = time(0, 0)
 WAKE_TIME = time(6, 30)
 
+# 2026-08-27: 취침 중 맨션 깨움 이벤트(방해금지 모드)가 발동한 밤은, "누가 중간에 깨워서
+# 30분 더 잤다"는 컨셉으로 그날의 실제 기상 시각을 07:00로 미룬다(사용자 확정).
+DELAYED_WAKE_TIME = time(7, 0)
+
 _DailyCallback = Callable[[], Awaitable[None]]
 
-# 관리자 전용 테스트 오버라이드(hm-awake/hm-asleep/hm-sync, §신규). None이면 실제 시간을
+# 관리자 전용 테스트 오버라이드(hammie-awake/asleep/sync). None이면 실제 시간을
 # 그대로 따르고, True/False면 관리자 본인에게만 강제로 취침/기상 상태를 적용한다.
 _admin_sleep_override: bool | None = None
 
+# 오늘(KST) 밤 방해금지 이벤트가 발동했는지 — 발동한 그 날짜만 기록해두고, 다음 날이 되면
+# 날짜가 안 맞아 자연히 무효화된다(별도 리셋 로직 불필요).
+_late_wake_date: date | None = None
+
+
+def mark_late_wake() -> None:
+    """취침 중 맨션 깨움 이벤트(방해금지 모드)가 발동했을 때 호출한다 — 오늘(KST)의
+    기상 시각을 06:30 대신 07:00로 늦춘다."""
+    global _late_wake_date
+    _late_wake_date = datetime.now(timezone.utc).astimezone(KST).date()
+
+
+def is_late_wake_today() -> bool:
+    """오늘(KST) 밤 방해금지 이벤트가 발동해서 기상이 07:00로 늦춰진 상태인지."""
+    return _late_wake_date == datetime.now(timezone.utc).astimezone(KST).date()
+
 
 def is_sleep_time(now: datetime | None = None) -> bool:
-    """지금이 한국시간 취침 시간대(00:00~06:30)인지 — 실제 시간 기준, 오버라이드 미반영."""
-    current = (now or datetime.now(timezone.utc)).astimezone(KST).time()
-    return SLEEP_START <= current < WAKE_TIME
+    """지금이 한국시간 취침 시간대(00:00~06:30, 방해금지 발동 시 00:00~07:00)인지
+    — 실제 시간 기준, 관리자 오버라이드 미반영."""
+    current_dt = (now or datetime.now(timezone.utc)).astimezone(KST)
+    wake_boundary = DELAYED_WAKE_TIME if _late_wake_date == current_dt.date() else WAKE_TIME
+    return SLEEP_START <= current_dt.time() < wake_boundary
 
 
 def set_admin_sleep_override(value: bool | None) -> None:

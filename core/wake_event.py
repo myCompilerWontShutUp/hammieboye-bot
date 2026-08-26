@@ -5,6 +5,7 @@ import discord
 
 import achievements
 from core import presence
+from core.scheduler import mark_late_wake
 from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.guild_sleep_state import register_mention
@@ -65,17 +66,21 @@ _NIGHTMARE_PAIRS = (
 
 
 async def handle_mention(message: discord.Message) -> None:
-    """취침 시간대(00:00~06:30)에 봇이 맨션됐을 때 호출한다.
+    """취침 시간대(00:00~06:30, 방해금지 발동 시 그날은 00:00~07:00)에 봇이 맨션됐을 때
+    호출한다.
 
     메시지 1개 = 맨션 횟수 1회(메시지 안에서 여러 번 연속 맨션해도 1회).
     서버마다 그날 새로 뽑힌 임계치(1~10)에 도달하면 딱 1번만 깨움 이벤트가
-    발생하고, 이후엔 다음 밤까지 그 서버는 방해금지(무반응) 상태가 된다.
+    발생하고, 이후엔 다음 밤까지 그 서버는 방해금지(무반응) 상태가 된다. 발동 시
+    그날 기상도 30분 늦춰진다(§28) — 아침 인사가 평소 인사 대신 피곤한 톤으로 나간다.
     """
     guild_id = message.guild.id
     if not await register_mention(guild_id):
         return
 
     await presence.enter_dnd()
+    # 방해금지 발동 = 중간에 누가 깨운 것 -> 그날 기상은 30분 늦춰진 07:00로 밀린다.
+    mark_late_wake()
 
     user_id = message.author.id
     if random.random() < _ANNOYED_PROBABILITY:
