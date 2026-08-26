@@ -8,7 +8,7 @@ import discord
 
 import achievements
 from command.info import handle as info_handle
-from config import ADMIN_USER_ID
+from config import ADMIN_USER_ID, CALL_PREFIXES
 from core.call_event import MIN_GAP_MINUTES, WINDOW_END, WINDOW_START, schedule_one
 from core.discord_names import resolve_real_name
 from core.scheduler import (
@@ -48,10 +48,11 @@ _INITIAL_AFFECTION = 10
 _ABUSE_RESPONSE = "주인님이 아니시네요!! (콱)"
 
 # 신규(2026-08-25): 매 메시지 접두어 방식을 폐기하고 "토글로 켜고 끄는 세션" 방식으로 전환.
-# 트리거 문구는 정규화 없이 문자 그대로 정확히 일치해야 한다 ("주인님가라사대"처럼 공백이 없거나
-# "주인님 가라사대 테스트"처럼 등록 안 된 명령어가 뒤에 붙으면 둘 다 트리거로 인정 안 됨 — 이 경우
-# 응답도 페널티도 없이 완전히 무시한다). 기존 CALL_PREFIXES(해미야 등) 뒤에 오는 게 아니라, 이 문구
-# 자체가 독립적인 트리거다.
+# 신규(2026-08-27): 트리거는 호출 단어(CALL_PREFIXES) 뒤에 이 문구가 와야 인정된다
+# (예: "해미야 주인님 가라사대", "햄미보이야 주인님 가라사대 c"). 호출 단어를 뗀 나머지는
+# 정규화 없이 문자 그대로 정확히 일치해야 한다 ("주인님가라사대"처럼 공백이 없거나
+# "해미야 주인님 가라사대 테스트"처럼 등록 안 된 명령어가 뒤에 붙으면 둘 다 트리거로 인정 안 됨,
+# 호출 단어 자체가 없어도 인정 안 됨 — 이 경우 응답도 페널티도 없이 완전히 무시한다).
 _PROMPT_PHRASE = "주인님 가라사대"
 _PROMPT_PREFIX = "주인님 가라사대 "
 _SESSION_TIMEOUT = timedelta(seconds=60)
@@ -113,11 +114,23 @@ def _split_command_and_args(content: str) -> tuple[str, list[str]]:
     return name, args
 
 
+def _strip_any_call_prefix(content: str) -> str | None:
+    """CALL_PREFIXES(해미야 등) 중 하나로 시작하면 그 뒤 나머지를 반환한다. 등록된 호출
+    단어가 여러 개일 수 있어 전부 시도한다. 어느 것과도 안 맞으면 None."""
+    for prefix in CALL_PREFIXES:
+        if content.startswith(prefix):
+            return content[len(prefix) :].strip()
+    return None
+
+
 def _match_open_trigger(content: str) -> tuple[bool, str, list[str]] | None:
-    """content가 트리거 패턴 1(바로 그 문구) 또는 2(문구+":"+등록된 명령어)와 정확히
-    일치하면 (즉시 실행 여부, 명령어 이름, 인자들)을 반환한다. 어느 쪽에도 안 걸리면 None
-    (완전히 무시 대상)."""
-    stripped = content.strip()
+    """content가 "{호출 단어} 주인님 가라사대"(패턴 1) 또는 "{호출 단어} 주인님 가라사대
+    {등록된 명령어} : {인자}"(패턴 2)와 정확히 일치하면 (즉시 실행 여부, 명령어 이름,
+    인자들)을 반환한다. 호출 단어가 없거나 그 뒤가 정확히 일치하지 않으면 None (완전히
+    무시 대상)."""
+    stripped = _strip_any_call_prefix(content.strip())
+    if stripped is None:
+        return None
     if stripped == _PROMPT_PHRASE:
         return False, "", []
     if stripped.startswith(_PROMPT_PREFIX):
@@ -577,10 +590,11 @@ async def _penalize_abuse(message: discord.Message) -> None:
 
 
 async def handle(message: discord.Message) -> None:
-    """관리자 콘솔(§13-F, 2026-08-25 세션 방식으로 재설계, 2026-08-27 ":" 인자 구분자로 갱신)을
-    처리한다.
+    """관리자 콘솔(§13-F, 2026-08-25 세션 방식으로 재설계, 2026-08-27 호출 단어 접두어 필수화
+    + ":" 인자 구분자로 갱신)을 처리한다.
 
-    `주인님 가라사대`(또는 `주인님 가라사대 {명령어} : {인자들}`)로 세션을 채널 단위로 연다.
+    `{호출 단어} 주인님 가라사대`(예: `해미야 주인님 가라사대`, 또는
+    `해미야 주인님 가라사대 {명령어} : {인자들}`)로 세션을 채널 단위로 연다.
     세션이 열려있는 동안은 접두어 없이 보낸 메시지도 그대로 명령어로 해석한다 — 등록된
     명령어면 실행하고 60초 타이머를 다시 늘리고, 등록 안 된 말이면 응답 없이 세션만 조용히
     닫는다. 60초 동안 아무 명령도 없으면 마찬가지로 조용히 닫힌다.
