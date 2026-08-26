@@ -31,6 +31,10 @@ async def increment_chat_count(user_id: int) -> int:
     return await rpc("increment_chat_count", {"p_user_id": user_id})
 
 
+async def increment_help_count(user_id: int) -> int:
+    return await rpc("increment_help_count", {"p_user_id": user_id})
+
+
 async def set_plastic_cooldown(user_id: int, until: datetime) -> dict:
     rows = await update(
         "users",

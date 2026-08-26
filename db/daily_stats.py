@@ -42,8 +42,9 @@ async def increment_messages_today(user_id: int) -> int:
     return await rpc("increment_messages_today", {"p_user_id": user_id})
 
 
-# 자연어 대화 일일 상한(신규): 호감도x2, 최대 500
+# 자연어 대화 일일 상한(신규): 호감도x2, 최솟값 20(음수 호감도 사용자도 동일 적용), 최대 500
 _NL_CAP_MULTIPLIER = 2
+_NL_CAP_MIN = 20
 _NL_CAP_MAX = 500
 
 
@@ -55,7 +56,7 @@ async def ensure_nl_cap(user_id: int, affection: int) -> dict:
     stats = await ensure_daily_stats(user_id)
     if stats["nl_cap"] is not None:
         return stats
-    cap = min(max(affection, 0) * _NL_CAP_MULTIPLIER, _NL_CAP_MAX)
+    cap = min(max(affection * _NL_CAP_MULTIPLIER, _NL_CAP_MIN), _NL_CAP_MAX)
     return await update_daily_stats(user_id, {"nl_cap": cap})
 
 

@@ -62,8 +62,10 @@ _TEMPLATE = """\
 
 Hamster >>>>> Human
 
-햄미의 모습이 담긴 영상
-https://www.youtube.com/watch?v=H0Yirlo6WSU\
+햄미의 실제 모습이 담긴 유튜브 영상 (100% 진짜 햄미 본인이 나오는 영상이 확실함)
+https://www.youtube.com/watch?v=H0Yirlo6WSU
+누군가 유튜브에서 햄미를 찾아볼 수 있냐고 물으면, 위 링크가 진짜 햄미 본인의 영상이 맞다고
+확실하게 확인해주고 주저 없이 그대로 알려줘도 돼.\
 """
 
 
