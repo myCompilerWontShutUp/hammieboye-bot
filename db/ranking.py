@@ -82,3 +82,26 @@ async def get_rank(user_id: int, affection: int, member_ids: list[int] | None = 
     keyed.sort(key=lambda pair: pair[0])
     position = next(i for i, (_, uid) in enumerate(keyed) if uid == user_id) + 1
     return higher + position
+
+
+async def count_total(member_ids: list[int] | None = None) -> int:
+    """순위 계산 모집단의 전체 인원 수. member_ids를 주면 서버 인원, 생략하면 전체 유저."""
+    if member_ids is not None and not member_ids:
+        return 0
+    params: dict[str, str] = {"select": "user_id"}
+    filter_params = _member_filter(member_ids)
+    if filter_params:
+        params.update(filter_params)
+    rows = await select("users", params)
+    return len(rows)
+
+
+def compute_percentile(rank: int, total: int) -> int:
+    """순위를 "상위 N%"로 변환한다 (사용자 확정 규칙):
+    - 1위는 무조건 1%, 꼴등은 무조건 99% (범위는 1~99% 사이로 고정, 0%/100%는 없음)
+    - 소수점은 버림(내림)
+    - 인원이 1명뿐이면 1%
+    """
+    if total <= 1:
+        return 1
+    return ((rank - 1) * 98) // (total - 1) + 1

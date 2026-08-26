@@ -7,12 +7,12 @@ import discord
 
 import achievements
 import documents
-from command.base import normalize
+from core.base import normalize
 from core import call_event, intent
 from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_nl_cap, update_daily_stats
-from db.history import get_recent, get_recent_turns, log
+from db.history import get_recent, get_recent_turns, log, set_detected_emotion
 from responses.engine import NEGATIVE_EMOTIONS, get_response
 
 # 실제 OpenAI API 호출(분류+생성) 구간에만 띄우는 플레이스홀더. 완료되면 삭제하고
@@ -77,6 +77,9 @@ _REPEAT_ANGRY_PHRASES = (
 
 # 자연어 생성 시 직전 맥락으로 같이 넣어줄 최근 대화 턴 수 (유저+햄미 답장 합산)
 _CONTEXT_TURN_LIMIT = 5
+
+# "말풍선 한가득" 업적(§21 재배정): 하루 이 횟수 이상 자연어로 대화하면 얻는다.
+_SPEECH_BUBBLE_THRESHOLD = 20
 
 # 자연어 대화 일일 상한(신규): 상한 도달 시 API 호출 없이 고정 문구로만 응답한다.
 # 상한 소진 후 1~4번째 추가 시도는 풀 A(아래) 재사용, 5번째는 마지막 경고(풀 B),
@@ -208,7 +211,7 @@ async def handle_natural_language(
             user_id, guild_id, text
         )
 
-    await log(user_id, guild_id, text)
+    logged_row = await log(user_id, guild_id, text)
 
     if event_delta:
         total_delta += event_delta
@@ -247,8 +250,12 @@ async def handle_natural_language(
         classification = await intent.classify(text)
 
         if classification.emotion is not None:
-            emotion_delta, emotion_achievement = await _apply_emotion_effects(
-                user_id, classification.emotion, stats
+            # 방금 남긴 유저 발화 행에 판정된 감정을 채워 넣는다 (기존엔 컬럼만 있고 아무
+            # 코드도 여기 쓰질 않아서 항상 NULL이었던 버그) — 감정 반영(affection)과는
+            # 서로 독립적인 쓰기라 동시에 처리한다.
+            _, (emotion_delta, emotion_achievement) = await asyncio.gather(
+                set_detected_emotion(logged_row["id"], classification.emotion),
+                _apply_emotion_effects(user_id, classification.emotion, stats),
             )
             total_delta += emotion_delta
             if emotion_delta:
@@ -263,15 +270,23 @@ async def handle_natural_language(
         # fallback을 반환하므로 거의 없음) 플레이스홀더가 남아있지 않도록 finally에서 정리한다.
         await _delete_placeholder(placeholder)
 
-    # "말풍선 한가득"(처음으로 자연어 대화) — 실제 생성까지 도달한 경우에만 확인한다.
-    if await award_achievement(user_id, achievements.speech_bubble.ID):
-        achievement_notices.append(f"🏆 업적 달성: {achievements.speech_bubble.NAME}!!")
+    # "위대하고 귀여운 대화의 시작"(처음으로 햄미와 대화) — 실제 생성까지 도달한 경우에만
+    # 확인한다. §21 재배정: 기존 "말풍선 한가득"의 옛 트리거(첫 자연어 대화)를 인계받았다.
+    if await award_achievement(user_id, achievements.first_chat.ID):
+        achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.first_chat)}!!")
 
     # nl_count는 실제로 생성까지 도달한 메시지만 증가시킨다. 오늘의 마지막 메시지(상한에
     # 정확히 도달)라면 생성된 답변 뒤에 고정 문구를 이어붙인다 (사용자 예시: "일어나써! + 오늘은...").
     new_nl_count = stats["nl_count"] + 1
     if new_nl_count >= nl_cap:
         response_text = f"{response_text}\n\n{random.choice(_DAILY_LIMIT_PHRASES)}"
+
+    # "말풍선 한가득"(§21 재배정: 하루 20회 이상 자연어 대화) — 오늘 새로 20회에 도달한
+    # 시점에 최초 1회만 확인한다(award()가 전체 기간 기준 멱등이라 다음 날부턴 다시 안 뜬다).
+    if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD and await award_achievement(
+        user_id, achievements.speech_bubble.ID
+    ):
+        achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.speech_bubble)}!!")
 
     # 서로 독립적인 마무리 작업(오늘 대화 횟수 갱신 + 봇 답장 로그)은 동시에 처리한다.
     await asyncio.gather(

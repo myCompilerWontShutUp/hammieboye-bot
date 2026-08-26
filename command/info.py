@@ -5,12 +5,12 @@ from datetime import datetime, timedelta, timezone
 import discord
 
 import achievements
-from command.base import EMBED_COLOR
+from core.base import EMBED_COLOR
 from core.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 from db.daily_stats import ensure_nl_cap
 from db.history import get_recent
-from db.ranking import get_rank
+from db.ranking import compute_percentile, count_total, get_rank
 from db.users import get_user
 
 # "햄미가 알려주는 내 정보"라는 딱딱한 고정 문구 대신, 매번 다른 인트로 한 줄을
@@ -87,21 +87,25 @@ async def handle(
     member_ids = [m.id for m in guild.members if not m.bot] if guild is not None else None
 
     if member_ids is not None:
-        stats, recent, earned, global_rank, guild_rank = await asyncio.gather(
+        stats, recent, earned, global_rank, global_total, guild_rank, guild_total = await asyncio.gather(
             ensure_nl_cap(user_id, affection),
             get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30)),
             get_earned(user_id),
             get_rank(user_id, affection),
+            count_total(),
             get_rank(user_id, affection, member_ids),
+            count_total(member_ids),
         )
     else:
-        stats, recent, earned, global_rank = await asyncio.gather(
+        stats, recent, earned, global_rank, global_total = await asyncio.gather(
             ensure_nl_cap(user_id, affection),
             get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30)),
             get_earned(user_id),
             get_rank(user_id, affection),
+            count_total(),
         )
         guild_rank = None
+        guild_total = None
 
     title = "나의 정보" if is_self else f"{target_name}님의 정보"
     description = _SELF_DESCRIPTION if is_self else _OTHER_DESCRIPTION_TEMPLATE.format(name=target_name)
@@ -115,8 +119,10 @@ async def handle(
     # 공백만 있는 줄은 렌더러가 트리밍할 수 있어서, ZWS로 "진짜 내용이 있는 빈 줄"을 만든다.
     heart_lines = [f"- 햄미의 호감도: **{affection}**"]
     if guild_rank is not None:
-        heart_lines.append(f"- 서버 호감도 순위: **{guild_rank}**위")
-    heart_lines.append(f"- 전체 호감도 순위: **{global_rank}**위")
+        guild_percentile = compute_percentile(guild_rank, guild_total)
+        heart_lines.append(f"- 서버 호감도 순위: **{guild_rank}**위 (상위 {guild_percentile}%)")
+    global_percentile = compute_percentile(global_rank, global_total)
+    heart_lines.append(f"- 전체 호감도 순위: **{global_rank}**위 (상위 {global_percentile}%)")
     embed.add_field(name=heart_field_name, value="\n".join(heart_lines) + "\n​", inline=False)
 
     embed.add_field(
@@ -143,7 +149,7 @@ async def handle(
         module = achievements.REGISTRY.get(row["achievement_id"])
         if module is None:
             continue
-        achievement_lines.append(f"- {module.NAME} ({_format_date(row['earned_at'])})")
+        achievement_lines.append(f"- {achievements.format_name(module)} ({_format_date(row['earned_at'])})")
     embed.add_field(name=achievement_field_name, value="\n".join(achievement_lines) + "\n​", inline=False)
 
     recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3]) if recent else "- (최근 30분 내 대화 없음)"

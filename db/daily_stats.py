@@ -66,15 +66,21 @@ async def refresh_conversation_caps() -> None:
     await rpc("refresh_daily_conversation_caps", {})
 
 
-async def get_top_talkers_today() -> list[dict]:
-    """오늘(KST) 당일 순증감이 음수가 아닌 사용자들을, 대화 횟수 내림차순으로 반환한다."""
-    today = kst_today_str()
+async def get_top_talkers_for(date_str: str) -> list[dict]:
+    """지정한 날짜(KST)에 당일 순증감이 음수가 아닌 사용자들을, 대화 횟수 내림차순으로
+    반환한다. messages_today_reached_at은 그날 마지막으로 messages_today가 갱신된
+    시각(=오늘의 최종 횟수에 도달한 시각)이라, 동점자 중 "먼저 그 횟수를 채운 사람"을
+    가리는 타이브레이크에 그대로 쓸 수 있다."""
     return await select(
         "daily_stats",
         {
-            "stat_date": f"eq.{today}",
+            "stat_date": f"eq.{date_str}",
             "daily_net": "gte.0",
-            "select": "user_id,messages_today",
+            "select": "user_id,messages_today,messages_today_reached_at",
             "order": "messages_today.desc",
         },
     )
+
+
+async def get_top_talkers_today() -> list[dict]:
+    return await get_top_talkers_for(kst_today_str())

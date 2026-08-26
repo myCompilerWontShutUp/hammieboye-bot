@@ -3,11 +3,15 @@ import random
 
 import discord
 
+import achievements
 from core import presence
+from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.guild_sleep_state import register_mention
 
-_ANNOYED_PROBABILITY = 0.9
+# 짜증 75% / 악몽 감사 25%(§21, 2026-08-27: 기존 10% -> 25%로 상향 — 이 상수는 "짜증"
+# 분기가 나올 확률이라, 악몽 확률을 올리려면 이 값을 낮춰야 한다).
+_ANNOYED_PROBABILITY = 0.75
 _ANNOYED_DELTA = -5
 _NIGHTMARE_DELTA = 5
 _NIGHTMARE_METHOD = "sleep_wake_nightmare"
@@ -84,6 +88,11 @@ async def handle_mention(message: discord.Message) -> None:
         result = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD)
         notice = format_affection_notice(_NIGHTMARE_DELTA, result["new_affection"])
         achievement_notice = result["achievement_notice"]
+
+        # "악몽 해방"(전설) — 취침 중인 햄미를 악몽에서 깨워줬을 때.
+        if await award_achievement(user_id, achievements.nightmare_freed.ID):
+            extra = f"🏆 업적 달성: {achievements.format_name(achievements.nightmare_freed)}!!"
+            achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
     reply_text = f"{line1}\n{line2}{notice}"
     if achievement_notice:

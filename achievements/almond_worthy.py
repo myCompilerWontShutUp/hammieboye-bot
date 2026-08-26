@@ -1,0 +1,5 @@
+ID = "almond_worthy"
+NAME = "아몬드 양보 가능"
+HOW_TO_EARN = "호감도가 250 이상이 되면 얻어."
+RARITY = "전설"
+CODE = "cpytbhuc"

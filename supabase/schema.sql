@@ -125,6 +125,9 @@ CREATE TABLE daily_stats (
   gain_methods                      jsonb NOT NULL DEFAULT '[]'::jsonb, -- 당일 획득 방법 목록
 
   messages_today                    integer NOT NULL DEFAULT 0,     -- 오늘 나눈 대화 수 (3-5 최다 대화자 판정용)
+  messages_today_reached_at          timestamptz,                     -- messages_today가 마지막으로 갱신된 시각
+                                                                       -- (=오늘의 최종 횟수에 도달한 시각, 동점자
+                                                                       -- 타이브레이크용, 신규)
 
   -- 자연어 대화 일일 상한 (신규). nl_cap은 매일 06:30에 그 순간 호감도로 동결되며(NULL=아직 미계산,
   -- 첫 사용 시점에 즉석 계산해 고정), nl_count는 실제로 생성까지 도달한 자연어 메시지 수,
@@ -496,10 +499,10 @@ DECLARE
   v_stat_date date := kst_today();
   v_count integer;
 BEGIN
-  INSERT INTO daily_stats (user_id, stat_date, messages_today)
-  VALUES (p_user_id, v_stat_date, 1)
+  INSERT INTO daily_stats (user_id, stat_date, messages_today, messages_today_reached_at)
+  VALUES (p_user_id, v_stat_date, 1, now())
   ON CONFLICT (user_id, stat_date)
-  DO UPDATE SET messages_today = daily_stats.messages_today + 1
+  DO UPDATE SET messages_today = daily_stats.messages_today + 1, messages_today_reached_at = now()
   RETURNING messages_today INTO v_count;
   RETURN v_count;
 END;
