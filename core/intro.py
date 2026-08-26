@@ -104,6 +104,6 @@ async def handle(interaction: discord.Interaction, 이름: str) -> None:
     # 여기서부터가 실제로 느린 구간(info_handle의 여러 DB 호출 + 실제 이름 조회)이라 defer한다.
     await interaction.response.defer()
     text, embed = await info_handle(member.id, target_name=member.display_name, guild=guild)
-    text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
+    text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text, notebook=True)
     real_name = await resolve_real_name(interaction.client, member.id)
     await interaction.edit_original_response(content=f"{real_name}\n{text}", embed=embed)
