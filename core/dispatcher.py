@@ -7,12 +7,26 @@ from config import ALLOWED_GUILD_IDS, CALL_PREFIXES
 from core import admin, call_event, greeting, onboarding, presence, slash_commands, sleep_event, wake_event
 from core.chat import handle_natural_language
 from core.client import create_tree
-from core.scheduler import is_sleep_time, is_sleep_time_for, start_daily, start_interval
+from core.scheduler import is_late_wake_today, is_sleep_time, is_sleep_time_for, start_daily, start_interval
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import set_last_channel
 from db.users import ensure_user, increment_chat_count
 
 _TICK_INTERVAL_SECONDS = 30
+_LATE_WAKE_DELAY_SECONDS = 30 * 60
+
+
+async def _run_wake_sequence() -> None:
+    """매일 06:30(KST)에 실행. 그날 밤 방해금지 이벤트가 발동했으면(§28) 기상 자체를
+    30분 늦춰서(07:00) "누가 깨워서 늦게 일어났다"는 컨셉을 실제로 반영하고, 아침 인사도
+    피곤한 톤의 고정 문구로 대체한다. 발동 안 했으면 평소대로 즉시 진행."""
+    tired = is_late_wake_today()
+    if tired:
+        await asyncio.sleep(_LATE_WAKE_DELAY_SECONDS)
+    await presence.wake_up()
+    await call_event.schedule_today()
+    await refresh_conversation_caps()
+    await greeting.post_daily_greeting(tired=tired)
 
 
 def _strip_call_prefix(content: str) -> str | None:
@@ -72,10 +86,9 @@ def setup_dispatcher(client: discord.Client) -> None:
         await (presence.enter_sleep() if is_sleep_time() else presence.wake_up())
 
         start_daily(0, 0, presence.enter_sleep)  # 취침 시작: 자리비움 전환
-        start_daily(6, 30, presence.wake_up)  # 기상: 온라인 전환
-        start_daily(6, 30, call_event.schedule_today)  # 기상 시각: 그날 5개 시각 산출
-        start_daily(6, 30, refresh_conversation_caps)  # 기상 시각: 자연어 대화 일일 상한 동결
-        start_daily(6, 30, greeting.post_daily_greeting)  # 기상 시각: 아침 인사 + 기념일 언급
+        # 기상(온라인 전환 + 부름 이벤트 5개 시각 산출 + nl_cap 동결 + 아침 인사)을 한
+        # 시퀀스로 묶는다 — 방해금지 발동 시 전부 30분 늦춰서 함께 실행해야 하기 때문(§28).
+        start_daily(6, 30, _run_wake_sequence)
         # 자정을 살짝 넘긴 00:01에 실행 — 23:59에 하면 "11시 59분에 자러 감을 선언"하는
         # 꼴이 되어 사용자 확정대로 자정(00:00) 이후로 옮겼다. 함수 내부에서 "어제" 날짜를
         # 명시적으로 계산해서 집계하므로 자정을 넘긴 뒤 실행돼도 정확하다.

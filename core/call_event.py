@@ -29,8 +29,10 @@ _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # CLAUDE.md 섹션 3-2 (2026-08-26: 하루 5회 -> 3회로 축소했다가, 2026-08-27에 5회로 롤백)
 _DAILY_EVENT_COUNT = 5
-WINDOW_START = time(7, 0)
-WINDOW_END = time(23, 0)
+# 2026-08-27: 전송 가능 시간대를 07:00~23:00에서 07:30~22:30(오후 10시 30분)으로
+# 축소(사용자 확정 — 최초엔 오전 10시 30분으로 잘못 반영했다가 정정함).
+WINDOW_START = time(7, 30)
+WINDOW_END = time(22, 30)
 _EVENT_WINDOW = timedelta(minutes=10)
 
 # 부름 이벤트 인접 최소 간격(관리자 g-call-event 수동 생성에서도 동일하게 준수, 사용자 확정)

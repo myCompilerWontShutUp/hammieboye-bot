@@ -157,6 +157,29 @@ def _parse_int(token: str, label: str) -> int:
         raise _AdminError(f"{label}은(는) 정수여야 해: {token}") from None
 
 
+# 햄미 자신의 Discord 유저(봇) ID — §0의 초대 링크 client_id와 동일한 값. {user_id}를 받는
+# 명령어에서 이 값이 들어오면 정상 처리(등록 조회 등) 대신 전용 메시지로 막는다(사용자 확정,
+# 2026-08-27).
+_HAMMIE_USER_ID = 1541339665708228648
+_SELF_TARGET_MESSAGE = "그건 저라서 진행할 수 없어요!!"
+
+# {user_id}에 "m"을 넣으면 관리자 본인(ADMIN_USER_ID)을 가리킨다 — 관리자가 매번 자기
+# 자신의 긴 ID를 직접 칠 필요 없게 하는 단축 표기 (사용자 확정).
+_SELF_ALIAS = "m"
+
+
+def _parse_user_id(token: str) -> int:
+    """{user_id} 인자 전용 파싱. "m"이면 관리자 본인 ID로, 그 외엔 정수로 해석한다.
+    결과가 햄미 자신의 ID면 전용 메시지로 막는다."""
+    if token.strip().lower() == _SELF_ALIAS:
+        user_id = ADMIN_USER_ID
+    else:
+        user_id = _parse_int(token, "user_id")
+    if user_id == _HAMMIE_USER_ID:
+        raise _AdminError(_SELF_TARGET_MESSAGE)
+    return user_id
+
+
 def _format_event_time(iso_str: str) -> str:
     dt = datetime.fromisoformat(iso_str).astimezone(_KST)
     return f"{dt.hour}시"
@@ -172,7 +195,7 @@ async def _require_registered(user_id: int) -> dict:
 async def _handle_la_up(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: la up : {user_id} {amount} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     result = await add_affection_uncapped(user_id, amount, "admin_la_up")
@@ -187,7 +210,7 @@ async def _handle_la_up(args: list[str]) -> str:
 async def _handle_la_down(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: la down : {user_id} {amount} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     result = await add_affection_uncapped(user_id, -amount, "admin_la_down")
@@ -199,7 +222,7 @@ async def _handle_la_down(args: list[str]) -> str:
 async def _handle_la_set(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: la set : {user_id} {amount} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     new_affection = await set_affection(user_id, amount)
@@ -210,7 +233,7 @@ async def _handle_la_set(args: list[str]) -> str:
 async def _handle_la_reset(args: list[str]) -> str:
     if len(args) != 1:
         raise _AdminError("사용법: la reset : {user_id} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     user = await _require_registered(user_id)
     await set_affection(user_id, _INITIAL_AFFECTION)
     await log_command("la reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
@@ -220,7 +243,7 @@ async def _handle_la_reset(args: list[str]) -> str:
 async def _handle_tc_up(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: tc up : {user_id} {amount} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
@@ -234,7 +257,7 @@ async def _handle_tc_up(args: list[str]) -> str:
 async def _handle_tc_down(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: tc down : {user_id} {amount} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
@@ -248,7 +271,7 @@ async def _handle_tc_down(args: list[str]) -> str:
 async def _handle_tc_set(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: tc set : {user_id} {amount} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
@@ -262,7 +285,7 @@ async def _handle_tc_set(args: list[str]) -> str:
 async def _handle_tc_reset(args: list[str]) -> str:
     if len(args) != 1:
         raise _AdminError("사용법: tc reset : {user_id} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     user = await _require_registered(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
     before = stats["nl_count"]
@@ -311,7 +334,7 @@ async def _handle_sh_event_last(args: list[str]) -> str:
 async def _handle_sh_user_stats(args: list[str]) -> tuple[str, discord.Embed]:
     if len(args) != 1:
         raise _AdminError("사용법: sh user stats : {user_id} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     await _require_registered(user_id)
     return await info_handle(user_id)
 
@@ -437,7 +460,7 @@ async def _handle_ac_list_cd(args: list[str]) -> str:
 async def _handle_ac_grant(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: ac grant : {user_id} {code} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
     if module is None:
@@ -453,7 +476,7 @@ async def _handle_ac_grant(args: list[str]) -> str:
 async def _handle_ac_revoke(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: ac revoke : {user_id} {code} {boolean}")
-    user_id = _parse_int(args[0], "user_id")
+    user_id = _parse_user_id(args[0])
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
     if module is None:
@@ -466,16 +489,51 @@ async def _handle_ac_revoke(args: list[str]) -> str:
     return f"네!! {user_id}님의 '{achievements.format_name(module)}' 업적을 제거했어요!!"
 
 
+_NO_MATCH_MESSAGE = "일치하는 명령어가 없어요!!"
+
+# "*"는 "전체"를 뜻하는 기본값이다 — string 자리를 비우면(즉, 콜론 자체를 안 쓰면) 자동으로
+# "*"로 취급되어 `c`와 `c : *`가 동일하게 동작한다. "*"를 명시적으로 써야 하는 목적은 오직
+# boolean을 같이 넣기 위해서다 — string은 필수 인자라 생략하면서 boolean만 넣을 방법이
+# 없으므로, "c : * true"처럼 자리를 채워야 한다(사용자 확정).
+_WILDCARD = "*"
+
+
+def _filter_commands(keyword: str) -> "list[_CommandSpec]":
+    """keyword가 "*"면 전체(기본값)를, 그 외엔 명령어 이름을 공백으로 나눈 단어들 중
+    하나와 완전히 일치하는 것만 남긴다 (부분 문자열 포함 아님 — 예: "a"는 "la"/"ac"의
+    부분 문자열이라 해당 안 됨, 사용자 확정)."""
+    if keyword == _WILDCARD:
+        return list(_COMMAND_LIST)
+    return [spec for spec in _COMMAND_LIST if keyword in spec.name.split()]
+
+
+def _resolve_filter_keyword(args: list[str]) -> str:
+    """string 인자는 생략 가능하다 — 생략하면(콜론 없이 "c"만 친 경우) "*"(전체)로
+    취급한다. 2개 이상 들어오면 사용법 오류로 처리한다."""
+    if len(args) > 1:
+        raise _AdminError("사용법: c : {string} {boolean}")
+    return args[0] if args else _WILDCARD
+
+
 async def _handle_c(args: list[str]) -> str:
-    return "\n".join(f"{spec.name} : {spec.params}" for spec in _COMMAND_LIST)
+    matched = _filter_commands(_resolve_filter_keyword(args))
+    if not matched:
+        return _NO_MATCH_MESSAGE
+    return "\n".join(f"{spec.name} : {spec.params}" for spec in matched)
 
 
 async def _handle_c_hp(args: list[str]) -> str:
-    return "\n".join(f"{spec.name} : {spec.params} - {spec.description}" for spec in _COMMAND_LIST)
+    matched = _filter_commands(_resolve_filter_keyword(args))
+    if not matched:
+        return _NO_MATCH_MESSAGE
+    return "\n".join(f"{spec.name} : {spec.params} - {spec.description}" for spec in matched)
 
 
 async def _handle_c_np(args: list[str]) -> str:
-    return "\n".join(spec.name for spec in _COMMAND_LIST)
+    matched = _filter_commands(_resolve_filter_keyword(args))
+    if not matched:
+        return _NO_MATCH_MESSAGE
+    return "\n".join(spec.name for spec in matched)
 
 
 _Handler = Callable[[list[str]], Awaitable[Union[str, tuple[str, discord.Embed]]]]
@@ -518,9 +576,9 @@ _COMMAND_LIST = (
     _CommandSpec("ac list cd", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_list_cd),
     _CommandSpec("ac grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ac_grant),
     _CommandSpec("ac revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ac_revoke),
-    _CommandSpec("c", 0, "{boolean}", "모든 명령어를 매개변수 포함해서 나열", _handle_c),
-    _CommandSpec("c hp", 0, "{boolean}", "모든 명령어를 설명과 함께 나열", _handle_c_hp),
-    _CommandSpec("c np", 0, "{boolean}", "모든 명령어를 이름만 나열", _handle_c_np),
+    _CommandSpec("c", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 매개변수 포함해서 나열 (string 생략 시 전체, \"*\"와 동일)", _handle_c),
+    _CommandSpec("c hp", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 설명과 함께 나열 (string 생략 시 전체)", _handle_c_hp),
+    _CommandSpec("c np", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 이름으로 나열 (string 생략 시 전체)", _handle_c_np),
 )
 
 _COMMANDS = {spec.name: spec for spec in _COMMAND_LIST}
