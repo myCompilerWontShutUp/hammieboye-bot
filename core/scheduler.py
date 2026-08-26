@@ -4,6 +4,8 @@ from typing import Awaitable, Callable
 
 from discord.ext import tasks
 
+from config import ADMIN_USER_ID
+
 # 한국시간(KST) 고정 오프셋. 서머타임이 없어서 UTC+9 고정으로 충분하다.
 KST = timezone(timedelta(hours=9))
 
@@ -13,11 +15,34 @@ WAKE_TIME = time(6, 30)
 
 _DailyCallback = Callable[[], Awaitable[None]]
 
+# 관리자 전용 테스트 오버라이드(hm-awake/hm-asleep/hm-sync, §신규). None이면 실제 시간을
+# 그대로 따르고, True/False면 관리자 본인에게만 강제로 취침/기상 상태를 적용한다.
+_admin_sleep_override: bool | None = None
+
 
 def is_sleep_time(now: datetime | None = None) -> bool:
-    """지금이 한국시간 취침 시간대(00:00~06:30)인지."""
+    """지금이 한국시간 취침 시간대(00:00~06:30)인지 — 실제 시간 기준, 오버라이드 미반영."""
     current = (now or datetime.now(timezone.utc)).astimezone(KST).time()
     return SLEEP_START <= current < WAKE_TIME
+
+
+def set_admin_sleep_override(value: bool | None) -> None:
+    """hm-awake(False)/hm-asleep(True)/hm-sync(None)로 설정한다."""
+    global _admin_sleep_override
+    _admin_sleep_override = value
+
+
+def get_admin_sleep_override() -> bool | None:
+    return _admin_sleep_override
+
+
+def is_sleep_time_for(user_id: int, now: datetime | None = None) -> bool:
+    """이 유저에게 지금이 취침 시간대로 취급돼야 하는지. 관리자 본인이고 hm-awake/hm-asleep
+    오버라이드가 걸려있으면 그 값을 그대로 따르고(실제 시간 무시), 그 외엔 항상 실제
+    시간(is_sleep_time)을 따른다 — 일반 사용자는 오버라이드의 영향을 받지 않는다(사용자 확정)."""
+    if user_id == ADMIN_USER_ID and _admin_sleep_override is not None:
+        return _admin_sleep_override
+    return is_sleep_time(now)
 
 
 def format_footer_time(now: datetime) -> str:

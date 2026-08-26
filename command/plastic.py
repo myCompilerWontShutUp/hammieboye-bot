@@ -7,11 +7,16 @@ from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.users import get_user, set_plastic_cooldown
 
-# CLAUDE.md 섹션 3-1
-_COOLDOWN = timedelta(minutes=10)
+# CLAUDE.md 섹션 3-1 (2026-08-27: 10분 -> 3분으로 단축, 사용자 확정)
+_COOLDOWN = timedelta(minutes=3)
 _METHOD = "plastic_bottle"
 _STREAK_TARGET = 3
 _SUCCESS_RATE = 0.5
+
+# 오늘의 성공(+1)/연속 3회 보너스(+3) 중 하나라도 이미 받은 상태에서 그 조건을 또
+# 달성하면(호감도는 더 안 오름) 왜 안 올랐는지 알 수 있게 이 문구를 한 번만 덧붙인다
+# (사용자 확정, 둘 다 이미 받은 상태여도 문구는 중복 없이 한 줄만).
+_ALREADY_CLAIMED_TODAY_NOTE = "(오늘은 이미 '페트병'으로 호감도를 획득했습니다)"
 
 # 섹션 4-5: 쿨타임 고정 메시지를 이 횟수까지는 그냥 보여주고, 그다음부터 남용 페널티.
 # count 1~2: 평범한 쿨타임 안내, count == 3(_COOLDOWN_ABUSE_FREE_COUNT): 마지막 경고,
@@ -246,6 +251,8 @@ async def handle(user_id: int) -> str:
         "cooldown_abuse_counts": _reset_cooldown_abuse(stats),
     }
     achievement_notices: list[str] = []
+    already_claimed_today = False
+    gained_new_affection = False
 
     if new_streak == 1:
         message = random.choice(_SUCCESS_STREAK1_MESSAGES)
@@ -261,8 +268,12 @@ async def handle(user_id: int) -> str:
         total_delta += result["applied_amount"]
         current_affection = result["new_affection"]
         update_fields["plastic_success_claimed"] = True
+        if result["applied_amount"] > 0:
+            gained_new_affection = True
         if result["achievement_notice"]:
             achievement_notices.append(result["achievement_notice"])
+    else:
+        already_claimed_today = True
 
     # "페트병 댄스"는 성공 전체를 통틀어 최초 1회(오늘 이미 획득했어도 매일 초기화되는
     # plastic_success_claimed와 달리, award()가 전체 기간 기준으로 알아서 중복 방지한다).
@@ -276,13 +287,21 @@ async def handle(user_id: int) -> str:
         total_delta += result["applied_amount"]
         current_affection = result["new_affection"]
         update_fields["plastic_streak_bonus_claimed"] = True
+        if result["applied_amount"] > 0:
+            gained_new_affection = True
         if result["achievement_notice"]:
             achievement_notices.append(result["achievement_notice"])
+    elif new_streak >= _STREAK_TARGET:
+        already_claimed_today = True
 
     if new_streak >= _STREAK_TARGET and await award_achievement(user_id, achievements.plastic_dance_god.ID):
         achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
 
     await update_daily_stats(user_id, update_fields)
+    # 같은 던지기에서 다른 마일스톤(예: 3연속 보너스)으로 실제 새 호감도를 받았다면, 그
+    # 옆에 "이미 획득함" 노트를 같이 보여주면 모순돼 보이므로 진짜 아무것도 못 받았을 때만 붙인다.
+    if already_claimed_today and not gained_new_affection:
+        message += f"\n{_ALREADY_CLAIMED_TODAY_NOTE}"
     for notice in achievement_notices:
         message += f"\n{notice}"
     return _with_notice(message, total_delta, current_affection)

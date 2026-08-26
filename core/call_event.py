@@ -6,8 +6,11 @@ from datetime import datetime, time, timedelta, timezone
 import discord
 from openai import AsyncOpenAI
 
+import achievements
 from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL
+from core.discord_names import resolve_real_name
 from core.scheduler import KST, random_times_in_window
+from db.achievements import award as award_achievement
 from db.affection import add_affection, apply_global_penalty
 from db.call_events import (
     claim,
@@ -24,8 +27,8 @@ from db.users import increment_help_count
 _client: discord.Client | None = None
 _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# CLAUDE.md 섹션 3-2 (2026-08-26: 하루 5회 -> 3회로 축소, 사용자 확정)
-_DAILY_EVENT_COUNT = 3
+# CLAUDE.md 섹션 3-2 (2026-08-26: 하루 5회 -> 3회로 축소했다가, 2026-08-27에 5회로 롤백)
+_DAILY_EVENT_COUNT = 5
 WINDOW_START = time(7, 0)
 WINDOW_END = time(23, 0)
 _EVENT_WINDOW = timedelta(minutes=10)
@@ -33,7 +36,7 @@ _EVENT_WINDOW = timedelta(minutes=10)
 # 부름 이벤트 인접 최소 간격(관리자 g-call-event 수동 생성에서도 동일하게 준수, 사용자 확정)
 MIN_GAP_MINUTES = 30
 
-# 활성 이벤트는 하루 3번, 10분씩만 존재하는데도 handle_potential_response가 자연어
+# 활성 이벤트는 하루 5번, 10분씩만 존재하는데도 handle_potential_response가 자연어
 # 메시지마다 매번 조회하면 대부분의 시간에 낭비되는 DB 왕복이다. 아주 짧게(수 초) 캐싱해서
 # 지연시간을 줄인다 — claim()/부정반응 -5는 여전히 DB RPC로 원자적으로 처리되므로(claim의
 # claimed_by IS NULL/expires_at 체크가 진짜 정합성 보장 지점), 이 캐시가 살짝 stale해도
@@ -63,6 +66,16 @@ _PROMPT_TEXTS = (
     "심심해... 같이 놀아줄 사람 없어??",
     "출출한데 간식 없나... 누가 좀 챙겨줘",
     "심심하다 심심해... 뭐라도 재밌는 거 없을까",
+    "쳇바퀴 좀 돌려줄 사람 없나... 다리가 근질근질해",
+    "볼주머니가 텅 비었어... 뭐라도 넣어줄 사람?",
+    "톱밥 정리 좀 도와줄 사람 없나?",
+    "해바라기씨가 다 떨어졌어... 누가 좀 채워줘",
+    "쳇바퀴가 삐걱거려... 손 좀 봐줄 사람?",
+    "밀웜이 먹고 싶은데 아무도 없나?",
+    "숨숨집이 좁아진 것 같아... 넓혀줄 사람?",
+    "털 손질 좀 도와줄 사람 없어?",
+    "물통이 비었어... 채워줄 사람?",
+    "낮잠 잘 자리 좀 만들어줄 사람 없나...",
 )
 
 _RESPONSE_JUDGE_INSTRUCTIONS = """\
@@ -116,7 +129,7 @@ def init(client: discord.Client) -> None:
 
 
 async def schedule_today() -> None:
-    """매일 06:30(KST)에 그날 보낼 3개 시각을 한 번에 전부 결정해둔다 (인접 간격 최소 30분 보장)."""
+    """매일 06:30(KST)에 그날 보낼 5개 시각을 한 번에 전부 결정해둔다 (인접 간격 최소 30분 보장)."""
     times = random_times_in_window(
         _DAILY_EVENT_COUNT, WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES
     )
@@ -229,7 +242,15 @@ async def handle_potential_response(user_id: int, guild_id: int, text: str) -> t
     result = await add_affection(user_id, reward, "call_event")
     await _try_increment_help_count(user_id)
     await _announce_winner(event, user_id, guild_id)
-    return result["applied_amount"], result["achievement_notice"]
+
+    # "햄미의 요청"(처음으로 부름 이벤트에 relevant하게 반응해 도와줌) — add_affection의
+    # 호감도 마일스톤 알림과 합쳐서 한 번에 반환한다.
+    achievement_notice = result["achievement_notice"]
+    if await award_achievement(user_id, achievements.call_event_help.ID):
+        extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
+        achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
+
+    return result["applied_amount"], achievement_notice
 
 
 async def _try_increment_help_count(user_id: int) -> None:
@@ -266,32 +287,14 @@ async def _classify_response(prompt_text: str, reply_text: str) -> str | None:
         return None
 
 
-async def _resolve_display_name(user_id: int, home_guild: discord.Guild | None) -> str:
-    """다른 서버 메시지에 끼워 넣을 이름을 구한다. 실제 멘션(<@id>)을 쓰면 그 서버에 없는
-    사람을 핑처럼 잘못 표기하거나 아예 안 뜰 수 있어서, 항상 표시 이름(텍스트)만 쓴다."""
-    if home_guild is not None:
-        member = home_guild.get_member(user_id)
-        if member is not None:
-            return member.display_name
-    if _client is None:
-        return f"어떤 친구({user_id})"
-    user = _client.get_user(user_id)
-    if user is None:
-        try:
-            user = await _client.fetch_user(user_id)
-        except discord.HTTPException:
-            return f"어떤 친구({user_id})"
-    return user.display_name
-
-
 async def _announce_winner(event: dict, winner_id: int, winner_guild_id: int) -> None:
     if _client is None:
         return
     winner_guild = _client.get_guild(winner_guild_id)
     guild_name = winner_guild.name if winner_guild is not None else "어떤 서버"
-    winner_name = await _resolve_display_name(winner_id, winner_guild)
-    # 다른 서버에 보이는 문구라 실제 멘션(핑) 대신 이름만 적는다 — "님"을 붙여서
-    # 받침 유무와 무관하게 "이/가" 조사를 "님이"로 고정할 수 있다.
+    # 다른 서버에 보이는 문구라 실제 멘션(핑) 대신 실제 이름(서버 별명 아님)만 적는다 —
+    # "님"을 붙여서 받침 유무와 무관하게 "이/가" 조사를 "님이"로 고정할 수 있다.
+    winner_name = await resolve_real_name(_client, winner_id)
     note = f"\n\n({guild_name} 서버의 {winner_name}님이 해줬어!)"
 
     for guild_id_str, location in (event.get("messages") or {}).items():

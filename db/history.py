@@ -1,13 +1,22 @@
 from datetime import datetime, timezone
 
-from db.client import insert, select
+from db.client import insert, select, update
 
 
-async def log(user_id: int, guild_id: int, content: str, role: str = "user") -> None:
-    await insert(
+async def log(user_id: int, guild_id: int, content: str, role: str = "user") -> dict:
+    """chat_history에 한 줄 남기고, 그 행을 반환한다 — 자연어 메시지는 감정 판정이 로그를
+    남긴 "이후"에 나오므로(핸디캡: 판정 전에 이미 로그부터 남겨야 4-1/4-2 판정이 정확함),
+    호출부가 반환된 id로 set_detected_emotion()을 나중에 걸 수 있어야 한다."""
+    rows = await insert(
         "chat_history",
         {"user_id": user_id, "guild_id": guild_id, "content": content, "role": role},
     )
+    return rows[0]
+
+
+async def set_detected_emotion(row_id: int, emotion: str) -> None:
+    """분류가 끝난 뒤, 이미 남겨둔 chat_history 행에 판정된 감정을 채워 넣는다."""
+    await update("chat_history", {"id": f"eq.{row_id}"}, {"detected_emotion": emotion})
 
 
 async def get_recent(user_id: int, since: datetime, role: str = "user") -> list[dict]:
@@ -29,6 +38,22 @@ async def get_recent(user_id: int, since: datetime, role: str = "user") -> list[
         },
     )
     return rows
+
+
+async def get_distinct_chatters(start: datetime, end: datetime) -> set[int]:
+    """[start, end) 구간(UTC) 동안 자연어(role='user')로 최소 한 번이라도 대화한 사용자
+    id 집합. 취침 이벤트(3-5)가 "자연어로 대화한 사용자 전원에게 +1"을 계산할 때 쓴다.
+    chat_history는 (조회 필터와 별개로) 실제로는 영구 보관되므로 지난 하루치를 그대로
+    조회할 수 있다."""
+    rows = await select(
+        "chat_history",
+        {
+            "role": "eq.user",
+            "and": f"(created_at.gte.{start.astimezone(timezone.utc).isoformat()},created_at.lt.{end.astimezone(timezone.utc).isoformat()})",
+            "select": "user_id",
+        },
+    )
+    return {row["user_id"] for row in rows}
 
 
 async def get_recent_turns(user_id: int, since: datetime, limit: int = 5) -> list[dict]:

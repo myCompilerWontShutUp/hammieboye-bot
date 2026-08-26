@@ -4,7 +4,9 @@ import re
 import discord
 from discord import app_commands
 
-from command.info.info import handle as info_handle
+from command.info import handle as info_handle
+from core import sleep_guard
+from core.discord_names import resolve_real_name
 from db.users import get_user
 
 _MENTION_RE = re.compile(r"^<@!?(\d+)>$")
@@ -80,6 +82,10 @@ def _resolve_member(guild: discord.Guild, raw: str) -> discord.Member | None:
 
 
 async def handle(interaction: discord.Interaction, 이름: str) -> None:
+    """"모르는 사람"(개인 전용) 응답과 "찾음"(공개) 응답은 공개 범위가 서로 달라서, 이 함수가
+    분기를 다 확인한 뒤에야 defer 여부/공개 범위를 스스로 결정한다 — 그래야 무거운 조회
+    (info_handle, 실제 이름 조회)에만 "생각 중" 표시가 붙고, 가벼운 실패 분기는 그대로 즉시
+    응답한다(지연시간 최적화, 두 응답의 ephemeral이 서로 달라 defer를 미리 걸 수 없기도 하다)."""
     guild = interaction.guild
     if guild is None:
         return
@@ -95,5 +101,9 @@ async def handle(interaction: discord.Interaction, 이름: str) -> None:
         await interaction.response.send_message(random.choice(_UNKNOWN_LINES), ephemeral=True)
         return
 
+    # 여기서부터가 실제로 느린 구간(info_handle의 여러 DB 호출 + 실제 이름 조회)이라 defer한다.
+    await interaction.response.defer()
     text, embed = await info_handle(member.id, target_name=member.display_name, guild=guild)
-    await interaction.response.send_message(content=f"{member.mention}\n{text}", embed=embed)
+    text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
+    real_name = await resolve_real_name(interaction.client, member.id)
+    await interaction.edit_original_response(content=f"{real_name}\n{text}", embed=embed)

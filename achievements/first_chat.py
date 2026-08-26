@@ -1,0 +1,5 @@
+ID = "first_chat"
+NAME = "위대하고 귀여운 대화의 시작"
+HOW_TO_EARN = "햄미랑 처음으로 대화하면 얻어."
+RARITY = "일반"
+CODE = "o6en9igh"

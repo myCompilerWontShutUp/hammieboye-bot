@@ -7,7 +7,7 @@ from config import ALLOWED_GUILD_IDS, CALL_PREFIXES
 from core import admin, call_event, greeting, onboarding, presence, slash_commands, sleep_event, wake_event
 from core.chat import handle_natural_language
 from core.client import create_tree
-from core.scheduler import is_sleep_time, start_daily, start_interval
+from core.scheduler import is_sleep_time, is_sleep_time_for, start_daily, start_interval
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import set_last_channel
 from db.users import ensure_user, increment_chat_count
@@ -66,6 +66,7 @@ def setup_dispatcher(client: discord.Client) -> None:
         sleep_event.init(client)
         greeting.init(client)
         presence.init(client)
+        admin.init(client)
 
         # 봇이 취침 시간대 도중에 켜졌을 수도 있으니, 다음 00:00/06:30을 기다리지 말고 바로 맞춘다.
         await (presence.enter_sleep() if is_sleep_time() else presence.wake_up())
@@ -75,7 +76,10 @@ def setup_dispatcher(client: discord.Client) -> None:
         start_daily(6, 30, call_event.schedule_today)  # 기상 시각: 그날 5개 시각 산출
         start_daily(6, 30, refresh_conversation_caps)  # 기상 시각: 자연어 대화 일일 상한 동결
         start_daily(6, 30, greeting.post_daily_greeting)  # 기상 시각: 아침 인사 + 기념일 언급
-        start_daily(23, 59, sleep_event.announce_and_reward)  # 취침 전 최다 대화자 언급
+        # 자정을 살짝 넘긴 00:01에 실행 — 23:59에 하면 "11시 59분에 자러 감을 선언"하는
+        # 꼴이 되어 사용자 확정대로 자정(00:00) 이후로 옮겼다. 함수 내부에서 "어제" 날짜를
+        # 명시적으로 계산해서 집계하므로 자정을 넘긴 뒤 실행돼도 정확하다.
+        start_daily(0, 1, sleep_event.announce_and_reward)  # 최다 대화자 발표 + 전원 보상
         start_interval(_TICK_INTERVAL_SECONDS, call_event.tick)  # 예정 게시 + 무응답 만료 점검
 
     @client.event
@@ -94,9 +98,10 @@ def setup_dispatcher(client: discord.Client) -> None:
             # 관리자 콘솔은 취침 시간대와 무관하게 항상 동작한다 (§13-F 확정).
             await admin.handle(message)
             return
-        if is_sleep_time():
+        if is_sleep_time_for(message.author.id):
             # 취침 시간(00:00~06:30)엔 원칙적으로 무슨 일이 있어도 응답하지 않지만,
-            # 봇을 맨션한 경우만 예외로 취침 중 깨움 이벤트 로직을 태운다.
+            # 봇을 맨션한 경우만 예외로 취침 중 깨움 이벤트 로직을 태운다. (관리자가
+            # hm-awake/hm-asleep으로 강제 오버라이드한 경우 실제 시간 대신 그 값을 따른다.)
             if client.user in message.mentions:
                 await wake_event.handle_mention(message)
             return

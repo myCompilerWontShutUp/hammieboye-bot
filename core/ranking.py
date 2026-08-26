@@ -1,9 +1,11 @@
+import asyncio
 import random
 from datetime import datetime
 
 import discord
 
-from command.base import EMBED_COLOR
+from core.base import EMBED_COLOR
+from core.discord_names import resolve_real_name
 from core.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates
 
@@ -46,9 +48,12 @@ async def _sort_key(candidate: dict) -> tuple:
     )
 
 
-async def build_embed() -> tuple[str, discord.Embed]:
+async def build_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     candidates = await get_top_candidates()
-    keyed = [((await _sort_key(c)), c) for c in candidates]
+    # 후보자별 DB 조회(_sort_key)는 서로 완전히 독립적인데 예전엔 한 명씩 순차로 기다렸다 —
+    # 후보 수(최대 20명)만큼 지연이 곱해지던 걸 병렬화해서 없앤다(지연시간 개선, 사용자 확정).
+    sort_keys = await asyncio.gather(*(_sort_key(c) for c in candidates))
+    keyed = list(zip(sort_keys, candidates))
     keyed.sort(key=lambda pair: pair[0])
     top = [c for _, c in keyed[:_TOP_N]]
 
@@ -56,7 +61,10 @@ async def build_embed() -> tuple[str, discord.Embed]:
     if not top:
         embed.description = "아직 등록된 사용자가 없어."
     else:
-        lines = [f"{i + 1}. <@{c['user_id']}> — {c['affection']}" for i, c in enumerate(top)]
+        # 실제 멘션(<@id>) 대신 실제 이름을 쓴다 — 햄미는 사용자를 맨션하지 않는다(사용자 확정).
+        # 이름 조회도 서로 독립적이라 병렬로 처리한다.
+        names = await asyncio.gather(*(resolve_real_name(client, c["user_id"]) for c in top))
+        lines = [f"{i + 1}. {name} — {c['affection']}" for i, (name, c) in enumerate(zip(names, top))]
         embed.description = "\n".join(lines)
 
     embed.set_footer(text=format_footer_time(datetime.now(KST)))

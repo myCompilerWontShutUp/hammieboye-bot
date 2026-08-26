@@ -18,7 +18,7 @@ CALL_PREFIXES = tuple(
     prefix.strip() for prefix in os.environ["CALL_PREFIXES"].split(",") if prefix.strip()
 )
 
-# 관리자 콘솔("주인님-가라사대 ...")을 쓸 수 있는 단 1명의 Discord user ID (§13-F).
+# 관리자 콘솔("주인님 가라사대 ...")을 쓸 수 있는 단 1명의 Discord user ID (§13-F).
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]

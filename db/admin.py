@@ -14,6 +14,7 @@ KNOWN_TABLES = (
     "guild_channels",
     "guild_sleep_state",
     "withdrawn_users",
+    "user_achievements",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -27,6 +28,7 @@ _ORDER_COLUMN = {
     "guild_channels": "updated_at",
     "guild_sleep_state": "updated_at",
     "withdrawn_users": "withdrawn_at",
+    "user_achievements": "earned_at",
 }
 
 

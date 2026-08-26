@@ -166,14 +166,15 @@ async def handle_join(interaction: discord.Interaction) -> None:
         return
     if not await sleep_guard.guard(interaction, silent=False):  # 취침 시간대 (사용자 확정)
         return
+    # 자연어처럼 "생각 중" 표시를 즉시 띄운 뒤 같은 자리를 결과로 바꿔치기한다(지연시간 개선).
+    # 이 커맨드의 모든 응답이 ephemeral이라 defer 시점에 한 번에 결정해도 문제없다.
+    await interaction.response.defer(ephemeral=True)
     await _touch_channel(interaction)
     user_id = interaction.user.id
 
     existing = await get_user(user_id)
     if existing is not None and existing["consent_given"]:
-        await interaction.response.send_message(
-            random.choice(_ALREADY_JOINED_LINES), ephemeral=True
-        )
+        await interaction.edit_original_response(content=random.choice(_ALREADY_JOINED_LINES))
         return
 
     withdrawal = await get_withdrawal(user_id)
@@ -184,12 +185,12 @@ async def handle_join(interaction: discord.Interaction) -> None:
             message = random.choice(_COOLDOWN_TEMPLATE_LINES).format(
                 withdrawn=_format_kst(withdrawn_at), eligible=_format_kst(eligible_at)
             )
-            await interaction.response.send_message(message, ephemeral=True)
+            await interaction.edit_original_response(content=message)
             return
 
     await ensure_user(user_id)
     await set_consent(user_id)
-    await interaction.response.send_message(random.choice(_JOIN_SUCCESS_LINES), ephemeral=True)
+    await interaction.edit_original_response(content=random.choice(_JOIN_SUCCESS_LINES))
 
 
 async def handle_join_info(interaction: discord.Interaction) -> None:
@@ -197,8 +198,9 @@ async def handle_join_info(interaction: discord.Interaction) -> None:
         return
     if not await sleep_guard.guard(interaction, silent=False):  # 취침 시간대 (사용자 확정)
         return
+    await interaction.response.defer(ephemeral=True)
     await _touch_channel(interaction)
-    await interaction.response.send_message(_COLLECTION_NOTICE, ephemeral=True)
+    await interaction.edit_original_response(content=_COLLECTION_NOTICE)
 
 
 async def handle_leave(interaction: discord.Interaction) -> None:
@@ -206,13 +208,14 @@ async def handle_leave(interaction: discord.Interaction) -> None:
         return
     if not await sleep_guard.guard(interaction, silent=False):  # 취침 시간대 (사용자 확정)
         return
+    await interaction.response.defer(ephemeral=True)
     await _touch_channel(interaction)
 
     user = await get_user(interaction.user.id)
     if user is None or not user["consent_given"]:
-        await interaction.response.send_message(_NOT_JOINED_LEAVE_MESSAGE, ephemeral=True)
+        await interaction.edit_original_response(content=_NOT_JOINED_LEAVE_MESSAGE)
         return
 
     view = _WithdrawView(interaction.user.id)
-    await interaction.response.send_message(_LEAVE_CONFIRM_PROMPT, view=view, ephemeral=True)
+    await interaction.edit_original_response(content=_LEAVE_CONFIRM_PROMPT, view=view)
     view.interaction = interaction
