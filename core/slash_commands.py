@@ -6,7 +6,6 @@ from discord import app_commands
 from command.info import handle as info_handle
 from command.plastic import handle as plastic_handle
 from core import intro, membership, onboarding, ranking, sleep_guard
-from core.scheduler import is_sleep_time_for
 from db.daily_stats import increment_messages_today
 from db.guild_channels import set_last_channel
 from db.users import ensure_user
@@ -66,9 +65,11 @@ def register(tree: app_commands.CommandTree) -> None:
     async def plastic_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        # 취침 중엔 완전 무시가 원칙이라(사용자 확정) defer조차 하지 않는다 — is_sleep_time_for
-        # 자체는 DB 없이 즉시 판단 가능해서 이 체크는 지연시간에 영향이 없다.
-        if is_sleep_time_for(interaction.user.id):
+        # 취침 중엔 완전 무시하면 디스코드가 "앱이 응답하지 않았어요"를 띄워서 의도한
+        # "자는 중" 연출과 다르게 보인다 — 그래서 완전 무시 대신 SLEEP_REPLY로 명시적으로
+        # 응답한다(사용자 확정, 2026-08-27). defer 전에 바로 응답해야 하므로 guard()가
+        # 내부적으로 response.send_message()를 쓴다.
+        if not await sleep_guard.guard(interaction, silent=False):
             return
         # 자연어처럼 "생각 중" 표시를 즉시 띄운 뒤, 실제 처리가 끝나면 같은 자리를 결과로
         # 바꿔치기한다 (defer -> edit_original_response, 사용자 확정).
@@ -89,7 +90,7 @@ def register(tree: app_commands.CommandTree) -> None:
         text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
-    @tree.command(name="랭킹", description="호감도 기준 상위 5명 순위를 확인한다")
+    @tree.command(name="랭킹", description="호감도 기준 상위 10명 순위를 확인한다")
     async def ranking_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return

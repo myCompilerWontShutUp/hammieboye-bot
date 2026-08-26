@@ -9,7 +9,7 @@ from core.discord_names import resolve_real_name
 from core.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates
 
-_TOP_N = 5
+_TOP_N = 10
 
 # 랭킹 embed를 보여주기 직전에 붙이는 인트로 한 줄 (API로 생성 후 검수해서 고정, 사용자 요청).
 _INTRO_LINES = (
