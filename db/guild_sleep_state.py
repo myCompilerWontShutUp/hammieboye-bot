@@ -1,4 +1,12 @@
-from db.client import rpc
+from datetime import datetime, timedelta, timezone
+
+from db.client import rpc, select
+
+_KST_OFFSET = timedelta(hours=9)
+
+
+def _kst_today_str() -> str:
+    return (datetime.now(timezone.utc) + _KST_OFFSET).date().isoformat()
 
 
 async def register_mention(guild_id: int) -> bool:
@@ -11,3 +19,17 @@ async def register_mention(guild_id: int) -> bool:
     """
     rows = await rpc("register_sleep_mention", {"p_guild_id": guild_id})
     return rows[0]["just_triggered"]
+
+
+async def any_triggered_tonight() -> bool:
+    """오늘(KST) 밤 어느 서버에서든 방해금지 이벤트가 이미 발동했는지.
+
+    발동 여부(`triggered`)는 DB에 남아 재시작에도 그대로 유지되지만, presence(상태 표시)와
+    §28의 지연 기상 플래그는 봇 프로세스 메모리에만 있어서 재배포/재시작하면 사라진다 —
+    `on_ready()`가 이 함수로 DB 기준 진실을 확인해서 그 둘을 복원하는 데 쓴다.
+    """
+    rows = await select(
+        "guild_sleep_state",
+        {"sleep_date": f"eq.{_kst_today_str()}", "triggered": "eq.true", "select": "guild_id", "limit": "1"},
+    )
+    return bool(rows)

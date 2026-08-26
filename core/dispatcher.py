@@ -7,9 +7,17 @@ from config import ALLOWED_GUILD_IDS, CALL_PREFIXES
 from core import admin, call_event, greeting, onboarding, presence, slash_commands, sleep_event, wake_event
 from core.chat import handle_natural_language
 from core.client import create_tree
-from core.scheduler import is_late_wake_today, is_sleep_time, is_sleep_time_for, start_daily, start_interval
+from core.scheduler import (
+    is_late_wake_today,
+    is_sleep_time,
+    is_sleep_time_for,
+    mark_late_wake,
+    start_daily,
+    start_interval,
+)
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import set_last_channel
+from db.guild_sleep_state import any_triggered_tonight
 from db.users import ensure_user, increment_chat_count
 
 _TICK_INTERVAL_SECONDS = 30
@@ -83,7 +91,17 @@ def setup_dispatcher(client: discord.Client) -> None:
         admin.init(client)
 
         # 봇이 취침 시간대 도중에 켜졌을 수도 있으니, 다음 00:00/06:30을 기다리지 말고 바로 맞춘다.
-        await (presence.enter_sleep() if is_sleep_time() else presence.wake_up())
+        # 방해금지(triggered) 여부는 DB에 남아있지만 presence와 §28의 지연 기상 플래그는
+        # 프로세스 메모리뿐이라 재배포/재시작하면 사라진다 — 여기서 DB 기준으로 복원한다
+        # (실사용 중 발견: PR 배포로 재시작하니 방해금지 상태였던 게 "쿨쿨 자는 중"으로
+        # 되돌아가 보였던 버그).
+        tonight_triggered = await any_triggered_tonight()
+        if tonight_triggered:
+            mark_late_wake()
+        if is_sleep_time():
+            await (presence.enter_dnd() if tonight_triggered else presence.enter_sleep())
+        else:
+            await presence.wake_up()
 
         start_daily(0, 0, presence.enter_sleep)  # 취침 시작: 자리비움 전환
         # 기상(온라인 전환 + 부름 이벤트 5개 시각 산출 + nl_cap 동결 + 아침 인사)을 한
