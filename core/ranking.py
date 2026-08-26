@@ -1,8 +1,10 @@
 import random
+from datetime import datetime
 
 import discord
 
 from command.base import EMBED_COLOR
+from core.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates
 
 _TOP_N = 5
@@ -56,5 +58,7 @@ async def build_embed() -> tuple[str, discord.Embed]:
     else:
         lines = [f"{i + 1}. <@{c['user_id']}> — {c['affection']}" for i, c in enumerate(top)]
         embed.description = "\n".join(lines)
+
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     return random.choice(_INTRO_LINES), embed

@@ -95,5 +95,5 @@ async def handle(interaction: discord.Interaction, 이름: str) -> None:
         await interaction.response.send_message(random.choice(_UNKNOWN_LINES), ephemeral=True)
         return
 
-    text, embed = await info_handle(member.id, target_name=member.display_name)
+    text, embed = await info_handle(member.id, target_name=member.display_name, guild=guild)
     await interaction.response.send_message(content=f"{member.mention}\n{text}", embed=embed)

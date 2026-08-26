@@ -21,6 +21,7 @@ DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
+DROP FUNCTION IF EXISTS increment_help_count(bigint);
 DROP FUNCTION IF EXISTS refresh_daily_conversation_caps();
 DROP FUNCTION IF EXISTS register_sleep_mention(bigint);
 DROP FUNCTION IF EXISTS add_affection_uncapped(bigint, integer, text);
@@ -470,6 +471,20 @@ AS $$
 $$;
 
 -- ------------------------------------------------------------
+-- 14-1. 도와준 횟수 원자적 증가 RPC (부름 이벤트에 relevant하게 반응해서 클레임 성공한 경우)
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION increment_help_count(p_user_id bigint)
+RETURNS bigint
+LANGUAGE sql
+AS $$
+  UPDATE users
+  SET help_count = help_count + 1
+  WHERE user_id = p_user_id
+  RETURNING help_count;
+$$;
+
+-- ------------------------------------------------------------
 -- 15. 오늘 대화 횟수 원자적 증가 RPC (3-5 최다 대화자 판정용)
 -- ------------------------------------------------------------
 
@@ -528,8 +543,11 @@ AS $$
 DECLARE
   v_stat_date date := kst_today();
 BEGIN
+  -- 최솟값 20은 호감도가 음수인 사용자에게도 동일하게 적용된다(사용자 확정) — 자연어 자체는
+  -- 음수 호감도 게이트가 먼저 막지만, /내정보 등에 표시되는 "오늘 대화 상한" 수치가 0으로
+  -- 보이면 혼란스러우므로 표시값 자체를 20 밑으로 내려가지 않게 한다.
   INSERT INTO daily_stats (user_id, stat_date, nl_cap, nl_count, over_cap_attempts)
-  SELECT user_id, v_stat_date, LEAST(GREATEST(affection, 0) * 2, 500), 0, 0 FROM users
+  SELECT user_id, v_stat_date, LEAST(GREATEST(affection * 2, 20), 500), 0, 0 FROM users
   ON CONFLICT (user_id, stat_date)
   DO UPDATE SET
     nl_cap = EXCLUDED.nl_cap,

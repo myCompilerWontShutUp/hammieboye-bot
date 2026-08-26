@@ -1,3 +1,4 @@
+import asyncio
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -5,10 +6,11 @@ import discord
 
 import achievements
 from command.base import EMBED_COLOR
-from core.scheduler import KST
+from core.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 from db.daily_stats import ensure_nl_cap
 from db.history import get_recent
+from db.ranking import get_rank
 from db.users import get_user
 
 # "햄미가 알려주는 내 정보"라는 딱딱한 고정 문구 대신, 매번 다른 인트로 한 줄을
@@ -70,23 +72,40 @@ def _format_date(iso_str: str) -> str:
     return datetime.fromisoformat(iso_str).astimezone(KST).strftime("%Y. %m. %d")
 
 
-def _format_footer(now: datetime) -> str:
-    # GMT/KST 같은 시간대 표기 없이, 한국시간 기준 날짜 + 12시간제 시각(AM/PM)만 적는다.
-    period = "AM" if now.hour < 12 else "PM"
-    return f"{now.strftime('%Y. %m. %d.')} {now.strftime('%I:%M')} {period}"
-
-
-async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, discord.Embed]:
-    """target_name이 None이면 본인(/내정보) 조회, 아니면 그 이름의 다른 사람(/소개) 조회."""
+async def handle(
+    user_id: int,
+    *,
+    target_name: str | None = None,
+    guild: discord.Guild | None = None,
+) -> tuple[str, discord.Embed]:
+    """target_name이 None이면 본인(/내정보) 조회, 아니면 그 이름의 다른 사람(/소개) 조회.
+    guild를 주면 그 서버 안에서의 호감도 순위도 같이 계산한다(등록된 서버원 기준)."""
     is_self = target_name is None
 
     user = await get_user(user_id)
-    stats = await ensure_nl_cap(user_id, user["affection"])
-    recent = await get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30))
-    earned = await get_earned(user_id)
+    affection = user["affection"]
+    member_ids = [m.id for m in guild.members if not m.bot] if guild is not None else None
+
+    if member_ids is not None:
+        stats, recent, earned, global_rank, guild_rank = await asyncio.gather(
+            ensure_nl_cap(user_id, affection),
+            get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30)),
+            get_earned(user_id),
+            get_rank(user_id, affection),
+            get_rank(user_id, affection, member_ids),
+        )
+    else:
+        stats, recent, earned, global_rank = await asyncio.gather(
+            ensure_nl_cap(user_id, affection),
+            get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30)),
+            get_earned(user_id),
+            get_rank(user_id, affection),
+        )
+        guild_rank = None
 
     title = "나의 정보" if is_self else f"{target_name}님의 정보"
     description = _SELF_DESCRIPTION if is_self else _OTHER_DESCRIPTION_TEMPLATE.format(name=target_name)
+    heart_field_name = "💕 햄미와 나" if is_self else f"💕 햄미와 {target_name}님"
     record_field_name = "📋 햄미와 나의 기록" if is_self else f"📋 햄미와 {target_name}님의 기록"
     achievement_field_name = "🏆 우리들의 업적" if is_self else f"🏆 {target_name}님의 업적"
 
@@ -94,7 +113,11 @@ async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, 
 
     # 섹션 사이 여백은 각 필드 값 "끝"에 줄바꿈 + zero-width space를 붙여서 만든다 — 트레일링
     # 공백만 있는 줄은 렌더러가 트리밍할 수 있어서, ZWS로 "진짜 내용이 있는 빈 줄"을 만든다.
-    embed.add_field(name="💕 햄미의 호감도", value=f"**{user['affection']}**\n​", inline=False)
+    heart_lines = [f"- 햄미의 호감도: **{affection}**"]
+    if guild_rank is not None:
+        heart_lines.append(f"- 서버 호감도 순위: **{guild_rank}**위")
+    heart_lines.append(f"- 전체 호감도 순위: **{global_rank}**위")
+    embed.add_field(name=heart_field_name, value="\n".join(heart_lines) + "\n​", inline=False)
 
     embed.add_field(
         name=record_field_name,
@@ -126,7 +149,7 @@ async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, 
     recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3]) if recent else "- (최근 30분 내 대화 없음)"
     embed.add_field(name="🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
 
-    embed.set_footer(text=_format_footer(datetime.now(KST)))
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     if is_self:
         return random.choice(_INTRO_LINES), embed

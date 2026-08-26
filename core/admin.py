@@ -320,7 +320,7 @@ async def _handle_s_version(args: list[str]) -> str:
     commit = get_commit_hash()
     updated_dt = datetime.fromisoformat(get_last_updated_iso()).astimezone(_KST)
     updated_label = updated_dt.strftime("%Y-%m-%d %H:%M")
-    return f"지금 버전은 커밋 {commit}이에요!! 마지막 업데이트는 {updated_label}(KST)이에요!!"
+    return f"지금 버전은 커밋 {commit}이에요!! 마지막 업데이트는 {updated_label}이에요!!"
 
 
 async def _handle_s_hammie_runtime(args: list[str]) -> str:

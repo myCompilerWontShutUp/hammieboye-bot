@@ -20,6 +20,13 @@ def is_sleep_time(now: datetime | None = None) -> bool:
     return SLEEP_START <= current < WAKE_TIME
 
 
+def format_footer_time(now: datetime) -> str:
+    """모든 시스템 임베드(`/내정보`, `/소개`, `/랭킹`)의 footer 공용 포맷. 날짜 + 12시간제
+    시각(AM/PM)만 적고, "GMT"/"KST" 같은 시간대 약어는 쓰지 않는다 (사용자 확정)."""
+    period = "AM" if now.hour < 12 else "PM"
+    return f"{now.strftime('%Y. %m. %d.')} {now.strftime('%I:%M')} {period}"
+
+
 def start_daily(hour: int, minute: int, callback: _DailyCallback) -> tasks.Loop:
     """매일 한국시간 hour:minute에 callback을 한 번 실행하는 백그라운드 태스크를 시작한다.
 

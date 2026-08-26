@@ -295,7 +295,8 @@ async def _register_cooldown_abuse(user_id: int, remaining: timedelta) -> tuple[
     counts[_METHOD] = count
     await update_daily_stats(user_id, {"cooldown_abuse_counts": counts})
 
-    remaining_label = f" (남은 시간: {_format_remaining(remaining)})"
+    # 남은 시간은 스포일러 마크다운으로 가려서 직접 눌러야 보이게 한다 (사용자 확정).
+    remaining_label = f" (남은 시간: ||{_format_remaining(remaining)}||)"
 
     if count > _COOLDOWN_ABUSE_FREE_COUNT:
         result = await add_affection(user_id, -1)
