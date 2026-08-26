@@ -227,9 +227,20 @@ async def handle_potential_response(user_id: int, guild_id: int, text: str) -> t
 
     _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
     result = await add_affection(user_id, reward, "call_event")
-    await increment_help_count(user_id)  # "도와준 횟수" — 부름 이벤트를 실제로 도와줬을 때만 증가
+    await _try_increment_help_count(user_id)
     await _announce_winner(event, user_id, guild_id)
     return result["applied_amount"], result["achievement_notice"]
+
+
+async def _try_increment_help_count(user_id: int) -> None:
+    """"도와준 횟수" 증가는 보조 통계일 뿐이라, 여기서 실패해도(예: 마이그레이션 미적용으로
+    RPC가 아직 없는 경우) 정작 중요한 호감도 지급·최종 답장 전송까지 막으면 안 된다 —
+    실제로 이 호출이 그대로 예외를 던지게 뒀다가 add_affection은 이미 적용됐는데 그 뒤
+    코드가 전부 중단돼 응답 자체가 안 나가는 사고가 있었다."""
+    try:
+        await increment_help_count(user_id)
+    except Exception:
+        logging.exception("Failed to increment help_count for user %s", user_id)
 
 
 async def _classify_response(prompt_text: str, reply_text: str) -> str | None:
