@@ -34,7 +34,7 @@ async def award(user_id: int, achievement_id: str) -> bool:
 
 
 async def revoke(user_id: int, achievement_id: str) -> bool:
-    """관리자 콘솔의 ac-revoke 전용. 가지고 있던 업적이면 지우고 True, 애초에 없었으면
+    """관리자 콘솔의 ac revoke 전용. 가지고 있던 업적이면 지우고 True, 애초에 없었으면
     아무 것도 안 하고 False(중복 처리 없이 조용히 성공으로 취급하지 않고, 호출부가
     "원래 안 가지고 있었다"는 걸 구분할 수 있게 한다)."""
     if not await has_earned(user_id, achievement_id):
@@ -69,9 +69,9 @@ async def maybe_award_affection_milestones(
     add_affection_uncapped 안에서 호출되는 공용 훅 — 호감도가 바뀌는 경로가 여러 군데
     (페트병, 감정, 부름 이벤트, 관리자 등)라 개별 호출부마다 챙기지 않도록 중앙화했다.
 
-    주의: la-set/la-reset(관리자, set_affection RPC)은 이 훅을 거치지 않는다 — daily_stats/
+    주의: la set/la reset(관리자, set_affection RPC)은 이 훅을 거치지 않는다 — daily_stats/
     affection_log를 아예 안 건드리는 별도 경로라는 기존 설계 원칙을 그대로 유지하기 위해
-    의도적으로 손대지 않았다(사용자 확정). 그 경로로 마일스톤을 넘긴 경우는 ac-grant로
+    의도적으로 손대지 않았다(사용자 확정). 그 경로로 마일스톤을 넘긴 경우는 ac grant로
     수동 부여하는 것이 의도된 우회로다.
     """
     notices: list[str] = []

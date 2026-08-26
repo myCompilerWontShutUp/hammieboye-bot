@@ -33,7 +33,7 @@ _ORDER_COLUMN = {
 
 
 async def set_affection(user_id: int, value: int) -> int:
-    """la-set/la-reset 전용: daily_stats/affection_log를 건드리지 않고 절대값으로 SET."""
+    """la set/la reset 전용: daily_stats/affection_log를 건드리지 않고 절대값으로 SET."""
     return await rpc("set_affection", {"p_user_id": user_id, "p_value": value})
 
 

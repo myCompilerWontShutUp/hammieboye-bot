@@ -57,6 +57,13 @@ _PROMPT_PREFIX = "주인님 가라사대 "
 _SESSION_TIMEOUT = timedelta(seconds=60)
 _SESSION_OPEN_MESSAGE = "넵! 명령을 내려주세요!"
 
+# 신규(2026-08-27): 명령어 이름을 하이픈("la-up" 등)에서 띄어쓰기("la up")로 바꾸면서,
+# 이름이 여러 단어가 되어 "첫 토큰 = 명령어"라는 예전 가정이 깨졌다. 그래서 ":" 토큰을
+# 기준으로 앞부분 전체를 명령어 이름 후보로 삼는다 — 부분/접두어 일치가 아니라 전체 문자열
+# 일치라서 "sh db"와 "sh db list"처럼 한쪽이 다른 쪽의 접두어인 이름들도 서로 안 헷갈린다.
+# ":"가 없으면 인자 없이 전체 문자열이 명령어 이름 후보가 된다(=인자가 없는 명령어만 실행됨).
+_ARG_SEPARATOR = ":"
+
 # 세션은 채널 단위로 유효하다 (사용자 확정) — 관리자가 다른 채널에서 평범히 채팅해도
 # 그 채널에 세션이 없으면 영향 없음. 관리자는 한 명뿐이라 전역 변수 하나로 충분하다.
 _session_channel_id: int | None = None
@@ -66,7 +73,7 @@ _client: discord.Client | None = None
 
 
 def init(client: discord.Client) -> None:
-    """sh-event-all이 클레임한 유저의 실제 이름(멘션 아님)을 조회할 때 쓴다."""
+    """sh event all이 클레임한 유저의 실제 이름(멘션 아님)을 조회할 때 쓴다."""
     global _client
     _client = client
 
@@ -96,16 +103,28 @@ def _session_active_in(channel_id: int) -> bool:
     return True
 
 
-def _match_open_trigger(content: str) -> tuple[bool, list[str]] | None:
-    """content가 트리거 패턴 1(바로 그 문구) 또는 2(문구+등록된 명령어)와 정확히 일치하면
-    (즉시 실행 여부, 토큰들)을 반환한다. 어느 쪽에도 안 걸리면 None (완전히 무시 대상)."""
+def _split_command_and_args(content: str) -> tuple[str, list[str]]:
+    """content를 (명령어 이름, 인자 토큰들)로 나눈다. ":" 앞부분 전체(공백 개수와 무관하게
+    단일 공백으로 정규화)를 명령어 이름 후보로, 뒷부분을 인자 토큰으로 삼는다. ":"가 없으면
+    인자 없이 전체 문자열이 명령어 이름 후보다."""
+    name_part, _, arg_part = content.partition(_ARG_SEPARATOR)
+    name = " ".join(name_part.split())
+    args = arg_part.split()
+    return name, args
+
+
+def _match_open_trigger(content: str) -> tuple[bool, str, list[str]] | None:
+    """content가 트리거 패턴 1(바로 그 문구) 또는 2(문구+":"+등록된 명령어)와 정확히
+    일치하면 (즉시 실행 여부, 명령어 이름, 인자들)을 반환한다. 어느 쪽에도 안 걸리면 None
+    (완전히 무시 대상)."""
     stripped = content.strip()
     if stripped == _PROMPT_PHRASE:
-        return False, []
+        return False, "", []
     if stripped.startswith(_PROMPT_PREFIX):
-        tokens = stripped[len(_PROMPT_PREFIX) :].strip().split()
-        if tokens and tokens[0] in _COMMANDS:
-            return True, tokens
+        remainder = stripped[len(_PROMPT_PREFIX) :]
+        name, args = _split_command_and_args(remainder)
+        if name in _COMMANDS:
+            return True, name, args
     return None
 
 
@@ -139,13 +158,13 @@ async def _require_registered(user_id: int) -> dict:
 
 async def _handle_la_up(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: la-up {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: la up : {user_id} {amount} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     result = await add_affection_uncapped(user_id, amount, "admin_la_up")
     new_affection = result["new_affection"]
-    await log_command("la-up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+    await log_command("la up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     response = f"네!! {user_id}님의 호감도를 +{amount} 올려드렸어요!! (현재 {new_affection})"
     if result["achievement_notice"]:
         response += f"\n{result['achievement_notice']}"
@@ -154,40 +173,40 @@ async def _handle_la_up(args: list[str]) -> str:
 
 async def _handle_la_down(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: la-down {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: la down : {user_id} {amount} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     result = await add_affection_uncapped(user_id, -amount, "admin_la_down")
     new_affection = result["new_affection"]
-    await log_command("la-down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+    await log_command("la down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     return f"네!! {user_id}님의 호감도를 -{amount} 내렸어요!! (현재 {new_affection})"
 
 
 async def _handle_la_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: la-set {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: la set : {user_id} {amount} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     new_affection = await set_affection(user_id, amount)
-    await log_command("la-set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+    await log_command("la set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     return f"네!! {user_id}님의 호감도를 {amount}로 맞춰드렸어요!! (현재 {new_affection})"
 
 
 async def _handle_la_reset(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: la-reset {user_id} {boolean}")
+        raise _AdminError("사용법: la reset : {user_id} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     user = await _require_registered(user_id)
     await set_affection(user_id, _INITIAL_AFFECTION)
-    await log_command("la-reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
+    await log_command("la reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
     return f"네!! {user_id}님의 호감도를 초기값({_INITIAL_AFFECTION})으로 되돌려드렸어요!!"
 
 
 async def _handle_tc_up(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: tc-up {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: tc up : {user_id} {amount} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
@@ -195,13 +214,13 @@ async def _handle_tc_up(args: list[str]) -> str:
     before = stats["nl_count"]
     new_count = min(max(before + amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
-    await log_command("tc-up", f"{user_id} {amount}", str(before), str(new_count))
+    await log_command("tc up", f"{user_id} {amount}", str(before), str(new_count))
     return f"네!! {user_id}님의 오늘 대화 횟수를 {new_count}/{stats['nl_cap']}로 올려드렸어요!!"
 
 
 async def _handle_tc_down(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: tc-down {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: tc down : {user_id} {amount} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
@@ -209,13 +228,13 @@ async def _handle_tc_down(args: list[str]) -> str:
     before = stats["nl_count"]
     new_count = max(before - amount, 0)
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
-    await log_command("tc-down", f"{user_id} {amount}", str(before), str(new_count))
+    await log_command("tc down", f"{user_id} {amount}", str(before), str(new_count))
     return f"네!! {user_id}님의 오늘 대화 횟수를 {new_count}/{stats['nl_cap']}로 내려드렸어요!!"
 
 
 async def _handle_tc_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: tc-set {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: tc set : {user_id} {amount} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
@@ -223,19 +242,19 @@ async def _handle_tc_set(args: list[str]) -> str:
     before = stats["nl_count"]
     new_count = min(max(amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
-    await log_command("tc-set", f"{user_id} {amount}", str(before), str(new_count))
+    await log_command("tc set", f"{user_id} {amount}", str(before), str(new_count))
     return f"네!! {user_id}님의 오늘 대화 횟수를 {new_count}/{stats['nl_cap']}로 맞춰드렸어요!!"
 
 
 async def _handle_tc_reset(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: tc-reset {user_id} {boolean}")
+        raise _AdminError("사용법: tc reset : {user_id} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     user = await _require_registered(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
     before = stats["nl_count"]
     await _update_nl_count(user_id, 0, stats["nl_cap"])
-    await log_command("tc-reset", str(user_id), str(before), "0")
+    await log_command("tc reset", str(user_id), str(before), "0")
     return f"네!! {user_id}님의 오늘 대화 횟수를 0/{stats['nl_cap']}로 되돌려드렸어요!!"
 
 
@@ -278,7 +297,7 @@ async def _handle_sh_event_last(args: list[str]) -> str:
 
 async def _handle_sh_user_stats(args: list[str]) -> tuple[str, discord.Embed]:
     if len(args) != 1:
-        raise _AdminError("사용법: sh-user-stats {user_id} {boolean}")
+        raise _AdminError("사용법: sh user stats : {user_id} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     await _require_registered(user_id)
     return await info_handle(user_id)
@@ -290,7 +309,7 @@ async def _handle_sh_db_list(args: list[str]) -> str:
 
 async def _handle_sh_db(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: sh-db {name} {amount} {boolean}")
+        raise _AdminError("사용법: sh db : {name} {amount} {boolean}")
     name = args[0]
     amount = _parse_int(args[1], "amount")
     if name not in KNOWN_TABLES:
@@ -301,7 +320,7 @@ async def _handle_sh_db(args: list[str]) -> str:
 
 async def _handle_gn_call_event(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: gn-call-event {time} {boolean}")
+        raise _AdminError("사용법: gn call event : {time} {boolean}")
     minutes = _parse_int(args[0], "time")
     scheduled_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
     min_gap = timedelta(minutes=MIN_GAP_MINUTES)
@@ -317,7 +336,7 @@ async def _handle_gn_call_event(args: list[str]) -> str:
     await schedule_one(scheduled_at)
     dt = scheduled_at.astimezone(_KST)
     time_label = f"{dt.hour}시 {dt.minute}분"
-    await log_command("gn-call-event", str(minutes), "없음", time_label)
+    await log_command("gn call event", str(minutes), "없음", time_label)
     return f"네!! {minutes}분 뒤인 {time_label}에 호출 이벤트를 새로 만들었어요!!"
 
 
@@ -327,7 +346,7 @@ async def _handle_rm_call_event(args: list[str]) -> str:
         return "삭제할 예정된 이벤트가 없어요!!"
     await delete_event(event["id"])
     time_label = _format_event_time(event["scheduled_at"])
-    await log_command("rm-call-event", "", time_label, "삭제됨")
+    await log_command("rm call event", "", time_label, "삭제됨")
     return f"네!! 가장 가까운 호출 이벤트({time_label})를 삭제했어요!!"
 
 
@@ -335,7 +354,7 @@ async def _handle_rm_call_event_all(args: list[str]) -> str:
     deleted = await delete_unposted_after(datetime.now(timezone.utc))
     if not deleted:
         return "삭제할 예정된 이벤트가 없어요!!"
-    await log_command("rm-call-event-all", "", f"{len(deleted)}개 예정", "전부 삭제됨")
+    await log_command("rm call event all", "", f"{len(deleted)}개 예정", "전부 삭제됨")
     return f"네!! 아직 시작 안 한 호출 이벤트 {len(deleted)}개를 전부 삭제했어요!!"
 
 
@@ -362,7 +381,7 @@ async def _handle_hammie_awake(args: list[str]) -> str:
     응답한다 (다른 사용자에겐 영향 없음, core.scheduler.is_sleep_time_for 참고)."""
     before = get_admin_sleep_override()
     set_admin_sleep_override(False)
-    await log_command("hammie-awake", "", str(before), "False")
+    await log_command("hammie awake", "", str(before), "False")
     return "네!! 이제부터 주인님께는 시간대와 상관없이 항상 깨어있는 상태로 응답해드릴게요!!"
 
 
@@ -370,17 +389,17 @@ async def _handle_hammie_asleep(args: list[str]) -> str:
     """관리자 전용(테스트용): 시간대와 무관하게 관리자 본인에게는 항상 잠든 햄미로 응답한다."""
     before = get_admin_sleep_override()
     set_admin_sleep_override(True)
-    await log_command("hammie-asleep", "", str(before), "True")
+    await log_command("hammie asleep", "", str(before), "True")
     return "네!! 이제부터 주인님께는 시간대와 상관없이 항상 잠든 상태로 응답해드릴게요!!"
 
 
 async def _handle_hammie_sync(args: list[str]) -> str:
-    """hammie-awake/hammie-asleep 오버라이드를 해제하고 실제 시간대로 복귀한다."""
+    """hammie awake/hammie asleep 오버라이드를 해제하고 실제 시간대로 복귀한다."""
     before = get_admin_sleep_override()
     if before is None:
         return "지금은 별도로 적용된 상태가 없어서, 이미 실제 시간대를 그대로 따르고 있어요!!"
     set_admin_sleep_override(None)
-    await log_command("hammie-sync", "", str(before), "None")
+    await log_command("hammie sync", "", str(before), "None")
     return "네!! 강제로 적용했던 상태를 해제하고, 실제 시간대 기준으로 되돌려드렸어요!!"
 
 
@@ -404,7 +423,7 @@ async def _handle_ac_list_cd(args: list[str]) -> str:
 
 async def _handle_ac_grant(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: ac-grant {user_id} {code} {boolean}")
+        raise _AdminError("사용법: ac grant : {user_id} {code} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
@@ -414,13 +433,13 @@ async def _handle_ac_grant(args: list[str]) -> str:
     granted = await award_achievement(user_id, module.ID)
     if not granted:
         return f"{user_id}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
-    await log_command("ac-grant", f"{user_id} {code}", "미보유", module.ID)
+    await log_command("ac grant", f"{user_id} {code}", "미보유", module.ID)
     return f"네!! {user_id}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!!"
 
 
 async def _handle_ac_revoke(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: ac-revoke {user_id} {code} {boolean}")
+        raise _AdminError("사용법: ac revoke : {user_id} {code} {boolean}")
     user_id = _parse_int(args[0], "user_id")
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
@@ -430,16 +449,16 @@ async def _handle_ac_revoke(args: list[str]) -> str:
     revoked = await revoke_achievement(user_id, module.ID)
     if not revoked:
         return f"{user_id}님은 원래 '{achievements.format_name(module)}' 업적이 없었어요!!"
-    await log_command("ac-revoke", f"{user_id} {code}", module.ID, "미보유")
+    await log_command("ac revoke", f"{user_id} {code}", module.ID, "미보유")
     return f"네!! {user_id}님의 '{achievements.format_name(module)}' 업적을 제거했어요!!"
 
 
 async def _handle_c(args: list[str]) -> str:
-    return "\n".join(f"{spec.name} {spec.params}" for spec in _COMMAND_LIST)
+    return "\n".join(f"{spec.name} : {spec.params}" for spec in _COMMAND_LIST)
 
 
 async def _handle_c_hp(args: list[str]) -> str:
-    return "\n".join(f"{spec.name} {spec.params} - {spec.description}" for spec in _COMMAND_LIST)
+    return "\n".join(f"{spec.name} : {spec.params} - {spec.description}" for spec in _COMMAND_LIST)
 
 
 async def _handle_c_np(args: list[str]) -> str:
@@ -459,36 +478,36 @@ class _CommandSpec:
 
 
 _COMMAND_LIST = (
-    _CommandSpec("la-up", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 +amount (일일 상한 미적용)", _handle_la_up),
-    _CommandSpec("la-down", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 -amount", _handle_la_down),
-    _CommandSpec("la-set", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도를 amount로 절대값 설정", _handle_la_set),
-    _CommandSpec("la-reset", 1, "{user_id} {boolean}", "해당 유저 호감도를 초기값(10)으로 리셋", _handle_la_reset),
-    _CommandSpec("tc-up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_tc_up),
-    _CommandSpec("tc-down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_tc_down),
-    _CommandSpec("tc-set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_tc_set),
-    _CommandSpec("tc-reset", 1, "{user_id} {boolean}", "해당 유저 오늘 대화 횟수를 0으로 리셋", _handle_tc_reset),
-    _CommandSpec("sh-event-all", 0, "{boolean}", "오늘 부름 이벤트 전부와 결과 표시", _handle_sh_event_all),
-    _CommandSpec("sh-event-next", 0, "{boolean}", "다음으로 남은 부름 이벤트 시각 표시", _handle_sh_event_next),
-    _CommandSpec("sh-event-last", 0, "{boolean}", "가장 최근에 지난 부름 이벤트 시각 표시", _handle_sh_event_last),
-    _CommandSpec("sh-user-stats", 1, "{user_id} {boolean}", "해당 유저의 일반 정보(=/내정보) 표시", _handle_sh_user_stats),
-    _CommandSpec("sh-db-list", 0, "{boolean}", "등록된 테이블 이름 전부 표시", _handle_sh_db_list),
-    _CommandSpec("sh-db", 2, "{name} {amount} {boolean}", "해당 테이블 최근 amount개 행 표시", _handle_sh_db),
-    _CommandSpec("gn-call-event", 1, "{time} {boolean}", "time분 뒤에 호출 이벤트 1개를 수동 생성(최소 간격 30분 준수)", _handle_gn_call_event),
-    _CommandSpec("rm-call-event", 0, "{boolean}", "가장 가까운(아직 시작 안 한) 호출 이벤트 삭제", _handle_rm_call_event),
-    _CommandSpec("rm-call-event-all", 0, "{boolean}", "아직 시작 안 한 호출 이벤트 전부 삭제", _handle_rm_call_event_all),
-    _CommandSpec("sh-version", 0, "{boolean}", "현재 버전(커밋)과 마지막 업데이트 일시 표시", _handle_sh_version),
-    _CommandSpec("sh-hammie-runtime", 0, "{boolean}", "햄미 활동 시간 및 이벤트 발생 가능 시간 표시", _handle_sh_hammie_runtime),
-    _CommandSpec("hammie-awake", 0, "{boolean}", "관리자 전용(테스트용): 시간대 무관하게 항상 깨어있는 햄미로 응답", _handle_hammie_awake),
-    _CommandSpec("hammie-asleep", 0, "{boolean}", "관리자 전용(테스트용): 시간대 무관하게 항상 잠든 햄미로 응답", _handle_hammie_asleep),
-    _CommandSpec("hammie-sync", 0, "{boolean}", "hammie-awake/hammie-asleep 오버라이드 해제, 실제 시간대로 복귀", _handle_hammie_sync),
-    _CommandSpec("ac-list", 0, "{boolean}", "업적 이름(희귀도 포함) 목록 표시", _handle_ac_list),
-    _CommandSpec("ac-list-hp", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ac_list_hp),
-    _CommandSpec("ac-list-cd", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_list_cd),
-    _CommandSpec("ac-grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ac_grant),
-    _CommandSpec("ac-revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ac_revoke),
+    _CommandSpec("la up", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 +amount (일일 상한 미적용)", _handle_la_up),
+    _CommandSpec("la down", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 -amount", _handle_la_down),
+    _CommandSpec("la set", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도를 amount로 절대값 설정", _handle_la_set),
+    _CommandSpec("la reset", 1, "{user_id} {boolean}", "해당 유저 호감도를 초기값(10)으로 리셋", _handle_la_reset),
+    _CommandSpec("tc up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_tc_up),
+    _CommandSpec("tc down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_tc_down),
+    _CommandSpec("tc set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_tc_set),
+    _CommandSpec("tc reset", 1, "{user_id} {boolean}", "해당 유저 오늘 대화 횟수를 0으로 리셋", _handle_tc_reset),
+    _CommandSpec("sh event all", 0, "{boolean}", "오늘 부름 이벤트 전부와 결과 표시", _handle_sh_event_all),
+    _CommandSpec("sh event next", 0, "{boolean}", "다음으로 남은 부름 이벤트 시각 표시", _handle_sh_event_next),
+    _CommandSpec("sh event last", 0, "{boolean}", "가장 최근에 지난 부름 이벤트 시각 표시", _handle_sh_event_last),
+    _CommandSpec("sh user stats", 1, "{user_id} {boolean}", "해당 유저의 일반 정보(=/내정보) 표시", _handle_sh_user_stats),
+    _CommandSpec("sh db list", 0, "{boolean}", "등록된 테이블 이름 전부 표시", _handle_sh_db_list),
+    _CommandSpec("sh db", 2, "{name} {amount} {boolean}", "해당 테이블 최근 amount개 행 표시", _handle_sh_db),
+    _CommandSpec("gn call event", 1, "{time} {boolean}", "time분 뒤에 호출 이벤트 1개를 수동 생성(최소 간격 30분 준수)", _handle_gn_call_event),
+    _CommandSpec("rm call event", 0, "{boolean}", "가장 가까운(아직 시작 안 한) 호출 이벤트 삭제", _handle_rm_call_event),
+    _CommandSpec("rm call event all", 0, "{boolean}", "아직 시작 안 한 호출 이벤트 전부 삭제", _handle_rm_call_event_all),
+    _CommandSpec("sh version", 0, "{boolean}", "현재 버전(커밋)과 마지막 업데이트 일시 표시", _handle_sh_version),
+    _CommandSpec("sh hammie runtime", 0, "{boolean}", "햄미 활동 시간 및 이벤트 발생 가능 시간 표시", _handle_sh_hammie_runtime),
+    _CommandSpec("hammie awake", 0, "{boolean}", "관리자 전용(테스트용): 시간대 무관하게 항상 깨어있는 햄미로 응답", _handle_hammie_awake),
+    _CommandSpec("hammie asleep", 0, "{boolean}", "관리자 전용(테스트용): 시간대 무관하게 항상 잠든 햄미로 응답", _handle_hammie_asleep),
+    _CommandSpec("hammie sync", 0, "{boolean}", "hammie awake/hammie asleep 오버라이드 해제, 실제 시간대로 복귀", _handle_hammie_sync),
+    _CommandSpec("ac list", 0, "{boolean}", "업적 이름(희귀도 포함) 목록 표시", _handle_ac_list),
+    _CommandSpec("ac list hp", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ac_list_hp),
+    _CommandSpec("ac list cd", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_list_cd),
+    _CommandSpec("ac grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ac_grant),
+    _CommandSpec("ac revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ac_revoke),
     _CommandSpec("c", 0, "{boolean}", "모든 명령어를 매개변수 포함해서 나열", _handle_c),
-    _CommandSpec("c-hp", 0, "{boolean}", "모든 명령어를 설명과 함께 나열", _handle_c_hp),
-    _CommandSpec("c-np", 0, "{boolean}", "모든 명령어를 이름만 나열", _handle_c_np),
+    _CommandSpec("c hp", 0, "{boolean}", "모든 명령어를 설명과 함께 나열", _handle_c_hp),
+    _CommandSpec("c np", 0, "{boolean}", "모든 명령어를 이름만 나열", _handle_c_np),
 )
 
 _COMMANDS = {spec.name: spec for spec in _COMMAND_LIST}
@@ -497,7 +516,7 @@ _COMMANDS = {spec.name: spec for spec in _COMMAND_LIST}
 _TRUE_TOKENS = ("true",)
 _FALSE_TOKENS = ("false",)
 
-# Discord 메시지 하드 제한(2000자)을 넘으면 응답이 그냥 조용히 실패했다 (sh-db 버그 발견·
+# Discord 메시지 하드 제한(2000자)을 넘으면 응답이 그냥 조용히 실패했다 (sh db 버그 발견·
 # 수정, 2026-08-27) — 넘으면 메시지 대신 파일 첨부로 보낸다.
 _MAX_MESSAGE_LENGTH = 2000
 _TOO_LONG_NOTICE = "내용이 너무 길어서 파일로 첨부했어요!!"
@@ -527,7 +546,7 @@ async def _send(
 
     content = kwargs.get("content")
     if isinstance(content, str) and len(content) > _MAX_MESSAGE_LENGTH:
-        # sh-db처럼 출력이 길어질 수 있는 명령어 전체에 적용되는 일반적인 안전장치 —
+        # sh db처럼 출력이 길어질 수 있는 명령어 전체에 적용되는 일반적인 안전장치 —
         # 메시지로는 안 나가고 조용히 실패하던 걸(2000자 하드 제한) 파일 첨부로 우회한다.
         kwargs["content"] = _TOO_LONG_NOTICE
         kwargs["file"] = discord.File(io.BytesIO(content.encode("utf-8")), filename="result.txt")
@@ -558,12 +577,13 @@ async def _penalize_abuse(message: discord.Message) -> None:
 
 
 async def handle(message: discord.Message) -> None:
-    """관리자 콘솔(§13-F, 2026-08-25 세션 방식으로 재설계)을 처리한다.
+    """관리자 콘솔(§13-F, 2026-08-25 세션 방식으로 재설계, 2026-08-27 ":" 인자 구분자로 갱신)을
+    처리한다.
 
-    `주인님 가라사대`(또는 `주인님 가라사대 {명령어}`)로 세션을 채널 단위로 연다. 세션이
-    열려있는 동안은 접두어 없이 보낸 메시지도 그대로 명령어로 해석한다 — 등록된 명령어면
-    실행하고 60초 타이머를 다시 늘리고, 등록 안 된 말이면 응답 없이 세션만 조용히 닫는다.
-    60초 동안 아무 명령도 없으면 마찬가지로 조용히 닫힌다.
+    `주인님 가라사대`(또는 `주인님 가라사대 {명령어} : {인자들}`)로 세션을 채널 단위로 연다.
+    세션이 열려있는 동안은 접두어 없이 보낸 메시지도 그대로 명령어로 해석한다 — 등록된
+    명령어면 실행하고 60초 타이머를 다시 늘리고, 등록 안 된 말이면 응답 없이 세션만 조용히
+    닫는다. 60초 동안 아무 명령도 없으면 마찬가지로 조용히 닫힌다.
 
     LLM/OpenAI API 호출 없이 순수 문자열 매칭 + DB 조작으로만 처리한다.
     관리자가 아니면(트리거 문구를 정확히 쳤을 때만) 명령을 실행하지 않고 깨물기 +
@@ -574,12 +594,12 @@ async def handle(message: discord.Message) -> None:
     is_admin = message.author.id == ADMIN_USER_ID
 
     if is_admin and _session_active_in(message.channel.id):
-        tokens = message.content.strip().split()
-        spec = _COMMANDS.get(tokens[0]) if tokens else None
+        name, args = _split_command_and_args(message.content)
+        spec = _COMMANDS.get(name)
         if spec is None:
             _close_session()  # 등록 안 된 명령 -> 세션 조용히 종료, 응답 없음
             return
-        await _dispatch(message, spec, tokens[1:])
+        await _dispatch(message, spec, args)
         _open_session(message.channel.id)  # 타이머 연장 (세션 유지)
         return
 
@@ -596,11 +616,11 @@ async def handle(message: discord.Message) -> None:
         await _penalize_abuse(message)
         return
 
-    immediate, tokens = match
+    immediate, name, args = match
     _open_session(message.channel.id)
     if not immediate:
         await _send(message, False, _SESSION_OPEN_MESSAGE)
         return
 
-    spec = _COMMANDS[tokens[0]]  # _match_open_trigger에서 이미 검증됨
-    await _dispatch(message, spec, tokens[1:])
+    spec = _COMMANDS[name]  # _match_open_trigger에서 이미 검증됨
+    await _dispatch(message, spec, args)

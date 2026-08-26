@@ -40,7 +40,7 @@ _LEGENDARY_PREFIX = "**__[👑]__** "
 
 def format_name(module) -> str:
     """업적 이름을 희귀도에 맞게 표시용으로 포맷한다 — 전설이면 이름 앞에 왕관을 붙인다.
-    /내정보 목록, "🏆 업적 달성" 알림, ac-list* 관리자 명령어가 전부 이 함수 하나로
+    /내정보 목록, "🏆 업적 달성" 알림, ac list* 관리자 명령어가 전부 이 함수 하나로
     왕관 표시를 통일해서 쓴다(사용자 확정: 표시 방식이 여러 곳에서 어긋나지 않도록)."""
     if module.RARITY == LEGENDARY:
         return f"{_LEGENDARY_PREFIX}{module.NAME}"
