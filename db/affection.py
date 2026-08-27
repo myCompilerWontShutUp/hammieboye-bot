@@ -21,18 +21,29 @@ async def add_affection(user_id: int, amount: int, method: str | None = None) ->
     return result
 
 
-async def add_affection_uncapped(user_id: int, amount: int, method: str | None = None) -> dict:
+async def add_affection_uncapped(
+    user_id: int, amount: int, method: str | None = None, *, check_achievements: bool = True
+) -> dict:
     """일일 +20 획득 상한 계산을 건너뛰고 무조건 적용한다 (예: 취침 중 깨움 이벤트의 악몽 감사 +5).
 
     반환값은 {new_affection, achievement_notice} — uncapped RPC는 부분지급이 없어 amount가
     곧 실제 적용량이다.
+
+    check_achievements=False면 마일스톤 확인 자체를 건너뛴다 — 관리자 콘솔의 `la up`/`la down`
+    전용(사용자 확정, 2026-08-27): 관리자가 직접 수치를 조작하는 명령어는 실제 서비스 흐름과
+    독립적이어야 하므로 업적이 달성되면 안 된다. `la set`/`la reset`은 애초에 이 함수 자체를
+    안 쓰는 별도 RPC(`set_affection`)라 이 플래그와 무관하게 이미 안전하다.
     """
     rows = await rpc(
         "add_affection_uncapped",
         {"p_user_id": user_id, "p_amount": amount, "p_method": method},
     )
     new_affection = rows[0]["new_affection"]
-    achievement_notice = await maybe_award_affection_milestones(user_id, amount, new_affection)
+    achievement_notice = (
+        await maybe_award_affection_milestones(user_id, amount, new_affection)
+        if check_achievements
+        else None
+    )
     return {"new_affection": new_affection, "achievement_notice": achievement_notice}
 
 

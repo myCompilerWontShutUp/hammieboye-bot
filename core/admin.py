@@ -198,13 +198,14 @@ async def _handle_la_up(args: list[str]) -> str:
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    result = await add_affection_uncapped(user_id, amount, "admin_la_up")
+    # check_achievements=False: 관리자 콘솔은 실제 서비스 흐름과 독립적이어야 하므로,
+    # 직접 수치를 조작하는 이 명령어로는 업적이 달성되면 안 된다(사용자 확정, 2026-08-27
+    # 버그 신고 — la up으로 호감도를 올렸는데 업적이 뜸). la set/la reset은 애초에 이
+    # 함수를 안 쓰는 별도 RPC라 원래도 안전했다.
+    result = await add_affection_uncapped(user_id, amount, "admin_la_up", check_achievements=False)
     new_affection = result["new_affection"]
     await log_command("la up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    response = f"네!! {user_id}님의 호감도를 +{amount} 올려드렸어요!! (현재 {new_affection})"
-    if result["achievement_notice"]:
-        response += f"\n{result['achievement_notice']}"
-    return response
+    return f"네!! {user_id}님의 호감도를 +{amount} 올려드렸어요!! ({user['affection']} → {new_affection})"
 
 
 async def _handle_la_down(args: list[str]) -> str:
@@ -213,10 +214,10 @@ async def _handle_la_down(args: list[str]) -> str:
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    result = await add_affection_uncapped(user_id, -amount, "admin_la_down")
+    result = await add_affection_uncapped(user_id, -amount, "admin_la_down", check_achievements=False)
     new_affection = result["new_affection"]
     await log_command("la down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    return f"네!! {user_id}님의 호감도를 -{amount} 내렸어요!! (현재 {new_affection})"
+    return f"네!! {user_id}님의 호감도를 -{amount} 내렸어요!! ({user['affection']} → {new_affection})"
 
 
 async def _handle_la_set(args: list[str]) -> str:
@@ -227,7 +228,7 @@ async def _handle_la_set(args: list[str]) -> str:
     user = await _require_registered(user_id)
     new_affection = await set_affection(user_id, amount)
     await log_command("la set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    return f"네!! {user_id}님의 호감도를 {amount}로 맞춰드렸어요!! (현재 {new_affection})"
+    return f"네!! {user_id}님의 호감도를 {amount}로 맞춰드렸어요!! ({user['affection']} → {new_affection})"
 
 
 async def _handle_la_reset(args: list[str]) -> str:
@@ -237,7 +238,7 @@ async def _handle_la_reset(args: list[str]) -> str:
     user = await _require_registered(user_id)
     await set_affection(user_id, _INITIAL_AFFECTION)
     await log_command("la reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
-    return f"네!! {user_id}님의 호감도를 초기값({_INITIAL_AFFECTION})으로 되돌려드렸어요!!"
+    return f"네!! {user_id}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
 
 
 async def _handle_tc_up(args: list[str]) -> str:
@@ -251,7 +252,7 @@ async def _handle_tc_up(args: list[str]) -> str:
     new_count = min(max(before + amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
     await log_command("tc up", f"{user_id} {amount}", str(before), str(new_count))
-    return f"네!! {user_id}님의 오늘 대화 횟수를 {new_count}/{stats['nl_cap']}로 올려드렸어요!!"
+    return f"네!! {user_id}님의 오늘 대화 횟수를 +{amount} 올려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
 async def _handle_tc_down(args: list[str]) -> str:
@@ -265,7 +266,7 @@ async def _handle_tc_down(args: list[str]) -> str:
     new_count = max(before - amount, 0)
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
     await log_command("tc down", f"{user_id} {amount}", str(before), str(new_count))
-    return f"네!! {user_id}님의 오늘 대화 횟수를 {new_count}/{stats['nl_cap']}로 내려드렸어요!!"
+    return f"네!! {user_id}님의 오늘 대화 횟수를 -{amount} 내려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
 async def _handle_tc_set(args: list[str]) -> str:
@@ -279,7 +280,7 @@ async def _handle_tc_set(args: list[str]) -> str:
     new_count = min(max(amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
     await log_command("tc set", f"{user_id} {amount}", str(before), str(new_count))
-    return f"네!! {user_id}님의 오늘 대화 횟수를 {new_count}/{stats['nl_cap']}로 맞춰드렸어요!!"
+    return f"네!! {user_id}님의 오늘 대화 횟수를 {amount}로 맞춰드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
 async def _handle_tc_reset(args: list[str]) -> str:
@@ -291,7 +292,7 @@ async def _handle_tc_reset(args: list[str]) -> str:
     before = stats["nl_count"]
     await _update_nl_count(user_id, 0, stats["nl_cap"])
     await log_command("tc reset", str(user_id), str(before), "0")
-    return f"네!! {user_id}님의 오늘 대화 횟수를 0/{stats['nl_cap']}로 되돌려드렸어요!!"
+    return f"네!! {user_id}님의 오늘 대화 횟수를 0으로 되돌려드렸어요!! ({before} → 0/{stats['nl_cap']})"
 
 
 async def _update_nl_count(user_id: int, new_count: int, nl_cap: int) -> None:
