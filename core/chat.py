@@ -200,14 +200,14 @@ async def handle_natural_language(
     )
     if will_generate:
         # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
-        context_turns, (event_delta, event_achievement, was_event_response) = await asyncio.gather(
+        context_turns, (event_delta, event_achievement, was_event_response, event_override) = await asyncio.gather(
             get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
             call_event.handle_potential_response(user_id, guild_id, text),
         )
     else:
         context_turns = None
         # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
-        event_delta, event_achievement, was_event_response = await call_event.handle_potential_response(
+        event_delta, event_achievement, was_event_response, event_override = await call_event.handle_potential_response(
             user_id, guild_id, text
         )
 
@@ -243,6 +243,13 @@ async def handle_natural_language(
         return _finalize(
             random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
         )
+
+    # §35-3: 부름 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 위에서 total_delta에
+    # 반영됨), 정상 생성을 아예 하지 않고(API 호출 없음, nl_count 미증가) 이 고정 문구로
+    # 완전히 대체한다(사용자 확정) — 여기까지 왔다는 건 호감도<0/상한/반복 페널티 등 다른
+    # 고정 응답 분기에 걸리지 않았다는 뜻이라, "정상 생성 답변"을 대체하는 게 정확히 맞다.
+    if event_override is not None:
+        return _finalize(event_override, total_delta, current_affection, achievement_notices)
 
     # 여기서부터 실제 OpenAI API 호출(분류+생성) 구간 — 대기 시간이 체감될 수 있어
     # "답변중..." 플레이스홀더를 띄운다. 전송 실패해도 아래 흐름은 그대로 진행된다.
