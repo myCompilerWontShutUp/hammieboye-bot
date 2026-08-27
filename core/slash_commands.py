@@ -3,6 +3,7 @@ import asyncio
 import discord
 from discord import app_commands
 
+import command.achievements as achievements_view
 from command.info import handle as info_handle
 from command.plastic import handle as plastic_handle
 from core import intro, membership, onboarding, ranking, sleep_guard
@@ -90,6 +91,17 @@ def register(tree: app_commands.CommandTree) -> None:
         text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
+    @tree.command(name="내업적", description="내가 획득한 업적과 아직 못 얻은 업적을 확인한다")
+    async def my_achievements_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer()
+        if not await _prepare(interaction):
+            return
+        text, embed = await achievements_view.handle(interaction.user.id)
+        text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
+        await interaction.edit_original_response(content=text, embed=embed)
+
     @tree.command(name="랭킹", description="호감도 기준 상위 10명 순위를 확인한다")
     async def ranking_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
@@ -101,15 +113,25 @@ def register(tree: app_commands.CommandTree) -> None:
         text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
-    @tree.command(name="소개", description="서버 멤버의 정보를 소개한다")
+    @tree.command(name="니정보", description="서버 멤버의 정보를 소개한다")
     @app_commands.describe(이름="찾을 사람의 서버 별명(입력하면 자동완성이 떠요) 또는 멘션")
     @app_commands.autocomplete(이름=intro.autocomplete_이름)
     async def intro_command(interaction: discord.Interaction, 이름: str) -> None:
         if interaction.user.bot:
             return
-        # /소개는 "모르는 사람"(개인 전용)과 "찾음"(공개) 응답의 공개 범위가 달라서,
+        # /니정보는 "모르는 사람"(개인 전용)과 "찾음"(공개) 응답의 공개 범위가 달라서,
         # 어느 쪽이 될지 모르는 이 시점엔 defer하지 않는다 — intro.handle()이 분기를
         # 확인한 뒤, 무거운 조회 직전에야 defer 여부/공개범위를 스스로 결정한다.
         if not await _prepare(interaction, deferred=False):
             return
         await intro.handle(interaction, 이름)
+
+    @tree.command(name="니업적", description="서버 멤버가 획득한 업적과 아직 못 얻은 업적을 확인한다")
+    @app_commands.describe(이름="찾을 사람의 서버 별명(입력하면 자동완성이 떠요) 또는 멘션")
+    @app_commands.autocomplete(이름=intro.autocomplete_이름)
+    async def intro_achievements_command(interaction: discord.Interaction, 이름: str) -> None:
+        if interaction.user.bot:
+            return
+        if not await _prepare(interaction, deferred=False):
+            return
+        await intro.handle_achievements(interaction, 이름)
