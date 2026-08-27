@@ -4,9 +4,11 @@ import re
 import discord
 from discord import app_commands
 
+import command.achievements as achievements_view
 from command.info import handle as info_handle
 from core import sleep_guard
 from core.discord_names import resolve_real_name
+from core.scheduler import is_sleep_time_for
 from db.users import get_user
 
 _MENTION_RE = re.compile(r"^<@!?(\d+)>$")
@@ -81,29 +83,65 @@ def _resolve_member(guild: discord.Guild, raw: str) -> discord.Member | None:
     return exact[0] if len(exact) == 1 else None
 
 
-async def handle(interaction: discord.Interaction, 이름: str) -> None:
-    """"모르는 사람"(개인 전용) 응답과 "찾음"(공개) 응답은 공개 범위가 서로 달라서, 이 함수가
-    분기를 다 확인한 뒤에야 defer 여부/공개 범위를 스스로 결정한다 — 그래야 무거운 조회
-    (info_handle, 실제 이름 조회)에만 "생각 중" 표시가 붙고, 가벼운 실패 분기는 그대로 즉시
-    응답한다(지연시간 최적화, 두 응답의 ephemeral이 서로 달라 defer를 미리 걸 수 없기도 하다)."""
+async def _resolve_target(interaction: discord.Interaction, 이름: str) -> discord.Member | None:
+    """대상자를 찾아 검증까지 마친다. 못 찾았거나(또는 미가입) "모르는 사람" 개인 전용
+    안내를 이미 보낸 상태로 None을 반환하고, 찾았으면 그 Member를 반환한다(응답은 아직
+    안 보낸 상태 — 호출부가 defer 이후 실제 내용을 채운다)."""
     guild = interaction.guild
     if guild is None:
-        return
+        return None
 
     member = _resolve_member(guild, 이름)
     if member is None or member.bot:
         await interaction.response.send_message(random.choice(_UNKNOWN_LINES), ephemeral=True)
-        return
+        return None
 
     target = await get_user(member.id)
     if target is None or not target["consent_given"]:
         # 찾은 사람이 아직 /가입을 안 한 경우도 "모르는 사람" 취급과 동일하게 안내한다.
         await interaction.response.send_message(random.choice(_UNKNOWN_LINES), ephemeral=True)
+        return None
+
+    return member
+
+
+async def handle(interaction: discord.Interaction, 이름: str) -> None:
+    """/니정보: "모르는 사람"(개인 전용) 응답과 "찾음"(공개) 응답은 공개 범위가 서로 달라서,
+    이 함수가 분기를 다 확인한 뒤에야 defer 여부/공개 범위를 스스로 결정한다 — 그래야 무거운
+    조회(info_handle, 실제 이름 조회)에만 "생각 중" 표시가 붙고, 가벼운 실패 분기는 그대로
+    즉시 응답한다(지연시간 최적화, 두 응답의 ephemeral이 서로 달라 defer를 미리 걸 수 없기도
+    하다)."""
+    member = await _resolve_target(interaction, 이름)
+    if member is None:
         return
+    guild = interaction.guild
 
     # 여기서부터가 실제로 느린 구간(info_handle의 여러 DB 호출 + 실제 이름 조회)이라 defer한다.
     await interaction.response.defer()
     text, embed = await info_handle(member.id, target_name=member.display_name, guild=guild)
-    text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text, notebook=True)
-    real_name = await resolve_real_name(interaction.client, member.id)
-    await interaction.edit_original_response(content=f"{real_name}\n{text}", embed=embed)
+    if is_sleep_time_for(interaction.user.id):
+        # 취침 중엔 수첩 문구로만 답한다 — 대상자의 실제 이름을 이 텍스트 앞에 붙이면
+        # "자고 있다"는 컨셉과 안 맞게 이름이 노출되는 버그가 있었다(사용자 발견·확정,
+        # 2026-08-27). 임베드 안의 이름은 "수첩 내용"이라 그대로 유지한다.
+        content = sleep_guard.wrap_text_if_asleep(interaction.user.id, text, notebook=True)
+    else:
+        real_name = await resolve_real_name(interaction.client, member.id)
+        content = f"{real_name}\n{text}"
+    await interaction.edit_original_response(content=content, embed=embed)
+
+
+async def handle_achievements(interaction: discord.Interaction, 이름: str) -> None:
+    """/니업적: /니정보와 동일한 대상자 해석·가시성·취침 처리 패턴을 그대로 따르되,
+    보여주는 내용만 업적 임베드로 바꾼다."""
+    member = await _resolve_target(interaction, 이름)
+    if member is None:
+        return
+
+    await interaction.response.defer()
+    text, embed = await achievements_view.handle(member.id, target_name=member.display_name)
+    if is_sleep_time_for(interaction.user.id):
+        content = sleep_guard.wrap_text_if_asleep(interaction.user.id, text, notebook=True)
+    else:
+        real_name = await resolve_real_name(interaction.client, member.id)
+        content = f"{real_name}\n{text}"
+    await interaction.edit_original_response(content=content, embed=embed)

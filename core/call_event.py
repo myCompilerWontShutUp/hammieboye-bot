@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 import achievements
 from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL
 from core.discord_names import resolve_real_name
+from core.korean import josa
 from core.scheduler import KST, random_times_in_window
 from db.achievements import award as award_achievement
 from db.affection import add_affection, apply_global_penalty
@@ -214,31 +215,36 @@ async def _announce_timeout(event: dict) -> None:
             logging.exception("Failed to announce call event timeout in guild %s", guild_id_str)
 
 
-async def handle_potential_response(user_id: int, guild_id: int, text: str) -> tuple[int, str | None]:
+async def handle_potential_response(
+    user_id: int, guild_id: int, text: str
+) -> tuple[int, str | None, bool]:
     """자연어 메시지 하나가 활성 부름 이벤트에 대한 반응인지 확인하고, 해당하면 보상/페널티를 적용한다.
 
     이 함수는 항상 호출되며(호감도가 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
-    반환값은 (이번 호출로 실제 적용된 호감도 증감분, 새로 얻은 업적 안내 문구 또는 None) —
-    호출부에서 알림 문구에 합산한다.
+    반환값은 (이번 호출로 실제 적용된 호감도 증감분, 새로 얻은 업적 안내 문구 또는 None,
+    이 메시지가 실제로 부름 이벤트에 대한 반응이었는지) — 세 번째 값은 §32에서 신설: 분류
+    결과가 "relevant"(보상 클레임에 실패했어도) 또는 "negative"였으면 True, 그 외(활성
+    이벤트 없음/분류 실패/무관한 잡담)면 False다. `core/chat.py`가 이 값으로 "오늘 대화
+    상한을 넘긴 상태에서도 부름 이벤트에 반응한 메시지는 남용 카운트에서 제외"하는 데 쓴다.
     """
     events = await _get_active_events_cached()
     if not events:
-        return 0, None
+        return 0, None, False
     event = events[0]
 
     classification = await _classify_response(event["prompt_text"], text)
 
     if classification == "negative":
         result = await add_affection(user_id, -5)
-        return result["applied_amount"], None
+        return result["applied_amount"], None, True
 
     if classification != "relevant":
-        return 0, None
+        return 0, None, False
 
     reward = random.randint(1, 10)
     won = await claim(event["id"], user_id, reward)
     if not won:
-        return 0, None
+        return 0, None, True
 
     _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
     result = await add_affection(user_id, reward, "call_event")
@@ -252,7 +258,7 @@ async def handle_potential_response(user_id: int, guild_id: int, text: str) -> t
         extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
         achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
-    return result["applied_amount"], achievement_notice
+    return result["applied_amount"], achievement_notice, True
 
 
 async def _try_increment_help_count(user_id: int) -> None:
@@ -294,10 +300,11 @@ async def _announce_winner(event: dict, winner_id: int, winner_guild_id: int) ->
         return
     winner_guild = _client.get_guild(winner_guild_id)
     guild_name = winner_guild.name if winner_guild is not None else "어떤 서버"
-    # 다른 서버에 보이는 문구라 실제 멘션(핑) 대신 실제 이름(서버 별명 아님)만 적는다 —
-    # "님"을 붙여서 받침 유무와 무관하게 "이/가" 조사를 "님이"로 고정할 수 있다.
+    # 다른 서버에 보이는 문구라 실제 멘션(핑) 대신 실제 이름(서버 별명 아님)만 적는다.
+    # 햄미는 "님" 존칭을 쓰지 않으므로(사용자 확정), 이름의 받침 유무에 맞는 "이/가" 조사를
+    # core.korean.josa()로 계산해서 붙인다.
     winner_name = await resolve_real_name(_client, winner_id)
-    note = f"\n\n({guild_name} 서버의 {winner_name}님이 해줬어!)"
+    note = f"\n\n({guild_name} 서버의 {winner_name}{josa(winner_name, '이', '가')} 해줬어!)"
 
     for guild_id_str, location in (event.get("messages") or {}).items():
         if int(guild_id_str) == winner_guild_id:

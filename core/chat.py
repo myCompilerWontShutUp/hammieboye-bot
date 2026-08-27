@@ -200,14 +200,14 @@ async def handle_natural_language(
     )
     if will_generate:
         # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
-        context_turns, (event_delta, event_achievement) = await asyncio.gather(
+        context_turns, (event_delta, event_achievement, was_event_response) = await asyncio.gather(
             get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
             call_event.handle_potential_response(user_id, guild_id, text),
         )
     else:
         context_turns = None
         # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
-        event_delta, event_achievement = await call_event.handle_potential_response(
+        event_delta, event_achievement, was_event_response = await call_event.handle_potential_response(
             user_id, guild_id, text
         )
 
@@ -229,7 +229,9 @@ async def handle_natural_language(
     # 오늘의 자연어 대화 상한을 이미 다 썼으면, 분류/생성 등 API를 아예 호출하지 않고
     # 고정 문구로만 답한다 (신규).
     if over_cap:
-        return await _handle_over_cap(user_id, stats, total_delta, current_affection, achievement_notices)
+        return await _handle_over_cap(
+            user_id, stats, total_delta, current_affection, achievement_notices, was_event_response
+        )
 
     # 반복 발화 전조/페널티 시점엔 자연어 생성 없이 톤이 맞는 고정 반응으로 답한다 —
     # 태연하게 생성된 답변에 호감도 하락 알림만 붙이면 어색하다 (사용자 피드백).
@@ -325,7 +327,17 @@ async def _handle_over_cap(
     total_delta: int,
     current_affection: int,
     achievement_notices: list[str],
+    was_event_response: bool = False,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
+    # §32: 오늘 대화 상한을 넘긴 상태여도, 이 메시지가 실제로 부름 이벤트에 대한 반응이었다면
+    # (긍정이든 부정이든) 남용 카운터를 건드리지 않는다 — 발견된 버그: 예전엔 이 카운터가
+    # 무조건 올라가서, 6회 이상 누적된 상태에서 부름 이벤트에 반응하면 이벤트 자체의 호감도
+    # 변화(예: 부정 -5)가 적용된 뒤에도 응답이 "_(무시)_"로 덮이고 추가로 -1까지 겹쳐 붙었다.
+    if was_event_response:
+        return _finalize(
+            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices
+        )
+
     attempts = stats["over_cap_attempts"] + 1
     await update_daily_stats(user_id, {"over_cap_attempts": attempts})
 
