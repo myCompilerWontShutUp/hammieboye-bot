@@ -107,10 +107,11 @@ def setup_dispatcher(client: discord.Client) -> None:
         # 기상(온라인 전환 + 부름 이벤트 5개 시각 산출 + nl_cap 동결 + 아침 인사)을 한
         # 시퀀스로 묶는다 — 방해금지 발동 시 전부 30분 늦춰서 함께 실행해야 하기 때문(§28).
         start_daily(6, 30, _run_wake_sequence)
-        # 자정을 살짝 넘긴 00:01에 실행 — 23:59에 하면 "11시 59분에 자러 감을 선언"하는
-        # 꼴이 되어 사용자 확정대로 자정(00:00) 이후로 옮겼다. 함수 내부에서 "어제" 날짜를
-        # 명시적으로 계산해서 집계하므로 자정을 넘긴 뒤 실행돼도 정확하다.
-        start_daily(0, 1, sleep_event.announce_and_reward)  # 최다 대화자 발표 + 전원 보상
+        # 정확히 자정(00:00)에 실행한다(사용자 확정: 23:59는 "11시 59분에 자러 감을 선언"하는
+        # 꼴이라 안 되고, 00:00이어야 한다 — 예전에 00:01로 1분 늦춰 구현한 건 불필요한
+        # 임의 변경이었다). 함수 내부에서 "어제" 날짜를 명시적으로 계산해서 집계하므로,
+        # 00:00:00 시점에 실행돼도(그 순간 이미 새 날짜다) 정확하다.
+        start_daily(0, 0, sleep_event.announce_and_reward)  # 최다 대화자 발표 + 전원 보상
         start_interval(_TICK_INTERVAL_SECONDS, call_event.tick)  # 예정 게시 + 무응답 만료 점검
 
     @client.event

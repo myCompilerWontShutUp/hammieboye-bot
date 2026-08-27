@@ -47,11 +47,6 @@ async def add_affection_uncapped(
     return {"new_affection": new_affection, "achievement_notice": achievement_notice}
 
 
-async def apply_global_penalty(amount: int) -> None:
-    """등록된 모든 사용자에게 한 번에 호감도를 증감시킨다 (3-2: 10분 무응답 시 전원 -1)."""
-    await rpc("apply_global_penalty", {"p_amount": amount})
-
-
 def format_affection_notice(delta: int, current: int) -> str:
     """호감도 변화를 하트 이모지와 함께 알려주는 문구. delta==0이면 호출하지 않는다."""
     emoji = "💕" if delta > 0 else "💔"

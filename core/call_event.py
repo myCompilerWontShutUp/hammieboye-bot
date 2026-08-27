@@ -12,7 +12,7 @@ from core.discord_names import resolve_real_name
 from core.korean import josa
 from core.scheduler import KST, random_times_in_window
 from db.achievements import award as award_achievement
-from db.affection import add_affection, apply_global_penalty
+from db.affection import add_affection
 from db.call_events import (
     claim,
     get_active_events,
@@ -100,8 +100,9 @@ _RESPONSE_JUDGE_SCHEMA = {
 }
 
 # 10분 동안 아무도 반응하지 않아 이벤트가 만료됐을 때, 원래 프롬프트 메시지를 지우고 그
-# 대신 올리는 고정 문구 풀 (사용자 확정 — 이때는 전원 -1이 적용되지만 특정 유저의 현재
-# 호감도는 표시하지 않는다, 전역 방송이라 개인화가 안 맞기 때문).
+# 대신 올리는 고정 문구 풀. 예전엔 이때 전원 -1이 같이 적용됐지만 그 규칙은 폐기됐다
+# (§35-2, 2026-08-27 — "아무도 안 도와줬다고 호감도를 깎지 않는다"). 지금은 순수하게
+# 아쉬움을 표현하는 안내 문구로만 남아있다.
 _TIMEOUT_LINES = (
     "아무도 안 놀아줘서 삐져써!! _(화남)_",
     "아무도 물을 안 가져다줘서 내가 직접 마셨어... _(슬픔)_",
@@ -123,6 +124,35 @@ _TIMEOUT_LINES = (
     "결국 이번엔 아무도 안 챙겨줬네... _(실망)_",
     "혼자 쳇바퀴만 굴렸어... 심심했다구!! _(지루함)_",
     "아무도 안 와줘서 오늘은 진짜 서운했어... _(서운)_",
+)
+
+# §35-3 (2026-08-27, 사용자 확정): 부름 이벤트가 활성 상태인 동안 관련 없는(irrelevant)
+# 잡담을 하면, 정상 LLM 답변을 아예 생성하지 않고 이 고정 문구로 완전히 대체한다. negative
+# (-5)보다 약한 -1을 적용하고, 이벤트가 진행되는 동안은 동일인물 여부와 무관하게 매번
+# 적용된다(1인당 1회 제한 없음). 특정 이벤트 문구(물/밥 등)를 언급하지 않고 "지금 내 부탁이
+# 먼저"라는 취지로만 일반화해서, 15개 부름 이벤트 문구 어디에도 자연스럽게 어울리게 했다.
+_IRRELEVANT_PENALTY = -1
+_IRRELEVANT_REDIRECT_LINES = (
+    "지금은 그거 말고 내 부탁 좀 들어줄래?? _(칭얼)_",
+    "딴 얘기 말고 지금 내 얘기 좀 들어조... _(서운)_",
+    "그건 나중에 하고, 지금은 내 부탁이 먼저야!! _(보챔)_",
+    "지금 그거 할 때 아닌 것 같은데... _(삐죽)_",
+    "딴 소리 하지 말고 도와주면 안 대?? _(칭얼)_",
+    "지금은 놀 기분 아니야... 부탁 좀 들어줘. _(시무룩)_",
+    "그 얘기 말고 내 부탁부터 들어주면 안 될까?? _(애원)_",
+    "지금 딴 데 신경 쓸 때가 아닌데... _(삐짐)_",
+    "그건 이따 하고, 지금은 날 좀 챙겨줘!! _(보챔)_",
+    "딴 얘기는 나중에!! 지금은 내가 먼저야. _(칭얼)_",
+    "지금 그거보다 내 부탁이 더 급해!! _(다급)_",
+    "그 얘기 그만하고 나 좀 도와주라... _(서운)_",
+    "지금은 다른 거 말고 내 얘기에 집중해줘!! _(칭얼)_",
+    "딴 데 정신 팔지 말고 부탁 좀 들어줘. _(삐죽)_",
+    "그건 안 궁금해... 지금은 부탁이 먼저야!! _(단호)_",
+    "지금 그 얘기 할 타이밍 아닌 것 같아... _(멋쩍)_",
+    "딴 소리보다 내 부탁 먼저 들어주면 안 대?? _(보챔)_",
+    "그건 나중에!! 지금은 날 도와줄 시간이야. _(칭얼)_",
+    "지금 다른 얘기할 기분 아니야... 부탁 좀. _(시무룩)_",
+    "그 얘기 말고, 지금은 내 부탁에 집중해조!! _(애원)_",
 )
 
 
@@ -185,8 +215,14 @@ async def _post_one(event: dict) -> None:
 
 
 async def _expire_unclaimed_events() -> None:
+    """10분 동안 아무도 반응하지 않은 부름 이벤트를 처리한다. 예전엔 여기서 등록된 모든
+    유저에게 호감도 -1을 일괄 적용했지만, 그 규칙은 폐기됐다(사용자 확정, 2026-08-27 —
+    "아무도 안 도와줬다고 해서 호감도를 깎지 않는다"). 이제는 원본 메시지를 지우고 아쉬운
+    문구로 대체하기만 한다. `get_expired_unpenalized()`/`penalty_applied` 이름은 예전
+    페널티 로직의 흔적이지만, 지금은 "이미 처리(만료 공지)됐는지"만 판정하는 용도로
+    그대로 재사용한다 — DB 컬럼명 변경은 별도 마이그레이션이 필요해 이번엔 손대지 않았다.
+    """
     for event in await get_expired_unpenalized():
-        await apply_global_penalty(-1)
         await mark_penalty_applied(event["id"])
         await _announce_timeout(event)
 
@@ -217,34 +253,48 @@ async def _announce_timeout(event: dict) -> None:
 
 async def handle_potential_response(
     user_id: int, guild_id: int, text: str
-) -> tuple[int, str | None, bool]:
+) -> tuple[int, str | None, bool, str | None]:
     """자연어 메시지 하나가 활성 부름 이벤트에 대한 반응인지 확인하고, 해당하면 보상/페널티를 적용한다.
 
     이 함수는 항상 호출되며(호감도가 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
     반환값은 (이번 호출로 실제 적용된 호감도 증감분, 새로 얻은 업적 안내 문구 또는 None,
-    이 메시지가 실제로 부름 이벤트에 대한 반응이었는지) — 세 번째 값은 §32에서 신설: 분류
-    결과가 "relevant"(보상 클레임에 실패했어도) 또는 "negative"였으면 True, 그 외(활성
-    이벤트 없음/분류 실패/무관한 잡담)면 False다. `core/chat.py`가 이 값으로 "오늘 대화
-    상한을 넘긴 상태에서도 부름 이벤트에 반응한 메시지는 남용 카운트에서 제외"하는 데 쓴다.
+    이 메시지가 실제로 부름 이벤트에 대한 반응이었는지, 응답을 완전히 대체할 고정 문구
+    또는 None):
+    - 세 번째 값(§32)은 분류 결과가 "relevant"(보상 클레임에 실패했어도)/"negative"/
+      "irrelevant"였으면 True, 그 외(활성 이벤트 없음/분류 실패)면 False다. `core/chat.py`가
+      "오늘 대화 상한을 넘긴 상태에서도 부름 이벤트 응답은 남용 카운트에서 제외"하는 데 쓴다.
+    - 네 번째 값(§35-3, 신규)은 분류가 "irrelevant"(이벤트가 활성 상태인데 관련 없는
+      잡담)일 때만 고정 문구를 담아 반환한다 — `core/chat.py`는 이 값이 있으면 실제 LLM
+      생성을 아예 건너뛰고(API 호출 없음, nl_count도 증가 안 함) 이 문구로 완전히
+      대체한다(사용자 확정). 다만 이건 "정상 생성 답변"을 대체하는 것뿐이라, 호감도<0/
+      상한 소진/반복 발화 페널티처럼 애초에 생성 자체를 안 하는 다른 고정 응답 분기에는
+      영향을 주지 않는다(그 경우엔 -1만 델타에 반영되고 텍스트는 원래 분기의 문구가 그대로
+      나간다).
     """
     events = await _get_active_events_cached()
     if not events:
-        return 0, None, False
+        return 0, None, False, None
     event = events[0]
 
     classification = await _classify_response(event["prompt_text"], text)
 
     if classification == "negative":
         result = await add_affection(user_id, -5)
-        return result["applied_amount"], None, True
+        return result["applied_amount"], None, True, None
+
+    if classification == "irrelevant":
+        # 분류 자체가 실패한 경우(API 오류 등, classification is None)와는 구분한다 —
+        # 그건 사용자 잘못이 아니므로 페널티 없이 이벤트와 무관하게 정상 처리한다.
+        result = await add_affection(user_id, _IRRELEVANT_PENALTY)
+        return result["applied_amount"], None, True, random.choice(_IRRELEVANT_REDIRECT_LINES)
 
     if classification != "relevant":
-        return 0, None, False
+        return 0, None, False, None
 
     reward = random.randint(1, 10)
     won = await claim(event["id"], user_id, reward)
     if not won:
-        return 0, None, True
+        return 0, None, True, None
 
     _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
     result = await add_affection(user_id, reward, "call_event")
@@ -258,7 +308,7 @@ async def handle_potential_response(
         extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
         achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
-    return result["applied_amount"], achievement_notice, True
+    return result["applied_amount"], achievement_notice, True, None
 
 
 async def _try_increment_help_count(user_id: int) -> None:
