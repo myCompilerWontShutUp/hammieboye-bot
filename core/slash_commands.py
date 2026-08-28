@@ -71,10 +71,11 @@ def register(tree: app_commands.CommandTree) -> None:
         if interaction.user.bot:
             return
         # 취침 중엔 완전 무시하면 디스코드가 "앱이 응답하지 않았어요"를 띄워서 의도한
-        # "자는 중" 연출과 다르게 보인다 — 그래서 완전 무시 대신 SLEEP_REPLY로 명시적으로
-        # 응답한다(사용자 확정, 2026-08-27). defer 전에 바로 응답해야 하므로 guard()가
-        # 내부적으로 response.send_message()를 쓴다.
-        if not await sleep_guard.guard(interaction, silent=False):
+        # "자는 중" 연출과 다르게 보인다 — 그래서 완전 무시 대신 명시적으로 응답한다
+        # (사용자 확정, 2026-08-27). /페트병은 놀이형 커맨드라 메모/수첩 문구 대신 전용
+        # SLEEP_REPLY_PLASTIC을 쓴다(사용자 확정, 2026-08-29). defer 전에 바로 응답해야
+        # 하므로 guard()가 내부적으로 response.send_message()를 쓴다.
+        if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_PLASTIC):
             return
         # 자연어처럼 "생각 중" 표시를 즉시 띄운 뒤, 실제 처리가 끝나면 같은 자리를 결과로
         # 바꿔치기한다 (defer -> edit_original_response, 사용자 확정).
