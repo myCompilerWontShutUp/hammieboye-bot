@@ -7,7 +7,7 @@ from korean_lunar_calendar import KoreanLunarCalendar
 from openai import AsyncOpenAI
 
 from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL, OPENAI_MAX_OUTPUT_TOKENS
-from core.scheduler import KST
+from events.scheduler import KST, resolve_broadcast_channel_id
 from db.guild_channels import get_last_channel
 from responses.engine import SYSTEM_PROMPT
 
@@ -207,7 +207,7 @@ async def post_daily_greeting(*, tired: bool = False) -> None:
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:
             continue
-        channel_id = await get_last_channel(guild.id)
+        channel_id = resolve_broadcast_channel_id(guild.id, await get_last_channel(guild.id))
         if channel_id is None:
             continue
         channel = guild.get_channel(channel_id)

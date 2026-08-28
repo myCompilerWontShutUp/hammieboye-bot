@@ -9,17 +9,11 @@ import discord
 import achievements
 from command.info import handle as info_handle
 from config import ADMIN_USER_ID, CALL_PREFIXES
-from core.call_event import MIN_GAP_MINUTES, WINDOW_END, WINDOW_START, schedule_one
+from admin.version import get_commit_hash, get_last_updated_iso
 from core.discord_names import resolve_real_name
-from core.scheduler import (
-    SLEEP_START,
-    WAKE_TIME,
-    get_admin_sleep_override,
-    is_sleep_time_for,
-    set_admin_sleep_override,
-)
-from core.sleep_guard import SLEEP_REPLY
-from core.version import get_commit_hash, get_last_updated_iso
+from events.call_event import MIN_GAP_MINUTES, WINDOW_END, WINDOW_START, schedule_one
+from events.scheduler import SLEEP_START, WAKE_TIME, is_sleep_time_for
+from events.sleep_guard import SLEEP_REPLY
 from db.achievements import award as award_achievement
 from db.achievements import revoke as revoke_achievement
 from db.admin import (
@@ -141,13 +135,30 @@ def _match_open_trigger(content: str) -> tuple[bool, str, list[str]] | None:
     return None
 
 
+def _is_malformed_command_trigger(content: str) -> bool:
+    """content가 "{호출 단어} 주인님 가라사대 {무언가}" 형태(패턴 2와 같은 모양)이지만
+    그 "무언가"가 등록된 명령어 이름이 아닌 경우 True. 관리자 전용 "잘못된 명령어입니다!!"
+    응답 대상 판정에 쓴다 — 비관리자에게는 이 판정 자체를 적용하지 않고 기존처럼 자연어로
+    넘어가게 둔다(사용자 확정, 2026-08-28)."""
+    stripped = _strip_any_call_prefix(content.strip())
+    if stripped is None or not stripped.startswith(_PROMPT_PREFIX):
+        return False
+    remainder = stripped[len(_PROMPT_PREFIX) :]
+    name, _args = _split_command_and_args(remainder)
+    return name not in _COMMANDS
+
+
 def should_intercept(message: discord.Message) -> bool:
     """관리자 세션이 채널에서 활성 상태이거나(접두어 없이 오는 다음 메시지들), 이번 메시지
-    자체가 트리거 패턴과 정확히 일치할 때만 True. dispatcher가 이 메시지를 admin.handle로
-    보낼지 말지 결정하는 게이트."""
+    자체가 트리거 패턴과 정확히 일치할 때만 True. 관리자가 "{호출 단어} 주인님 가라사대
+    {잘못된 명령어}"를 쳤을 때도(패턴은 맞지만 명령어가 없음) 가로채서 안내해야 하므로
+    이때도 True — 비관리자는 이 경우 가로채지 않고 자연어로 넘어가게 둔다. dispatcher가
+    이 메시지를 admin.handle로 보낼지 말지 결정하는 게이트."""
     if message.author.id == ADMIN_USER_ID and _session_active_in(message.channel.id):
         return True
-    return _match_open_trigger(message.content) is not None
+    if _match_open_trigger(message.content) is not None:
+        return True
+    return message.author.id == ADMIN_USER_ID and _is_malformed_command_trigger(message.content)
 
 
 def _parse_int(token: str, label: str) -> int:
@@ -413,33 +424,6 @@ async def _handle_sh_hammie_runtime(args: list[str]) -> str:
     )
 
 
-async def _handle_hammie_awake(args: list[str]) -> str:
-    """관리자 전용(테스트용): 시간대와 무관하게 관리자 본인에게는 항상 깨어있는 햄미로
-    응답한다 (다른 사용자에겐 영향 없음, core.scheduler.is_sleep_time_for 참고)."""
-    before = get_admin_sleep_override()
-    set_admin_sleep_override(False)
-    await log_command("hammie awake", "", str(before), "False")
-    return "네!! 이제부터 주인님께는 시간대와 상관없이 항상 깨어있는 상태로 응답해드릴게요!!"
-
-
-async def _handle_hammie_asleep(args: list[str]) -> str:
-    """관리자 전용(테스트용): 시간대와 무관하게 관리자 본인에게는 항상 잠든 햄미로 응답한다."""
-    before = get_admin_sleep_override()
-    set_admin_sleep_override(True)
-    await log_command("hammie asleep", "", str(before), "True")
-    return "네!! 이제부터 주인님께는 시간대와 상관없이 항상 잠든 상태로 응답해드릴게요!!"
-
-
-async def _handle_hammie_sync(args: list[str]) -> str:
-    """hammie awake/hammie asleep 오버라이드를 해제하고 실제 시간대로 복귀한다."""
-    before = get_admin_sleep_override()
-    if before is None:
-        return "지금은 별도로 적용된 상태가 없어서, 이미 실제 시간대를 그대로 따르고 있어요!!"
-    set_admin_sleep_override(None)
-    await log_command("hammie sync", "", str(before), "None")
-    return "네!! 강제로 적용했던 상태를 해제하고, 실제 시간대 기준으로 되돌려드렸어요!!"
-
-
 async def _handle_ac_list(args: list[str]) -> str:
     return "\n".join(achievements.format_name(module) for module in achievements.REGISTRY.values())
 
@@ -569,9 +553,6 @@ _COMMAND_LIST = (
     _CommandSpec("rm call event all", 0, "{boolean}", "아직 시작 안 한 호출 이벤트 전부 삭제", _handle_rm_call_event_all),
     _CommandSpec("sh version", 0, "{boolean}", "현재 버전(커밋)과 마지막 업데이트 일시 표시", _handle_sh_version),
     _CommandSpec("sh hammie runtime", 0, "{boolean}", "햄미 활동 시간 및 이벤트 발생 가능 시간 표시", _handle_sh_hammie_runtime),
-    _CommandSpec("hammie awake", 0, "{boolean}", "관리자 전용(테스트용): 시간대 무관하게 항상 깨어있는 햄미로 응답", _handle_hammie_awake),
-    _CommandSpec("hammie asleep", 0, "{boolean}", "관리자 전용(테스트용): 시간대 무관하게 항상 잠든 햄미로 응답", _handle_hammie_asleep),
-    _CommandSpec("hammie sync", 0, "{boolean}", "hammie awake/hammie asleep 오버라이드 해제, 실제 시간대로 복귀", _handle_hammie_sync),
     _CommandSpec("ac list", 0, "{boolean}", "업적 이름(희귀도 포함) 목록 표시", _handle_ac_list),
     _CommandSpec("ac list hp", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ac_list_hp),
     _CommandSpec("ac list cd", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_list_cd),
@@ -678,10 +659,15 @@ async def handle(message: discord.Message) -> None:
 
     match = _match_open_trigger(message.content)
     if match is None:
+        if is_admin and _is_malformed_command_trigger(message.content):
+            # "{호출 단어} 주인님 가라사대 {등록 안 된 명령어}" — 관리자가 트리거는
+            # 정확히 쳤지만 명령어를 잘못 쓴 경우, 자연어로 새지 않고 바로 안내한다
+            # (세션은 열지 않는다 — 실행할 명령이 없었으므로).
+            await _send(message, False, "잘못된 명령어입니다!!")
         return  # 트리거 패턴과 정확히 일치하지 않음 -> 완전히 무시 (응답도 페널티도 없음)
 
     if not is_admin:
-        if is_sleep_time_for(message.author.id):
+        if is_sleep_time_for(message.channel.id):
             # 관리자가 아닌 사람이 취침 중에 트리거를 쳐도 깨물지 않는다 — 다른 모든 기능과
             # 동일한 "자고 있다" 반응만 보이고 호감도는 그대로 둔다.
             await _send(message, False, SLEEP_REPLY)

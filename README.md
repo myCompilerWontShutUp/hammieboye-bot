@@ -24,17 +24,27 @@
 hammieboye-bot/
 ├── main.py                 # 진입점: client 생성 + dispatcher 연결
 ├── config.py                # .env 로드 (필수 항목, 기본값 없음)
-├── core/                    # 메시지 처리 파이프라인 + 백그라운드 이벤트
+├── core/                    # 메시지 처리 파이프라인 + 기능 도메인이 공유하는 기반 계층
 │   ├── dispatcher.py          # on_ready/on_message 라우팅, 스케줄러 부트스트랩
 │   ├── chat.py                # 자연어 턴 파이프라인 (본문 참고)
 │   ├── intent.py              # RAG 카테고리 분류 + 감정 분류 (단일 API 호출)
-│   ├── call_event.py          # 부름 이벤트
-│   ├── sleep_event.py         # 취침 전 인사 + 보상
-│   ├── wake_event.py          # 취침 중 맨션 깨움 이벤트
-│   ├── greeting.py            # 아침 인사 / 생일·기념일
-│   ├── admin.py                # 관리자 콘솔 (규칙 기반)
-│   └── scheduler.py            # KST 기준 일일/주기 태스크 등록
-├── command/                 # 슬래시 커맨드 실제 처리 로직
+│   ├── slash_commands.py      # 슬래시 커맨드 등록
+│   ├── onboarding.py          # 미가입 안내 문구 (슬래시 커맨드 게이트 + 자연어 경로 공용)
+│   └── base.py                # touch_channel/normalize/EMBED_COLOR — 여러 도메인 공유 유틸
+├── events/                  # 봇이 스스로 움직이는 백그라운드/글로벌 이벤트
+│   ├── scheduler.py            # KST 기준 일일/주기 태스크 등록, 취침시간 판정
+│   ├── call_event.py           # 부름 이벤트
+│   ├── sleep_event.py          # 취침 전 인사 + 보상
+│   ├── wake_event.py           # 취침 중 맨션 깨움 이벤트
+│   ├── greeting.py             # 아침 인사 / 생일·기념일
+│   ├── presence.py             # 디스코드 상태(취침/기상/방해금지) 전환
+│   └── sleep_guard.py          # 취침 중 슬래시 커맨드 게이팅
+├── admin/                   # 관리자 콘솔(규칙 기반, LLM 미사용) + 버전 조회
+├── command/                 # 슬래시 커맨드 구현(구현이 실제로 겹칠 때만 파일 공유, 그 외 1:1)
+│   ├── info.py / achievements.py                # /내정보↔/니정보, /내업적↔/니업적 (자기/타인 공유)
+│   ├── intro.py                                 # /니정보·/니업적의 대상자 해석(자동완성 등) 공유
+│   ├── plastic.py / ranking.py                  # /페트병, /랭킹
+│   └── join.py / join_info.py / leave.py        # /가입, /가입-수집항목, /탈퇴 (각각 독립)
 ├── documents/                # RAG 참고 문서 (프로필/명령어/호출단어/호감도가이드/업적)
 ├── achievements/             # 업적 정의 (파일 1개 = 업적 1개)
 ├── responses/engine.py       # OpenAI Responses API 호출 (생성)
@@ -163,7 +173,7 @@ RPC 함수로 옮겨 원자성을 DB 트랜잭션에 위임**합니다.
 레벨 원자적 처리라 캐시가 살짝 오래돼도 이중 지급 같은 정합성 문제는 생기지 않고, 그저
 이벤트가 방금 마감된 걸 몇 초 늦게 알아채는 정도의 영향만 있습니다.
 
-관리자 콘솔(`core/admin.py`)은 이런 최적화조차 필요 없도록 **처음부터 LLM 호출이 전혀
+관리자 콘솔(`admin/console.py`)은 이런 최적화조차 필요 없도록 **처음부터 LLM 호출이 전혀
 없는 순수 규칙 기반**(문자열 매칭 + DB 조작)으로 설계해, 권한이 있는 명령어일수록 오히려
 가장 빠르고 예측 가능하게 동작합니다.
 

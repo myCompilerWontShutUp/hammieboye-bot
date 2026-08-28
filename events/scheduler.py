@@ -4,8 +4,6 @@ from typing import Awaitable, Callable
 
 from discord.ext import tasks
 
-from config import ADMIN_USER_ID
-
 # 한국시간(KST) 고정 오프셋. 서머타임이 없어서 UTC+9 고정으로 충분하다.
 KST = timezone(timedelta(hours=9))
 
@@ -19,9 +17,17 @@ DELAYED_WAKE_TIME = time(7, 0)
 
 _DailyCallback = Callable[[], Awaitable[None]]
 
-# 관리자 전용 테스트 오버라이드(hammie-awake/asleep/sync). None이면 실제 시간을
-# 그대로 따르고, True/False면 관리자 본인에게만 강제로 취침/기상 상태를 적용한다.
-_admin_sleep_override: bool | None = None
+# 테스트 서버 전용 채널 고정 상태 (2026-08-28, 사용자 확정 — 기존 `hammie awake`/
+# `hammie asleep`/`hammie sync` 관리자 명령어를 완전히 대체). `.env`에 넣지 않고 코드에
+# 항상 고정값으로 둔다. awake/asleep 채널은 실제 시간과 무관하게 그 상태로 강제되고,
+# sync 채널은 실제 시간(is_sleep_time)을 그대로 따른다 — 부름/기상/취침 같은 봇이 스스로
+# 올리는 전역 메시지도 이 서버에서는 항상 sync 채널로만 간다(resolve_broadcast_channel_id
+# 참고). awake/asleep 채널은 자동 게시 대상이 아니라, 누군가 먼저 말을 걸었을 때만 그
+# 고정된 상태로 반응하는 순수 반응형 채널이다.
+TEST_GUILD_ID = 1541345080680644651
+TEST_AWAKE_CHANNEL_ID = 1541345084493144068
+TEST_ASLEEP_CHANNEL_ID = 1542920701214724186
+TEST_SYNC_CHANNEL_ID = 1542920725185429677
 
 # 오늘(KST) 밤 방해금지 이벤트가 발동했는지 — 발동한 그 날짜만 기록해두고, 다음 날이 되면
 # 날짜가 안 맞아 자연히 무효화된다(별도 리셋 로직 불필요).
@@ -48,23 +54,26 @@ def is_sleep_time(now: datetime | None = None) -> bool:
     return SLEEP_START <= current_dt.time() < wake_boundary
 
 
-def set_admin_sleep_override(value: bool | None) -> None:
-    """hm-awake(False)/hm-asleep(True)/hm-sync(None)로 설정한다."""
-    global _admin_sleep_override
-    _admin_sleep_override = value
-
-
-def get_admin_sleep_override() -> bool | None:
-    return _admin_sleep_override
-
-
-def is_sleep_time_for(user_id: int, now: datetime | None = None) -> bool:
-    """이 유저에게 지금이 취침 시간대로 취급돼야 하는지. 관리자 본인이고 hm-awake/hm-asleep
-    오버라이드가 걸려있으면 그 값을 그대로 따르고(실제 시간 무시), 그 외엔 항상 실제
-    시간(is_sleep_time)을 따른다 — 일반 사용자는 오버라이드의 영향을 받지 않는다(사용자 확정)."""
-    if user_id == ADMIN_USER_ID and _admin_sleep_override is not None:
-        return _admin_sleep_override
+def is_sleep_time_for(channel_id: int | None = None, now: datetime | None = None) -> bool:
+    """이 채널에서 지금이 취침 시간대로 취급돼야 하는지. 테스트 서버(TEST_GUILD_ID)의
+    고정 채널(TEST_AWAKE_CHANNEL_ID/TEST_ASLEEP_CHANNEL_ID)이면 실제 시간과 무관하게
+    그 상태로 강제되고, 그 외(TEST_SYNC_CHANNEL_ID 포함 나머지 전부)엔 실제 시간
+    (is_sleep_time)을 그대로 따른다."""
+    if channel_id == TEST_AWAKE_CHANNEL_ID:
+        return False
+    if channel_id == TEST_ASLEEP_CHANNEL_ID:
+        return True
     return is_sleep_time(now)
+
+
+def resolve_broadcast_channel_id(guild_id: int, last_channel_id: int | None) -> int | None:
+    """부름 이벤트/아침 인사/취침 이벤트처럼 봇이 스스로 올리는 전역 메시지가 어느 채널로
+    갈지 결정한다. 테스트 서버는 항상 고정된 sync 채널로만 보낸다 — awake/asleep 채널은
+    반응형(누군가 먼저 말을 걸었을 때만 동작)이라 자동 게시 대상에서 제외된다. 그 외
+    서버는 기존처럼 "마지막 호출된 채널"을 그대로 쓴다."""
+    if guild_id == TEST_GUILD_ID:
+        return TEST_SYNC_CHANNEL_ID
+    return last_channel_id
 
 
 def format_footer_time(now: datetime) -> str:

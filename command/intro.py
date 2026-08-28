@@ -6,9 +6,7 @@ from discord import app_commands
 
 import command.achievements as achievements_view
 from command.info import handle as info_handle
-from core import sleep_guard
-from core.discord_names import resolve_real_name
-from core.scheduler import is_sleep_time_for
+from events import sleep_guard
 from db.users import get_user
 
 _MENTION_RE = re.compile(r"^<@!?(\d+)>$")
@@ -119,14 +117,11 @@ async def handle(interaction: discord.Interaction, 이름: str) -> None:
     # 여기서부터가 실제로 느린 구간(info_handle의 여러 DB 호출 + 실제 이름 조회)이라 defer한다.
     await interaction.response.defer()
     text, embed = await info_handle(member.id, target_name=member.display_name, guild=guild)
-    if is_sleep_time_for(interaction.user.id):
-        # 취침 중엔 수첩 문구로만 답한다 — 대상자의 실제 이름을 이 텍스트 앞에 붙이면
-        # "자고 있다"는 컨셉과 안 맞게 이름이 노출되는 버그가 있었다(사용자 발견·확정,
-        # 2026-08-27). 임베드 안의 이름은 "수첩 내용"이라 그대로 유지한다.
-        content = sleep_guard.wrap_text_if_asleep(interaction.user.id, text, notebook=True)
-    else:
-        real_name = await resolve_real_name(interaction.client, member.id)
-        content = f"{real_name}\n{text}"
+    # 취침 중엔 수첩 문구로만 답하고, 깨어있으면 text를 그대로 쓴다 — text(_INTRO_OTHER_LINES)가
+    # 이미 대상자 이름을 문장 안에 자연스럽게 포함하고 있으므로, 예전처럼 실제 이름을 앞에
+    # 따로 붙이면 "서희\n서희를 한번 살펴볼까??"처럼 이름이 중복 노출되는 버그가 된다
+    # (사용자 발견·확정, 2026-08-28 — §32-6에서 취침 중 노출만 고치고 평시 중복은 놓쳤었다).
+    content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
     await interaction.edit_original_response(content=content, embed=embed)
 
 
@@ -139,9 +134,7 @@ async def handle_achievements(interaction: discord.Interaction, 이름: str) -> 
 
     await interaction.response.defer()
     text, embed = await achievements_view.handle(member.id, target_name=member.display_name)
-    if is_sleep_time_for(interaction.user.id):
-        content = sleep_guard.wrap_text_if_asleep(interaction.user.id, text, notebook=True)
-    else:
-        real_name = await resolve_real_name(interaction.client, member.id)
-        content = f"{real_name}\n{text}"
+    # /니정보와 동일한 이유로 real_name 접두어를 붙이지 않는다 — achievements_view의
+    # _INTRO_OTHER_LINES도 이미 대상자 이름을 문장 안에 포함하고 있다.
+    content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
     await interaction.edit_original_response(content=content, embed=embed)
