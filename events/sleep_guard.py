@@ -12,18 +12,22 @@ SLEEP_REPLY = "Zzzzz... _(쿨쿨)_ _(근처에 메모가 하나 놓여있다.)_"
 # 수동적 표현 대신, "햄미 옆에 있는 수첩을 슬쩍 펼쳐 읽어본다"는 능동적인 느낌으로(사용자 확정).
 SLEEP_REPLY_NOTEBOOK = "Zzzzz... _(쿨쿨)_ _(햄미 옆에 놓인 수첩을 슬쩍 펼쳐 읽어본다.)_"
 
+# /페트병 전용(사용자 확정, 2026-08-29) — 놀이형 커맨드라 메모/수첩 컨셉과 안 어울려서,
+# 그냥 자느라 반응이 없다는 걸 그대로 알려주는 문구로 분리했다.
+SLEEP_REPLY_PLASTIC = "(자고 있어서 반응을 보이지 않는다)"
 
-async def guard(interaction: discord.Interaction, *, silent: bool) -> bool:
+
+async def guard(interaction: discord.Interaction, *, silent: bool, message: str = SLEEP_REPLY) -> bool:
     """취침 시간대에 슬래시 커맨드를 가로챈다.
 
-    silent=True(놀이형, 예: /페트병)면 완전히 무시한다(응답 없음 — 자연어와 동일하게
-    "동작하지 않는다"). silent=False(계정 관리형, 예: /가입)면 고정 문구로 답하고 실행을
-    막는다. 계속 진행해도 되면 True를 반환한다.
+    silent=True면 완전히 무시한다(응답 없음 — 자연어와 동일하게 "동작하지 않는다").
+    silent=False면 고정 문구(기본값 `SLEEP_REPLY`, 커맨드별로 `message`를 따로 줄 수
+    있다)로 답하고 실행을 막는다. 계속 진행해도 되면 True를 반환한다.
     """
     if not is_sleep_time_for(interaction.channel_id):
         return True
     if not silent:
-        await interaction.response.send_message(SLEEP_REPLY)
+        await interaction.response.send_message(message)
     return False
 
 
