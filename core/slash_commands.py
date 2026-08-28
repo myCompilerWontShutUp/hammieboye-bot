@@ -4,12 +4,18 @@ import discord
 from discord import app_commands
 
 import command.achievements as achievements_view
+import command.intro as intro
+import command.ranking as ranking
 from command.info import handle as info_handle
+from command.join import handle as join_handle
+from command.join_info import handle as join_info_handle
+from command.leave import handle as leave_handle
 from command.plastic import handle as plastic_handle
-from core import intro, membership, onboarding, ranking, sleep_guard
+from core import onboarding
+from core.base import touch_channel
 from db.daily_stats import increment_messages_today
-from db.guild_channels import set_last_channel
 from db.users import ensure_user
+from events import sleep_guard
 
 
 async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -> bool:
@@ -25,14 +31,12 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
     if interaction.user.bot:
         return False
 
-    # set_last_channel과 ensure_user는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
-    if interaction.guild is not None and interaction.channel_id is not None:
-        _, user = await asyncio.gather(
-            set_last_channel(interaction.guild.id, interaction.channel_id),
-            ensure_user(interaction.user.id),
-        )
-    else:
-        user = await ensure_user(interaction.user.id)
+    # touch_channel과 ensure_user는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
+    # touch_channel 자체가 guild/channel 없음을 안전하게 무시하므로 분기가 필요 없다.
+    _, user = await asyncio.gather(
+        touch_channel(interaction),
+        ensure_user(interaction.user.id),
+    )
 
     if not user["consent_given"]:
         # 자연어 경로(개인화 불가)와 경험을 통일하기 위해 공개로 응답한다 (사용자 확정).
@@ -52,15 +56,15 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
 def register(tree: app_commands.CommandTree) -> None:
     @tree.command(name="가입", description="햄미와 친해지기 위해 가입한다")
     async def join_command(interaction: discord.Interaction) -> None:
-        await membership.handle_join(interaction)
+        await join_handle(interaction)
 
     @tree.command(name="가입-수집항목", description="가입 시 수집되는 정보를 자세히 안내한다")
     async def join_info_command(interaction: discord.Interaction) -> None:
-        await membership.handle_join_info(interaction)
+        await join_info_handle(interaction)
 
     @tree.command(name="탈퇴", description="햄미와의 관계를 정리하고 탈퇴한다")
     async def leave_command(interaction: discord.Interaction) -> None:
-        await membership.handle_leave(interaction)
+        await leave_handle(interaction)
 
     @tree.command(name="페트병", description="페트병 던지기 놀이를 한다")
     async def plastic_command(interaction: discord.Interaction) -> None:
@@ -88,7 +92,7 @@ def register(tree: app_commands.CommandTree) -> None:
         if not await _prepare(interaction):
             return
         text, embed = await info_handle(interaction.user.id, guild=interaction.guild)
-        text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
+        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
     @tree.command(name="내업적", description="내가 획득한 업적과 아직 못 얻은 업적을 확인한다")
@@ -99,7 +103,7 @@ def register(tree: app_commands.CommandTree) -> None:
         if not await _prepare(interaction):
             return
         text, embed = await achievements_view.handle(interaction.user.id)
-        text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
+        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
     @tree.command(name="랭킹", description="호감도 기준 상위 10명 순위를 확인한다")
@@ -110,7 +114,7 @@ def register(tree: app_commands.CommandTree) -> None:
         if not await _prepare(interaction):
             return
         text, embed = await ranking.build_embed(interaction.client)
-        text = sleep_guard.wrap_text_if_asleep(interaction.user.id, text)
+        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
     @tree.command(name="니정보", description="서버 멤버의 정보를 소개한다")

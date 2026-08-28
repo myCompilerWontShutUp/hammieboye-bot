@@ -6,7 +6,7 @@ import discord
 
 from core.base import EMBED_COLOR
 from core.discord_names import resolve_real_name
-from core.scheduler import KST, format_footer_time
+from events.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates
 
 _TOP_N = 10

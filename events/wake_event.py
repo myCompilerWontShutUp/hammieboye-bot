@@ -4,8 +4,8 @@ import random
 import discord
 
 import achievements
-from core import presence
-from core.scheduler import mark_late_wake
+from events import presence
+from events.scheduler import mark_late_wake
 from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.guild_sleep_state import register_mention

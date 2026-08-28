@@ -7,7 +7,7 @@ import discord
 import achievements
 from config import ALLOWED_GUILD_IDS
 from core.discord_names import resolve_real_name
-from core.scheduler import KST
+from events.scheduler import KST, resolve_broadcast_channel_id
 from db.achievements import award as award_achievement
 from db.affection import add_affection
 from db.client import select
@@ -126,7 +126,7 @@ async def _post_announcement(winner_id: int, reward_given: bool) -> None:
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:
             continue
-        channel_id = await get_last_channel(guild.id)
+        channel_id = resolve_broadcast_channel_id(guild.id, await get_last_channel(guild.id))
         if channel_id is None:
             continue
         channel = guild.get_channel(channel_id)

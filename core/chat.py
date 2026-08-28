@@ -8,7 +8,8 @@ import discord
 import achievements
 import documents
 from core.base import normalize
-from core import call_event, intent
+from core import intent
+from events import call_event
 from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_nl_cap, update_daily_stats

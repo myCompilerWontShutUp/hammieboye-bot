@@ -3,11 +3,17 @@ import logging
 
 import discord
 
+from admin import console as admin
 from config import ALLOWED_GUILD_IDS, CALL_PREFIXES
-from core import admin, call_event, greeting, onboarding, presence, slash_commands, sleep_event, wake_event
+from core import onboarding, slash_commands
 from core.chat import handle_natural_language
 from core.client import create_tree
-from core.scheduler import (
+from db.daily_stats import increment_messages_today, refresh_conversation_caps
+from db.guild_channels import set_last_channel
+from db.guild_sleep_state import any_triggered_tonight
+from db.users import ensure_user, increment_chat_count
+from events import call_event, greeting, presence, sleep_event, wake_event
+from events.scheduler import (
     is_late_wake_today,
     is_sleep_time,
     is_sleep_time_for,
@@ -15,10 +21,6 @@ from core.scheduler import (
     start_daily,
     start_interval,
 )
-from db.daily_stats import increment_messages_today, refresh_conversation_caps
-from db.guild_channels import set_last_channel
-from db.guild_sleep_state import any_triggered_tonight
-from db.users import ensure_user, increment_chat_count
 
 _TICK_INTERVAL_SECONDS = 30
 _LATE_WAKE_DELAY_SECONDS = 30 * 60
@@ -130,10 +132,10 @@ def setup_dispatcher(client: discord.Client) -> None:
             # 관리자 콘솔은 취침 시간대와 무관하게 항상 동작한다 (§13-F 확정).
             await admin.handle(message)
             return
-        if is_sleep_time_for(message.author.id):
+        if is_sleep_time_for(message.channel.id):
             # 취침 시간(00:00~06:30)엔 원칙적으로 무슨 일이 있어도 응답하지 않지만,
-            # 봇을 맨션한 경우만 예외로 취침 중 깨움 이벤트 로직을 태운다. (관리자가
-            # hm-awake/hm-asleep으로 강제 오버라이드한 경우 실제 시간 대신 그 값을 따른다.)
+            # 봇을 맨션한 경우만 예외로 취침 중 깨움 이벤트 로직을 태운다. (테스트 서버의
+            # 고정 awake/asleep 채널이면 실제 시간 대신 그 채널의 고정 상태를 따른다.)
             if client.user in message.mentions:
                 await wake_event.handle_mention(message)
             return

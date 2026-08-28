@@ -6,7 +6,7 @@ import discord
 
 from core.base import EMBED_COLOR
 from core.korean import josa
-from core.scheduler import KST, format_footer_time
+from events.scheduler import KST, format_footer_time
 from db.daily_stats import ensure_nl_cap
 from db.history import get_recent
 from db.ranking import compute_percentile, count_total, get_rank

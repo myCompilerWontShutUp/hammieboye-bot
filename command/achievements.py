@@ -5,7 +5,7 @@ import discord
 
 import achievements
 from core.base import EMBED_COLOR
-from core.scheduler import KST, format_footer_time
+from events.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 
 # 제목 밑 설명은 정책 고지 성격이라(어디까지나 "이 명령어가 하는 일") 20개 풀이 아니라
