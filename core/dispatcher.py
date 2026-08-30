@@ -25,6 +25,13 @@ from events.scheduler import (
 _TICK_INTERVAL_SECONDS = 30
 _LATE_WAKE_DELAY_SECONDS = 30 * 60
 
+# §42(2026-08-30, 사용자 확정): 호출 단어(prefix)가 확인되면(자고 있을 때 제외) "답변중..."이
+# 무조건 즉시 떠야 한다. §41에서 core/chat.py 안으로 옮겼던 플레이스홀더 관리를 여기(호출
+# 단어 확인 직후, touch_channel/ensure_user 등 그 어떤 DB 조회보다도 앞)로 다시 옮긴다 —
+# chat.py에 넘기기 전에도 dispatcher 자체가 이미 Supabase 왕복을 2~3번 거치고 있어서,
+# 그 안에서만 플레이스홀더를 관리하면 그마저도 늦게 뜨는 문제가 있었다.
+_THINKING_PLACEHOLDER = "_답변중..._"
+
 
 async def _run_wake_sequence() -> None:
     """매일 06:30(KST)에 실행. 그날 밤 방해금지 이벤트가 발동했으면(§28) 기상 자체를
@@ -44,6 +51,27 @@ def _strip_call_prefix(content: str) -> str | None:
         if content.startswith(prefix):
             return content[len(prefix) :].strip()
     return None
+
+
+async def _send_placeholder(message: discord.Message) -> discord.Message | None:
+    """"답변중..." 플레이스홀더를 답장으로 보낸다. 실패해도 None을 반환할 뿐, 나머지
+    흐름은 그대로 계속된다 — 플레이스홀더는 있으면 좋은 것일 뿐 핵심 기능이 아니다."""
+    try:
+        return await message.reply(_THINKING_PLACEHOLDER)
+    except discord.HTTPException:
+        logging.exception("Failed to send thinking placeholder")
+        return None
+
+
+async def _delete_placeholder(placeholder: discord.Message | None) -> None:
+    if placeholder is None:
+        return
+    try:
+        await placeholder.delete()
+    except discord.HTTPException:
+        # 이미 지워졌거나 권한이 바뀐 경우 등 — 최종 답장은 어차피 별도 메시지로 새로
+        # 전송되므로 여기서 실패해도 사용자에게 보이는 결과에는 영향이 없다.
+        logging.exception("Failed to delete thinking placeholder")
 
 
 async def _reply(
@@ -144,23 +172,31 @@ def setup_dispatcher(client: discord.Client) -> None:
         if not user_message:
             return
 
-        # 부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는, 유저가 봇을 실제로 부른 채널을 기준으로
-        # 정한다. ensure_user와는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
-        _, user = await asyncio.gather(
-            set_last_channel(message.guild.id, message.channel.id),
-            ensure_user(message.author.id),
-        )
-        if not user["consent_given"]:
-            # 동의(가입)는 이제 오직 `/가입` 슬래시 커맨드로만 가능하다 — 자연어 문구 인정 폐기.
-            await message.reply(onboarding.random_guide())
-            return
+        # §42: 호출 단어가 확인된 순간(자고 있을 때는 이미 위에서 걸러짐) "답변중..."을
+        # 무조건 즉시 띄운다 — 그 아래 touch_channel/ensure_user/동의 확인/카운터 증가/
+        # 자연어 파이프라인 전체(콜 이벤트 판정, 분류, 생성)가 이 플레이스홀더 아래에서
+        # 진행되도록, 가능한 가장 이른 시점(첫 DB 조회보다도 전)에 보낸다.
+        placeholder = await _send_placeholder(message)
+        try:
+            # 부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는, 유저가 봇을 실제로 부른 채널을
+            # 기준으로 정한다. ensure_user와는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
+            _, user = await asyncio.gather(
+                set_last_channel(message.guild.id, message.channel.id),
+                ensure_user(message.author.id),
+            )
+            if not user["consent_given"]:
+                # 동의(가입)는 이제 오직 `/가입` 슬래시 커맨드로만 가능하다 — 자연어 문구 인정 폐기.
+                response = onboarding.random_guide()
+            else:
+                await asyncio.gather(
+                    increment_chat_count(message.author.id),
+                    increment_messages_today(message.author.id),
+                )
 
-        await asyncio.gather(
-            increment_chat_count(message.author.id),
-            increment_messages_today(message.author.id),
-        )
+                response = await handle_natural_language(
+                    message.author.id, message.guild.id, user_message, user["affection"]
+                )
+        finally:
+            await _delete_placeholder(placeholder)
 
-        response = await handle_natural_language(
-            message.author.id, message.guild.id, user_message, user["affection"], message
-        )
         await _reply(message, response)
