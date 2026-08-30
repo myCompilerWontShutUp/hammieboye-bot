@@ -199,63 +199,70 @@ async def handle_natural_language(
     will_generate = (
         affection >= 0 and not over_cap and not is_repeat_penalty and not is_repeat_warning
     )
-    if will_generate:
-        # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
-        context_turns, (event_delta, event_achievement, was_event_response, event_override) = await asyncio.gather(
-            get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
-            call_event.handle_potential_response(user_id, guild_id, text),
-        )
-    else:
-        context_turns = None
-        # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
-        event_delta, event_achievement, was_event_response, event_override = await call_event.handle_potential_response(
-            user_id, guild_id, text
-        )
 
-    logged_row = await log(user_id, guild_id, text)
-
-    if event_delta:
-        total_delta += event_delta
-        current_affection += event_delta
-
-    # 부름 이벤트로 얻은 업적 알림은 이후 어떤 분기로 빠지든(음수 호감도/상한/반복 페널티 등)
-    # 최종 응답에 항상 붙어야 한다 — 이 리스트를 모든 _finalize 호출에 그대로 넘긴다.
-    achievement_notices = [event_achievement] if event_achievement else []
-
-    # 음수 호감도면 분류/생성 등 OpenAI API를 아예 호출하지 않고 고정 문구로만 답한다 (섹션 2).
-    if affection < 0:
-        base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
-        return _finalize(base, total_delta, current_affection, achievement_notices)
-
-    # 오늘의 자연어 대화 상한을 이미 다 썼으면, 분류/생성 등 API를 아예 호출하지 않고
-    # 고정 문구로만 답한다 (신규).
-    if over_cap:
-        return await _handle_over_cap(
-            user_id, stats, total_delta, current_affection, achievement_notices, was_event_response
-        )
-
-    # 반복 발화 전조/페널티 시점엔 자연어 생성 없이 톤이 맞는 고정 반응으로 답한다 —
-    # 태연하게 생성된 답변에 호감도 하락 알림만 붙이면 어색하다 (사용자 피드백).
-    if is_repeat_penalty:
-        return _finalize(
-            random.choice(_REPEAT_ANGRY_PHRASES), total_delta, current_affection, achievement_notices
-        )
-    if is_repeat_warning:
-        return _finalize(
-            random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
-        )
-
-    # §35-3: 부름 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 위에서 total_delta에
-    # 반영됨), 정상 생성을 아예 하지 않고(API 호출 없음, nl_count 미증가) 이 고정 문구로
-    # 완전히 대체한다(사용자 확정) — 여기까지 왔다는 건 호감도<0/상한/반복 페널티 등 다른
-    # 고정 응답 분기에 걸리지 않았다는 뜻이라, "정상 생성 답변"을 대체하는 게 정확히 맞다.
-    if event_override is not None:
-        return _finalize(event_override, total_delta, current_affection, achievement_notices)
-
-    # 여기서부터 실제 OpenAI API 호출(분류+생성) 구간 — 대기 시간이 체감될 수 있어
-    # "답변중..." 플레이스홀더를 띄운다. 전송 실패해도 아래 흐름은 그대로 진행된다.
+    # §41(2026-08-30, 사용자 발견): "답변중..." 플레이스홀더가 원래 분류+생성 구간만 감쌌는데,
+    # call_event.handle_potential_response()도 활성/최근 클레임 이벤트가 있으면 그 안에서
+    # 분류 API 호출을 하고, 클레임에 성공하면 그 자리에서 다른 서버들에 "~가 해줬어!" 공지까지
+    # 전송한다 — 이 구간 전체가 플레이스홀더 바깥에 있어서, 다른 서버의 공지가 이 서버의
+    # "답변중..."보다 먼저 뜨는 병목이 있었다. 플레이스홀더를 call_event 처리 시작 지점까지
+    # 앞당겨서 그 아래 전부(호감도<0/상한/반복 페널티 등 조기 반환 포함)를 감싸도록 옮긴다.
+    # 전송 실패해도 아래 흐름은 그대로 진행된다.
     placeholder = await _send_placeholder(message)
     try:
+        if will_generate:
+            # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
+            context_turns, (event_delta, event_achievement, was_event_response, event_override) = await asyncio.gather(
+                get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
+                call_event.handle_potential_response(user_id, guild_id, text),
+            )
+        else:
+            context_turns = None
+            # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
+            event_delta, event_achievement, was_event_response, event_override = await call_event.handle_potential_response(
+                user_id, guild_id, text
+            )
+
+        logged_row = await log(user_id, guild_id, text)
+
+        if event_delta:
+            total_delta += event_delta
+            current_affection += event_delta
+
+        # 부름 이벤트로 얻은 업적 알림은 이후 어떤 분기로 빠지든(음수 호감도/상한/반복 페널티 등)
+        # 최종 응답에 항상 붙어야 한다 — 이 리스트를 모든 _finalize 호출에 그대로 넘긴다.
+        achievement_notices = [event_achievement] if event_achievement else []
+
+        # 음수 호감도면 분류/생성 등 OpenAI API를 아예 호출하지 않고 고정 문구로만 답한다 (섹션 2).
+        if affection < 0:
+            base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
+            return _finalize(base, total_delta, current_affection, achievement_notices)
+
+        # 오늘의 자연어 대화 상한을 이미 다 썼으면, 분류/생성 등 API를 아예 호출하지 않고
+        # 고정 문구로만 답한다 (신규).
+        if over_cap:
+            return await _handle_over_cap(
+                user_id, stats, total_delta, current_affection, achievement_notices, was_event_response
+            )
+
+        # 반복 발화 전조/페널티 시점엔 자연어 생성 없이 톤이 맞는 고정 반응으로 답한다 —
+        # 태연하게 생성된 답변에 호감도 하락 알림만 붙이면 어색하다 (사용자 피드백).
+        if is_repeat_penalty:
+            return _finalize(
+                random.choice(_REPEAT_ANGRY_PHRASES), total_delta, current_affection, achievement_notices
+            )
+        if is_repeat_warning:
+            return _finalize(
+                random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
+            )
+
+        # §35-3: 부름 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 위에서 total_delta에
+        # 반영됨), 정상 생성을 아예 하지 않고(API 호출 없음, nl_count 미증가) 이 고정 문구로
+        # 완전히 대체한다(사용자 확정) — 여기까지 왔다는 건 호감도<0/상한/반복 페널티 등 다른
+        # 고정 응답 분기에 걸리지 않았다는 뜻이라, "정상 생성 답변"을 대체하는 게 정확히 맞다.
+        if event_override is not None:
+            return _finalize(event_override, total_delta, current_affection, achievement_notices)
+
+        # 여기서부터 실제 OpenAI API 호출(분류+생성) 구간.
         # RAG 카테고리 분류 + 감정 판정을 한 번의 호출로 처리 (judge 제거, §13-B/C)
         classification = await intent.classify(text)
 

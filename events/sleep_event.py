@@ -1,6 +1,6 @@
 import logging
 import random
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 
 import discord
 
@@ -11,9 +11,8 @@ from events.scheduler import KST, resolve_broadcast_channel_id
 from db.achievements import award as award_achievement
 from db.affection import add_affection
 from db.client import select
-from db.daily_stats import get_top_talkers_for
+from db.daily_stats import get_active_users_for, get_top_talkers_for
 from db.guild_channels import get_last_channel
-from db.history import get_distinct_chatters
 
 _client: discord.Client | None = None
 
@@ -55,25 +54,22 @@ def init(client: discord.Client) -> None:
     _client = client
 
 
-def _target_day_bounds(now_kst: datetime) -> tuple[str, datetime, datetime]:
+def _target_date_str(now_kst: datetime) -> str:
     """이 함수는 자정(00:00) 시점에 실행되므로, "오늘"이 아니라 방금 끝난 "어제"(KST) 하루를
-    대상으로 집계해야 한다. (날짜 문자열, 그 하루의 시작, 끝)을 반환한다."""
-    target_date = (now_kst - timedelta(days=1)).date()
-    day_start = datetime.combine(target_date, time.min, tzinfo=KST)
-    day_end = day_start + timedelta(days=1)
-    return target_date.isoformat(), day_start, day_end
+    대상으로 집계해야 한다."""
+    return (now_kst - timedelta(days=1)).date().isoformat()
 
 
 async def announce_and_reward() -> None:
     """정확히 자정(KST 00:00)에 실행되어, 방금 끝난 하루를 기준으로:
     1) 가장 많이 대화한 사용자 1명을 "1위"로 발표만 하고 (동점이면 타이브레이크로 단독 선정)
-    2) 그날 자연어로 한 번이라도 대화한 사용자 전원에게 호감도 +1을 지급한다 (사용자 확정 —
-       기존엔 1위에게만 지급했으나, 표시(1위)와 보상(전원)을 분리했다).
+    2) 그날 활동(자연어 또는 공개 슬래시 커맨드)한 사용자 전원에게 호감도 +1을 지급한다
+       (사용자 확정 — 기존엔 1위에게만 지급했으나, 표시(1위)와 보상(전원)을 분리했다).
     """
-    target_date_str, day_start, day_end = _target_day_bounds(datetime.now(KST))
+    target_date_str = _target_date_str(datetime.now(KST))
 
     winner_id = await _pick_winner(target_date_str)
-    chatters = await get_distinct_chatters(day_start, day_end)
+    chatters = await get_active_users_for(target_date_str)
 
     for user_id in chatters:
         await add_affection(user_id, 1, _METHOD)
@@ -119,9 +115,14 @@ async def _post_announcement(winner_id: int, reward_given: bool) -> None:
 
     # "너가 짱!!" — 사용자 인터랙션이 아니라 이 스케줄 태스크가 직접 메시지를 조립하는
     # 구조라, achievement_notices 반환값 체계를 안 거치고 여기서 바로 이어붙인다.
-    # award()가 멱등이라 이미 가지고 있으면 이 줄 자체가 안 붙는다(사용자 확정).
+    # award()가 멱등이라 이미 가지고 있으면 이 줄 자체가 안 붙는다.
+    # 이 업적 알림은 winner가 실제로 그 서버에 있을 때만 보여준다(사용자 발견·확정,
+    # 2026-08-30) — 다른 업적은 전부 유저 본인의 인터랙션(자기 서버) 안에서만 트리거되니
+    # 이 문제 자체가 없지만, 이 업적만 유일하게 모든 서버에 팬아웃되는 전역 태스크에서
+    # 트리거돼서 이름 표기(별명/실제 이름)처럼 서버별 분기가 필요했다.
+    achievement_suffix = ""
     if await award_achievement(winner_id, achievements.daily_top_talker.ID):
-        suffix += f"\n🏆 업적 달성: {achievements.format_name(achievements.daily_top_talker)}!!"
+        achievement_suffix = f"\n🏆 업적 달성: {achievements.format_name(achievements.daily_top_talker)}!!"
 
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:
@@ -136,6 +137,8 @@ async def _post_announcement(winner_id: int, reward_given: bool) -> None:
         # (사용자 확정, 2026-08-27). 멘션은 절대 안 한다.
         name = await _resolve_display_name(guild, winner_id)
         text = line_template.format(name=name) + suffix
+        if achievement_suffix and guild.get_member(winner_id) is not None:
+            text += achievement_suffix
         try:
             await channel.send(text)
         except discord.HTTPException:

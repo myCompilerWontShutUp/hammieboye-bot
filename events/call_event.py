@@ -18,6 +18,7 @@ from db.call_events import (
     get_active_events,
     get_due_unposted,
     get_expired_unpenalized,
+    get_recently_claimed,
     mark_penalty_applied,
     mark_posted,
     schedule,
@@ -63,6 +64,7 @@ def _invalidate_active_events_cache() -> None:
     global _active_events_cache_until
     _active_events_cache_until = None
 
+
 _PROMPT_TEXTS = (
     "배고파... 뭐 먹을 거 없나?",
     "목말라... 물이 다 떨어졌어",
@@ -80,6 +82,112 @@ _PROMPT_TEXTS = (
     "물통이 비었어... 채워줄 사람?",
     "낮잠 잘 자리 좀 만들어줄 사람 없나...",
 )
+
+# §40(2026-08-30, 사용자 확정): 클레임된 뒤 1분 동안은 "진짜 도와주려던" 반응(relevant
+# 분류)에 고정 +1 + 전용 감사 문구로 응답한다 — 경쟁이 치열해서 아깝게 놓친 사용자에게도
+# 성의 표시를 하기 위함. 이 유예 기간 중 irrelevant/negative 분류는 콜 이벤트 관점에서는
+# 완전히 무시한다(콜 이벤트 전용 페널티 없음) — 다만 그 메시지가 자연어의 다른 페널티
+# (분당 과호출/반복 발화/감정)까지 면제받는 건 아니다(사용자 확정) — `override_response`를
+# None으로 반환해서 core/chat.py의 나머지 파이프라인이 평소처럼 그대로 적용되게 한다.
+_GRACE_PERIOD = timedelta(minutes=1)
+_ALREADY_HELPED_REWARD = 1
+_ALREADY_HELPED_METHOD = "call_event_already_helped"
+_RECENTLY_CLAIMED_CACHE_TTL = timedelta(seconds=5)
+_recently_claimed_cache: list[dict] = []
+_recently_claimed_cache_until: datetime | None = None
+
+# 각 부름 이벤트 프롬프트가 실제로 필요로 하는 것(사용자 확정, 2026-08-30 — "이벤트에
+# 맞춰서 만들어야 합니다", 예: "물 마시고시퍼..." -> "물은 이미 누가 줫어! 그래도 고마워!").
+# _PROMPT_TEXTS의 15개 항목과 정확히 1:1로 대응해야 하므로, 아래 assert로 즉시 검증한다.
+# "물건을 준다"류(먹이/물/간식 등)와 "행동을 해준다"류(놀아주기/손질 등)로 나눠서 각각
+# 다른 동사 템플릿을 쓴다 — "물은 이미 줘써"는 자연스럽지만 "털 손질은 이미 줘써"는
+# 어색하므로, 항목의 성격에 맞는 동사를 골라야 문법적으로 자연스럽다.
+_ALREADY_HELPED_GIVE_ITEMS = {
+    "배고파... 뭐 먹을 거 없나?": "먹이",
+    "목말라... 물이 다 떨어졌어": "물",
+    "출출한데 간식 없나... 누가 좀 챙겨줘": "간식",
+    "볼주머니가 텅 비었어... 뭐라도 넣어줄 사람?": "볼주머니에 넣을 간식",
+    "해바라기씨가 다 떨어졌어... 누가 좀 채워줘": "해바라기씨",
+    "밀웜이 먹고 싶은데 아무도 없나?": "밀웜",
+    "물통이 비었어... 채워줄 사람?": "물통에 채울 물",
+}
+_ALREADY_HELPED_DO_ITEMS = {
+    "심심해... 같이 놀아줄 사람 없어??": "놀아주는 것",
+    "심심하다 심심해... 뭐라도 재밌는 거 없을까": "재밌는 놀이",
+    "쳇바퀴 좀 돌려줄 사람 없나... 다리가 근질근질해": "쳇바퀴 돌리는 것",
+    "톱밥 정리 좀 도와줄 사람 없나?": "톱밥 정리",
+    "쳇바퀴가 삐걱거려... 손 좀 봐줄 사람?": "쳇바퀴 손보는 것",
+    "숨숨집이 좁아진 것 같아... 넓혀줄 사람?": "숨숨집 넓히는 것",
+    "털 손질 좀 도와줄 사람 없어?": "털 손질",
+    "낮잠 잘 자리 좀 만들어줄 사람 없나...": "낮잠 자리",
+}
+assert set(_ALREADY_HELPED_GIVE_ITEMS) | set(_ALREADY_HELPED_DO_ITEMS) == set(_PROMPT_TEXTS)
+
+_ALREADY_HELPED_GIVE_TEMPLATES = (
+    "{item}{은는} 이미 딴 친구가 줘써!! 그래도 챙겨주려던 맘은 고마워!! _(뭉클)_",
+    "앗, {item}{은는} 벌써 받아써!! 그치만 신경 써줘서 고마워!! _(감동)_",
+    "그거 아까 다른 사람이 {item}{을를} 챙겨줘써!! 마음만 받을게, 고마워!! _(따뜻)_",
+    "{item}{은는} 이미 누가 줘써!! 근데 네 정성은 진짜 느껴져, 고마워!! _(감사)_",
+    "누가 먼저 {item}{을를} 챙겨줘써... 그래도 네 마음은 소중해!! _(뭉클)_",
+    "이미 {item}{은는} 받아써!! 그치만 챙겨주려던 맘씨 최고야, 고마워!! _(찡긋)_",
+    "딴 친구가 벌써 {item}{을를} 줘써!! 네 착한 맘은 안 잊을게!! _(감동)_",
+    "{item}{은는} 이미 채워졌지만!! 신경 써준 거 절대 안 잊을게, 고마워!! _(뿌듯)_",
+    "누가 먼저 {item}{을를} 줘써!! 그래도 네 정성은 진짜야, 고마워!! _(감사)_",
+    "앗 {item}{은는} 벌써 채워졌어!! 그치만 네 마음씨는 최고야, 고마워!! _(따뜻)_",
+)
+_ALREADY_HELPED_DO_TEMPLATES = (
+    "{item}{은는} 이미 딴 친구가 해줘써!! 그래도 하려던 맘은 고마워!! _(뭉클)_",
+    "앗, {item}{은는} 벌써 해결됐어!! 그치만 신경 써줘서 고마워!! _(감동)_",
+    "그거 아까 다른 사람이 {item}{을를} 해줘써!! 마음만 받을게, 고마워!! _(따뜻)_",
+    "{item}{은는} 이미 다 됐어!! 근데 네 정성은 진짜 느껴져, 고마워!! _(감사)_",
+    "누가 먼저 {item}{을를} 해결해줘써... 그래도 네 마음은 소중해!! _(뭉클)_",
+    "이미 {item}{은는} 처리됐어!! 그치만 하려던 맘씨 최고야, 고마워!! _(찡긋)_",
+    "딴 친구가 벌써 {item}{을를} 해줘써!! 네 착한 맘은 안 잊을게!! _(감동)_",
+    "{item}{은는} 이미 끝났지만!! 신경 써준 거 절대 안 잊을게, 고마워!! _(뿌듯)_",
+    "누가 먼저 {item}{을를} 해결해줘써!! 그래도 네 정성은 진짜야, 고마워!! _(감사)_",
+    "앗 {item}{은는} 벌써 끝났어!! 그치만 네 마음씨는 최고야, 고마워!! _(따뜻)_",
+)
+
+
+def _build_already_helped_lines() -> dict[str, tuple[str, ...]]:
+    result: dict[str, tuple[str, ...]] = {}
+    for group_items, templates in (
+        (_ALREADY_HELPED_GIVE_ITEMS, _ALREADY_HELPED_GIVE_TEMPLATES),
+        (_ALREADY_HELPED_DO_ITEMS, _ALREADY_HELPED_DO_TEMPLATES),
+    ):
+        for prompt, item in group_items.items():
+            result[prompt] = tuple(
+                template.format(item=item, 은는=josa(item, "은", "는"), 을를=josa(item, "을", "를"))
+                for template in templates
+            )
+    return result
+
+
+# {prompt_text: (해당 이벤트 전용 문구 10개, ...)} — 총 15개 이벤트 x 10개 = 150개.
+_ALREADY_HELPED_LINES_BY_PROMPT = _build_already_helped_lines()
+
+
+async def _get_recently_claimed_cached() -> list[dict]:
+    global _recently_claimed_cache, _recently_claimed_cache_until
+    now = datetime.now(timezone.utc)
+    if _recently_claimed_cache_until is not None and now < _recently_claimed_cache_until:
+        return _recently_claimed_cache
+    _recently_claimed_cache = await get_recently_claimed(now - _GRACE_PERIOD)
+    _recently_claimed_cache_until = now + _RECENTLY_CLAIMED_CACHE_TTL
+    return _recently_claimed_cache
+
+
+async def _grant_already_helped(user_id: int, prompt_text: str) -> tuple[int, str | None, bool, str | None]:
+    """이미 클레임된 이벤트에 "진짜 도와주려던" relevant 반응이 왔을 때 공통으로 쓴다 —
+    이벤트가 아직 활성 상태인데 클레임 경쟁에서 근소하게 진 경우(claim() 실패)와, 클레임된
+    지 1분 이내인 유예 기간 경우 둘 다 동일하게 취급한다. "도와준 횟수"(help_count)는
+    포함하되(사용자 확정), "햄미의 요청" 업적은 진짜 첫 클레임 성공자만 유지한다(업적
+    설명 자체가 "처음으로"라 여기서는 부여하지 않음)."""
+    result = await add_affection(user_id, _ALREADY_HELPED_REWARD, _ALREADY_HELPED_METHOD)
+    await _try_increment_help_count(user_id)
+    lines = _ALREADY_HELPED_LINES_BY_PROMPT.get(prompt_text, _ALREADY_HELPED_LINES_BY_PROMPT[_PROMPT_TEXTS[0]])
+    return result["applied_amount"], result["achievement_notice"], True, random.choice(lines)
+
 
 _RESPONSE_JUDGE_INSTRUCTIONS = """\
 너는 디스코드 챗봇 "Hammie(햄미)"가 올린 이벤트 메시지에 대한 사용자 답장을 분류하는 심사자다.
@@ -270,10 +378,15 @@ async def handle_potential_response(
       상한 소진/반복 발화 페널티처럼 애초에 생성 자체를 안 하는 다른 고정 응답 분기에는
       영향을 주지 않는다(그 경우엔 -1만 델타에 반영되고 텍스트는 원래 분기의 문구가 그대로
       나간다).
+    - §40: 활성 이벤트가 없어도, 클레임된 지 1분 이내(유예 기간)면 relevant 분류에 한해
+      `_grant_already_helped()`로 고정 +1 + 감사 문구를 준다. 그 유예 기간 중
+      irrelevant/negative는 콜 이벤트 관점에서 완전히 무시한다(콜 이벤트 전용 페널티
+      없음) — `(0, None, False, None)`을 반환해서 `core/chat.py`의 나머지 파이프라인
+      (분당 과호출/반복 발화/감정 등 기존 자연어 페널티)은 평소처럼 그대로 적용되게 한다.
     """
     events = await _get_active_events_cached()
     if not events:
-        return 0, None, False, None
+        return await _handle_grace_period(user_id, text)
     event = events[0]
 
     classification = await _classify_response(event["prompt_text"], text)
@@ -294,7 +407,9 @@ async def handle_potential_response(
     reward = random.randint(1, 10)
     won = await claim(event["id"], user_id, reward)
     if not won:
-        return 0, None, True, None
+        # 이벤트는 아직 활성으로 보였지만(캐시가 살짝 낡음) 그 사이 이미 다른 사람이
+        # 클레임에 성공한 경우 — §40 유예 기간과 동일하게 취급한다.
+        return await _grant_already_helped(user_id, event["prompt_text"])
 
     _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
     result = await add_affection(user_id, reward, "call_event")
@@ -309,6 +424,21 @@ async def handle_potential_response(
         achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
     return result["applied_amount"], achievement_notice, True, None
+
+
+async def _handle_grace_period(user_id: int, text: str) -> tuple[int, str | None, bool, str | None]:
+    """활성 이벤트가 없을 때, 클레임된 지 1분 이내인 이벤트가 있는지 확인한다(§40).
+    relevant로 분류되면 `_grant_already_helped()`로 넘기고, 그 외(irrelevant/negative/
+    분류 실패)는 콜 이벤트와 완전히 무관하게 처리한다 — 즉 이벤트 자체가 없는 것과
+    동일하게 `(0, None, False, None)`을 반환해서 평범한 자연어로 흘러가게 둔다."""
+    recently_claimed = await _get_recently_claimed_cached()
+    if not recently_claimed:
+        return 0, None, False, None
+    event = recently_claimed[0]
+    classification = await _classify_response(event["prompt_text"], text)
+    if classification != "relevant":
+        return 0, None, False, None
+    return await _grant_already_helped(user_id, event["prompt_text"])
 
 
 async def _try_increment_help_count(user_id: int) -> None:

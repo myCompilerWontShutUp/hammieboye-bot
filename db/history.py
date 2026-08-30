@@ -40,22 +40,6 @@ async def get_recent(user_id: int, since: datetime, role: str = "user") -> list[
     return rows
 
 
-async def get_distinct_chatters(start: datetime, end: datetime) -> set[int]:
-    """[start, end) 구간(UTC) 동안 자연어(role='user')로 최소 한 번이라도 대화한 사용자
-    id 집합. 취침 이벤트(3-5)가 "자연어로 대화한 사용자 전원에게 +1"을 계산할 때 쓴다.
-    chat_history는 (조회 필터와 별개로) 실제로는 영구 보관되므로 지난 하루치를 그대로
-    조회할 수 있다."""
-    rows = await select(
-        "chat_history",
-        {
-            "role": "eq.user",
-            "and": f"(created_at.gte.{start.astimezone(timezone.utc).isoformat()},created_at.lt.{end.astimezone(timezone.utc).isoformat()})",
-            "select": "user_id",
-        },
-    )
-    return {row["user_id"] for row in rows}
-
-
 async def get_recent_turns(user_id: int, since: datetime, limit: int = 5) -> list[dict]:
     """최근 대화 턴(유저 발화 + 햄미 답장 둘 다)을 오래된 순으로 최대 limit개 반환한다.
 

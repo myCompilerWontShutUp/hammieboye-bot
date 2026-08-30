@@ -84,3 +84,23 @@ async def get_top_talkers_for(date_str: str) -> list[dict]:
 
 async def get_top_talkers_today() -> list[dict]:
     return await get_top_talkers_for(kst_today_str())
+
+
+async def get_active_users_for(date_str: str) -> list[int]:
+    """그날(KST) 자연어 또는 공개 슬래시 커맨드로 최소 한 번이라도 활동한 사용자 id 목록
+    (daily_net 필터 없음 — 당일 순증감과 무관하게 활동 자체만 기준). 취침 전 대화왕 보상
+    (3-5, "그날 대화한 사용자 전원 +1")에 쓴다.
+
+    기존엔 `chat_history`(자연어만)를 기준으로 삼아서, 자연어 없이 공개 슬래시 커맨드
+    (`/페트병`·`/내정보`·`/내업적`·`/랭킹`·`/니정보`·`/니업적`)만 쓴 유저가 보상에서
+    누락되는 버그가 있었다(사용자 발견·확정, 2026-08-30). `daily_stats.messages_today`는
+    자연어(dispatcher.py)와 공개 슬래시 커맨드(core/slash_commands.py의 `_prepare()`)
+    양쪽에서 함께 증가하므로 이걸 기준으로 삼으면 자동으로 포함된다 — ephemeral 전용
+    커맨드(`/가입`·`/가입-수집항목`·`/탈퇴`)는 `_prepare()`를 거치지 않아 애초에
+    `messages_today`를 안 건드리므로 자연히 제외된다(사용자 확정 사항과 일치).
+    """
+    rows = await select(
+        "daily_stats",
+        {"stat_date": f"eq.{date_str}", "messages_today": "gt.0", "select": "user_id"},
+    )
+    return [row["user_id"] for row in rows]

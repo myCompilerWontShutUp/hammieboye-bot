@@ -49,6 +49,19 @@ async def get_active_events() -> list[dict]:
     )
 
 
+async def get_recently_claimed(since: datetime) -> list[dict]:
+    """`since` 이후에 클레임된 이벤트들(만료 여부 무관) — 클레임 후 1분 유예 기간(§40)
+    판정에 쓴다."""
+    return await select(
+        "global_call_events",
+        {
+            "claimed_by": "not.is.null",
+            "claimed_at": f"gt.{since.isoformat()}",
+            "select": "*",
+        },
+    )
+
+
 async def get_expired_unpenalized() -> list[dict]:
     now_iso = datetime.now(timezone.utc).isoformat()
     return await select(
