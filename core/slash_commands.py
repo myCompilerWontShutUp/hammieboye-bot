@@ -14,7 +14,7 @@ from command.plastic import handle as plastic_handle
 from core import onboarding
 from core.base import touch_channel
 from db.daily_stats import increment_messages_today
-from db.users import ensure_user
+from db.users import get_user
 from events import sleep_guard
 
 
@@ -31,14 +31,17 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
     if interaction.user.bot:
         return False
 
-    # touch_channel과 ensure_user는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
-    # touch_channel 자체가 guild/channel 없음을 안전하게 무시하므로 분기가 필요 없다.
+    # touch_channel(쓰기)과 get_user(읽기 전용 조회)는 서로 독립적이라 동시에 처리한다
+    # (지연시간 최적화). touch_channel 자체가 guild/channel 없음을 안전하게 무시하므로
+    # 분기가 필요 없다. 여기서 ensure_user(쓰기)를 쓰지 않는 이유: 미동의 사용자가
+    # 이 커맨드를 시도만 해도 DB에 행이 생기는 문제가 있었다 — 실제 동의(/가입)만이
+    # 행을 만들어야 한다.
     _, user = await asyncio.gather(
         touch_channel(interaction),
-        ensure_user(interaction.user.id),
+        get_user(interaction.user.id),
     )
 
-    if not user["consent_given"]:
+    if user is None or not user["consent_given"]:
         # 자연어 경로(개인화 불가)와 경험을 통일하기 위해 공개로 응답한다 (사용자 확정).
         guide = onboarding.random_guide()
         if deferred:

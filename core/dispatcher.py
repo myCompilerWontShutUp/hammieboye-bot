@@ -11,7 +11,7 @@ from core.client import create_tree
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import set_last_channel
 from db.guild_sleep_state import any_triggered_tonight
-from db.users import ensure_user, increment_chat_count
+from db.users import get_user, increment_chat_count
 from events import call_event, greeting, presence, sleep_event, wake_event
 from events.scheduler import (
     is_late_wake_today,
@@ -179,12 +179,15 @@ def setup_dispatcher(client: discord.Client) -> None:
         placeholder = await _send_placeholder(message)
         try:
             # 부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는, 유저가 봇을 실제로 부른 채널을
-            # 기준으로 정한다. ensure_user와는 서로 독립적인 쓰기라 동시에 처리한다 (지연시간 최적화).
+            # 기준으로 정한다. get_user(읽기 전용 조회)와는 서로 독립적이라 동시에 처리한다
+            # (지연시간 최적화). 여기서 ensure_user(쓰기)를 쓰지 않는 이유: 미동의 사용자가
+            # 그냥 말을 걸기만 해도 DB에 행이 생기는 문제가 있었다 — 실제 동의(/가입)만이
+            # 행을 만들어야 한다.
             _, user = await asyncio.gather(
                 set_last_channel(message.guild.id, message.channel.id),
-                ensure_user(message.author.id),
+                get_user(message.author.id),
             )
-            if not user["consent_given"]:
+            if user is None or not user["consent_given"]:
                 # 동의(가입)는 이제 오직 `/가입` 슬래시 커맨드로만 가능하다 — 자연어 문구 인정 폐기.
                 response = onboarding.random_guide()
             else:
