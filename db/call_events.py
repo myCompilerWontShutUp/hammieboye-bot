@@ -50,8 +50,7 @@ async def get_active_events() -> list[dict]:
 
 
 async def get_recently_claimed(since: datetime) -> list[dict]:
-    """`since` 이후에 클레임된 이벤트들(만료 여부 무관) — 클레임 후 1분 유예 기간(§40)
-    판정에 쓴다."""
+    """`since` 이후에 클레임된 이벤트들(만료 여부 무관) — 클레임 후 1분 유예 기간 판정에 쓴다."""
     return await select(
         "global_call_events",
         {

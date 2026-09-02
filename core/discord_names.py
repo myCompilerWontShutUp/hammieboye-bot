@@ -2,10 +2,8 @@ import logging
 
 import discord
 
-# 햄미는 사용자를 실제 멘션(<@id>)하지 않는다 — 다른 서버에 잘못된 핑으로 뜨거나 아예
-# 안 보일 수 있어서다(§9 참고). 서버 별명(display_name)도 아니라 "실제 이름"을 쓴다.
-# discord.py 기준 "실제 이름"은 서버별 닉네임이 아닌 global_name(신규 사용자명 표시 방식)이고,
-# global_name이 없는 계정은 name(계정 고유 아이디)으로 대체한다.
+# 사용자를 실제 멘션(<@id>)하지 않는다 — 다른 서버에 잘못된 핑으로 뜨거나 안 보일 수
+# 있어서다. 서버 별명(display_name)도 아닌 "실제 이름"(global_name, 없으면 name)을 쓴다.
 
 
 async def resolve_real_name(client: discord.Client, user_id: int) -> str:

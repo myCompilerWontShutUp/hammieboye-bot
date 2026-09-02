@@ -11,7 +11,6 @@ from db.ranking import get_last_increase_time, get_top_candidates
 
 _TOP_N = 10
 
-# 랭킹 embed를 보여주기 직전에 붙이는 인트로 한 줄 (API로 생성 후 검수해서 고정, 사용자 요청).
 _INTRO_LINES = (
     "두근두근!! 햄미의 호감도 순위 보여줄게!! _(두근)_",
     "자, 누가 제일 가까운지 볼까?? _(궁금)_",
@@ -50,8 +49,6 @@ async def _sort_key(candidate: dict) -> tuple:
 
 async def build_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     candidates = await get_top_candidates()
-    # 후보자별 DB 조회(_sort_key)는 서로 완전히 독립적인데 예전엔 한 명씩 순차로 기다렸다 —
-    # 후보 수(최대 20명)만큼 지연이 곱해지던 걸 병렬화해서 없앤다(지연시간 개선, 사용자 확정).
     sort_keys = await asyncio.gather(*(_sort_key(c) for c in candidates))
     keyed = list(zip(sort_keys, candidates))
     keyed.sort(key=lambda pair: pair[0])
@@ -61,8 +58,7 @@ async def build_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     if not top:
         embed.description = "아직 등록된 사용자가 없어."
     else:
-        # 실제 멘션(<@id>) 대신 실제 이름을 쓴다 — 햄미는 사용자를 맨션하지 않는다(사용자 확정).
-        # 이름 조회도 서로 독립적이라 병렬로 처리한다.
+        # 멘션(<@id>) 대신 실제 이름을 쓴다 — 조회도 서로 독립적이라 병렬 처리한다.
         names = await asyncio.gather(*(resolve_real_name(client, c["user_id"]) for c in top))
         lines = [f"{i + 1}. {name} — {c['affection']}" for i, (name, c) in enumerate(zip(names, top))]
         embed.description = "\n".join(lines)

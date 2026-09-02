@@ -2,8 +2,8 @@ import os
 import subprocess
 from datetime import datetime, timezone
 
-# 관리자 s-version 명령어(§14) 전용. Railway가 GitHub 연동 배포 시 자동으로 심어주는
-# 커밋 해시 env var를 우선 쓰고, 없으면(로컬 실행 등) git 명령으로 폴백한다.
+# Railway가 배포 시 자동으로 심어주는 커밋 해시 env var를 우선 쓰고, 없으면
+# (로컬 실행 등) git 명령으로 폴백한다.
 _START_TIME = datetime.now(timezone.utc)
 
 

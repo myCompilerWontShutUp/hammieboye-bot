@@ -8,14 +8,10 @@ from core.base import EMBED_COLOR
 from events.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 
-# 제목 밑 설명은 정책 고지 성격이라(어디까지나 "이 명령어가 하는 일") 20개 풀이 아니라
-# 고정 문구 1개다(사용자 확정, 2026-08-27) — 특정 업적 이름을 짚어 물어보면 알려준다는
-# §21 RAG 문서(documents/achievements.py)의 "발견의 재미" 원칙과 자연스럽게 이어지도록
-# 자연어 질문을 유도한다.
+# 정책 고지 성격이라 고정 문구 1개 — 특정 업적을 짚어 물어보면 RAG 문서가 알려준다는
+# "발견의 재미" 원칙과 이어지도록 자연어 질문을 유도한다.
 _DESCRIPTION = "어떻게 얻는지 궁금하면 햄미에게 물어봐!! 내가 다 알려줄게!!"
 
-# 임베드 밖 인사 문구 — /내정보·/니정보의 _INTRO_LINES/_INTRO_OTHER_LINES와는 별개로
-# 업적 전용으로 새로 만든 20개(사용자 확정: "20개씩 추가").
 _INTRO_LINES = (
     "내 업적 자랑해볼게!! _(으쓱)_",
     "짜잔!! 내 업적 목록이야!! _(뿌듯)_",
@@ -64,7 +60,7 @@ _INTRO_OTHER_LINES = (
     "{name}의 업적을 소개할게!! _(설렘)_",
 )
 
-# 미획득 전설 등급은 이름을 숨겨 챌린지 성격을 유지한다(사용자 확정).
+# 미획득 전설 등급은 이름을 숨겨 챌린지 성격을 유지한다.
 _HIDDEN_LEGENDARY = "**__[👑]__** ???"
 _NO_EARNED_LINE = "- 아직 획득한 업적이 없어"
 _ALL_EARNED_LINE = "- 전부 다 모았어!!"
@@ -75,9 +71,8 @@ def _format_date(iso_str: str) -> str:
 
 
 def _earned_lines(earned: list[dict]) -> list[str]:
-    """전설 등급을 항상 최상단에, 그 안에서는 획득 순으로. 그 아래 일반 등급도 획득
-    순으로 이어붙인다(사용자 확정). get_earned()가 이미 획득 시각 오름차순으로 반환하므로,
-    전설/일반으로 필터링만 해도 각 그룹 내 순서가 그대로 보존된다."""
+    """전설 등급을 항상 최상단에, 그 안에서는 획득 순으로. get_earned()가 이미 획득
+    시각 오름차순으로 반환하므로 필터링만 해도 각 그룹 내 순서가 보존된다."""
     legendary = [row for row in earned if achievements.REGISTRY[row["achievement_id"]].RARITY == achievements.LEGENDARY]
     normal = [row for row in earned if achievements.REGISTRY[row["achievement_id"]].RARITY != achievements.LEGENDARY]
     lines = []
@@ -88,8 +83,7 @@ def _earned_lines(earned: list[dict]) -> list[str]:
 
 
 def _unearned_lines(earned_ids: set[str]) -> list[str]:
-    """등급 상관없이 업적이 만들어진 순서(achievements._MODULES 등록 순서, §32)로 정렬한다.
-    일반은 이름을 그대로, 전설은 이름을 숨긴다."""
+    """등급 상관없이 업적이 만들어진 순서로 정렬한다. 일반은 이름 그대로, 전설은 숨긴다."""
     lines = []
     for module in achievements.REGISTRY.values():
         if module.ID in earned_ids:

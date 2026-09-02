@@ -8,7 +8,6 @@ from events.scheduler import KST
 from db.users import ensure_user, get_user, set_consent
 from db.withdrawals import get_withdrawal
 
-# 탈퇴 후 재가입 금지 기간 (사용자 확정: 24시간)
 _COOLDOWN = timedelta(hours=24)
 
 _ALREADY_JOINED_LINES = (
@@ -87,12 +86,9 @@ def _format_kst(dt: datetime) -> str:
 
 
 async def handle(interaction: discord.Interaction) -> None:
-    if interaction.user.bot:  # 실제 사용자만 응답 대상 (확인사항 2)
+    if interaction.user.bot:
         return
-    # 이 커맨드의 응답은 전부 ephemeral(본인에게만 보임)이라, 취침 시간대와 무관하게
-    # 24시간 언제든 정상 동작한다(사용자 확정, 2026-08-27) — 취침 게이트를 타지 않는다.
-    # 자연어처럼 "생각 중" 표시를 즉시 띄운 뒤 같은 자리를 결과로 바꿔치기한다(지연시간 개선).
-    # 이 커맨드의 모든 응답이 ephemeral이라 defer 시점에 한 번에 결정해도 문제없다.
+    # 응답이 전부 ephemeral이라 취침 게이트 없이 24시간 언제든 동작한다.
     await interaction.response.defer(ephemeral=True)
     await touch_channel(interaction)
     user_id = interaction.user.id

@@ -12,9 +12,6 @@ def normalize(text: str) -> str:
 
 async def touch_channel(interaction: discord.Interaction) -> None:
     """부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는 유저가 봇을 실제로 부른 채널
-    기준으로 정하므로, 슬래시 커맨드 핸들러 여러 곳(가입/가입-수집항목/탈퇴, 그리고
-    `core/slash_commands.py::_prepare()`)이 동일하게 이 갱신을 필요로 한다 — 여러 도메인이
-    공유하는 로직이라 core에 둔다(§18에서 `command/base.py`를 `core/base.py`로 옮긴 것과
-    같은 원칙)."""
+    기준으로 정하므로, 여러 슬래시 커맨드 핸들러가 동일하게 이 갱신을 필요로 한다."""
     if interaction.guild is not None and interaction.channel_id is not None:
         await set_last_channel(interaction.guild.id, interaction.channel_id)

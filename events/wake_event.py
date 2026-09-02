@@ -10,14 +10,12 @@ from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.guild_sleep_state import register_mention
 
-# 짜증 75% / 악몽 감사 25%(§21, 2026-08-27: 기존 10% -> 25%로 상향 — 이 상수는 "짜증"
-# 분기가 나올 확률이라, 악몽 확률을 올리려면 이 값을 낮춰야 한다).
+# "짜증" 분기 확률 — 악몽 확률을 올리려면 이 값을 낮춰야 한다.
 _ANNOYED_PROBABILITY = 0.75
 _ANNOYED_DELTA = -5
 _NIGHTMARE_DELTA = 5
 _NIGHTMARE_METHOD = "sleep_wake_nightmare"
 
-# UX 개선 8: 취침 중 맨션 깨움 이벤트 대사 (각 항목 = 2줄, 추임새 제거 반영)
 _ANNOYED_PAIRS = (
     ("왜 깨워써… 햄미 아직 꿈에서 해바라기씨 먹고 이써써.", "흥, 인간 미워. 햄미 다시 잘 거야."),
     ("햄미 깨운 인간 누구야… 지금 깨물 각 재는 중이야.", "일단 귀찮으니까 햄미는 다시 자러 갈래."),
@@ -66,20 +64,14 @@ _NIGHTMARE_PAIRS = (
 
 
 async def handle_mention(message: discord.Message) -> None:
-    """취침 시간대(00:00~06:30, 방해금지 발동 시 그날은 00:00~07:00)에 봇이 맨션됐을 때
-    호출한다.
-
-    메시지 1개 = 맨션 횟수 1회(메시지 안에서 여러 번 연속 맨션해도 1회).
-    서버마다 그날 새로 뽑힌 임계치(1~10)에 도달하면 딱 1번만 깨움 이벤트가
-    발생하고, 이후엔 다음 밤까지 그 서버는 방해금지(무반응) 상태가 된다. 발동 시
-    그날 기상도 30분 늦춰진다(§28) — 아침 인사가 평소 인사 대신 피곤한 톤으로 나간다.
-    """
+    """취침 시간대에 봇이 맨션됐을 때 호출한다. 메시지 1개 = 맨션 횟수 1회. 서버마다
+    그날 새로 뽑힌 임계치(1~10)에 도달하면 딱 1번만 깨움 이벤트가 발생하고, 이후 그날
+    밤은 방해금지(무반응) 상태가 되며 기상도 30분 늦춰진다."""
     guild_id = message.guild.id
     if not await register_mention(guild_id):
         return
 
     await presence.enter_dnd()
-    # 방해금지 발동 = 중간에 누가 깨운 것 -> 그날 기상은 30분 늦춰진 07:00로 밀린다.
     mark_late_wake()
 
     user_id = message.author.id
@@ -94,7 +86,6 @@ async def handle_mention(message: discord.Message) -> None:
         notice = format_affection_notice(_NIGHTMARE_DELTA, result["new_affection"])
         achievement_notice = result["achievement_notice"]
 
-        # "악몽 해방"(전설) — 취침 중인 햄미를 악몽에서 깨워줬을 때.
         if await award_achievement(user_id, achievements.nightmare_freed.ID):
             extra = f"🏆 업적 달성: {achievements.format_name(achievements.nightmare_freed)}!!"
             achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
