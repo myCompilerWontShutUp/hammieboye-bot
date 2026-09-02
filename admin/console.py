@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import io
 import logging
 from dataclasses import dataclass
@@ -87,6 +88,13 @@ _COMMAND_ROOM_CHANNEL_ID = 1544276052757708831
 _EMOJI_NAME_SEPARATOR = ","
 
 _client: discord.Client | None = None
+
+# _dispatch()가 핸들러 호출 범위 동안만 채워두는, 지금 처리 중인 명령어가 어느 서버에서
+# 왔는지("서버 별명 우선" 이름 표시용). 전역 변수 대신 ContextVar를 쓰는 이유는 asyncio
+# 태스크가 겹쳐 돌아도(다른 서버의 명령어가 거의 동시에 들어와도) 서로 안 섞이기 위함이다.
+_current_guild: "contextvars.ContextVar[discord.Guild | None]" = contextvars.ContextVar(
+    "_current_guild", default=None
+)
 
 # 권한자(prime + op 부여 유저) id 캐시. should_intercept가 메시지마다 호출되므로 DB
 # 왕복 없이 O(1)로 판정해야 한다 — bootstrap()에서 채우고 grant/revoke 시 write-through로
@@ -263,7 +271,9 @@ async def apply_emoji_tags(message: discord.Message) -> None:
     emojis = _emoji_tags.get(message.author.id)
     if not emojis:
         return
-    for character in emojis:
+    # bt set이 저장 시점에 이미 중복을 제거하지만, 예전에 저장된 데이터 등 만약을 대비해
+    # 여기서도 한 번 더 걸러 같은 이모지로 add_reaction을 두 번 호출하지 않게 한다.
+    for character in dict.fromkeys(emojis):
         try:
             await message.add_reaction(character)
         except discord.HTTPException:
@@ -317,7 +327,8 @@ async def _handle_la_up(args: list[str]) -> str:
     result = await add_affection_uncapped(user_id, amount, "admin_la_up", check_achievements=False)
     new_affection = result["new_affection"]
     await log_command("la up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    return f"네!! {user_id}님의 호감도를 +{amount} 올려드렸어요!! ({user['affection']} → {new_affection})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 호감도를 +{amount} 올려드렸어요!! ({user['affection']} → {new_affection})"
 
 
 async def _handle_la_down(args: list[str]) -> str:
@@ -329,7 +340,8 @@ async def _handle_la_down(args: list[str]) -> str:
     result = await add_affection_uncapped(user_id, -amount, "admin_la_down", check_achievements=False)
     new_affection = result["new_affection"]
     await log_command("la down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    return f"네!! {user_id}님의 호감도를 -{amount} 내렸어요!! ({user['affection']} → {new_affection})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 호감도를 -{amount} 내렸어요!! ({user['affection']} → {new_affection})"
 
 
 async def _handle_la_set(args: list[str]) -> str:
@@ -340,7 +352,8 @@ async def _handle_la_set(args: list[str]) -> str:
     user = await _require_registered(user_id)
     new_affection = await set_affection(user_id, amount)
     await log_command("la set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    return f"네!! {user_id}님의 호감도를 {amount}로 맞춰드렸어요!! ({user['affection']} → {new_affection})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 호감도를 {amount}로 맞춰드렸어요!! ({user['affection']} → {new_affection})"
 
 
 async def _handle_la_reset(args: list[str]) -> str:
@@ -350,7 +363,8 @@ async def _handle_la_reset(args: list[str]) -> str:
     user = await _require_registered(user_id)
     await set_affection(user_id, _INITIAL_AFFECTION)
     await log_command("la reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
-    return f"네!! {user_id}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
 
 
 async def _handle_tc_up(args: list[str]) -> str:
@@ -364,7 +378,8 @@ async def _handle_tc_up(args: list[str]) -> str:
     new_count = min(max(before + amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
     await log_command("tc up", f"{user_id} {amount}", str(before), str(new_count))
-    return f"네!! {user_id}님의 오늘 대화 횟수를 +{amount} 올려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 오늘 대화 횟수를 +{amount} 올려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
 async def _handle_tc_down(args: list[str]) -> str:
@@ -378,7 +393,8 @@ async def _handle_tc_down(args: list[str]) -> str:
     new_count = max(before - amount, 0)
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
     await log_command("tc down", f"{user_id} {amount}", str(before), str(new_count))
-    return f"네!! {user_id}님의 오늘 대화 횟수를 -{amount} 내려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 오늘 대화 횟수를 -{amount} 내려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
 async def _handle_tc_set(args: list[str]) -> str:
@@ -392,7 +408,8 @@ async def _handle_tc_set(args: list[str]) -> str:
     new_count = min(max(amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
     await log_command("tc set", f"{user_id} {amount}", str(before), str(new_count))
-    return f"네!! {user_id}님의 오늘 대화 횟수를 {amount}로 맞춰드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 오늘 대화 횟수를 {amount}로 맞춰드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
 async def _handle_tc_reset(args: list[str]) -> str:
@@ -404,7 +421,8 @@ async def _handle_tc_reset(args: list[str]) -> str:
     before = stats["nl_count"]
     await _update_nl_count(user_id, 0, stats["nl_cap"])
     await log_command("tc reset", str(user_id), str(before), "0")
-    return f"네!! {user_id}님의 오늘 대화 횟수를 0으로 되돌려드렸어요!! ({before} → 0/{stats['nl_cap']})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 오늘 대화 횟수를 0으로 되돌려드렸어요!! ({before} → 0/{stats['nl_cap']})"
 
 
 async def _update_nl_count(user_id: int, new_count: int, nl_cap: int) -> None:
@@ -556,10 +574,11 @@ async def _handle_ac_grant(args: list[str]) -> str:
         return f"그런 업적 코드는 없어요!!\n{await _handle_ac_list_cd([])}"
     await _require_registered(user_id)
     granted = await award_achievement(user_id, module.ID)
+    name = await _resolve_name(user_id)
     if not granted:
-        return f"{user_id}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
+        return f"{name}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
     await log_command("ac grant", f"{user_id} {code}", "미보유", module.ID)
-    return f"네!! {user_id}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!!"
+    return f"네!! {name}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!!"
 
 
 async def _handle_ac_revoke(args: list[str]) -> str:
@@ -572,10 +591,11 @@ async def _handle_ac_revoke(args: list[str]) -> str:
         return f"그런 업적 코드는 없어요!!\n{await _handle_ac_list_cd([])}"
     await _require_registered(user_id)
     revoked = await revoke_achievement(user_id, module.ID)
+    name = await _resolve_name(user_id)
     if not revoked:
-        return f"{user_id}님은 원래 '{achievements.format_name(module)}' 업적이 없었어요!!"
+        return f"{name}님은 원래 '{achievements.format_name(module)}' 업적이 없었어요!!"
     await log_command("ac revoke", f"{user_id} {code}", module.ID, "미보유")
-    return f"네!! {user_id}님의 '{achievements.format_name(module)}' 업적을 제거했어요!!"
+    return f"네!! {name}님의 '{achievements.format_name(module)}' 업적을 제거했어요!!"
 
 
 _NO_MATCH_MESSAGE = "일치하는 명령어가 없어요!!"
@@ -628,6 +648,13 @@ _CANNOT_REVOKE_PRIME_MESSAGE = "그분의 권한은 제거할 수 없어요!!"
 
 
 async def _resolve_name(user_id: int) -> str:
+    """명령어가 실행된 서버에 대상이 있으면 그 서버 별명을, 없으면 실제(글로벌) 이름을
+    반환한다 — 멘션은 절대 안 한다(events/sleep_event.py::_resolve_display_name과 동일 원칙)."""
+    guild = _current_guild.get()
+    if guild is not None:
+        member = guild.get_member(user_id)
+        if member is not None:
+            return member.display_name
     return await resolve_real_name(_client, user_id) if _client is not None else str(user_id)
 
 
@@ -737,11 +764,17 @@ async def _handle_bt_set(args: list[str]) -> str:
     if invalid:
         raise _AdminError(f"존재하지 않는 이모지예요!! ({', '.join(invalid)})")
 
+    # 같은 이모지를 이름/리터럴 혼용 등으로 중복 지정해도(예: "fire,🔥") 한 번만 남긴다 —
+    # 순서(첫 등장 기준)는 그대로 유지. 중복 반응 시도 자체를 원천 차단해 add_reaction이
+    # 같은 이모지로 반복 호출될 일이 없게 한다.
+    resolved = list(dict.fromkeys(resolved))
+
     # 완전 리셋 — 기존에 걸려 있던 이모지 목록은 유지하지 않고 통째로 대체한다.
     await set_emoji_tags_row(user_id, resolved)
     _emoji_tags[user_id] = resolved
     await log_command("bt set", f"{user_id} {args[1]}", "-", " ".join(resolved))
-    return f"네!! {user_id}님한테 이모지 태그를 걸었어요!! ({' '.join(resolved)})"
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님한테 이모지 태그를 걸었어요!! ({' '.join(resolved)})"
 
 
 async def _handle_bt_stop(args: list[str]) -> str:
@@ -751,9 +784,10 @@ async def _handle_bt_stop(args: list[str]) -> str:
     had = await clear_emoji_tags_row(user_id)
     _emoji_tags.pop(user_id, None)
     await log_command("bt stop", str(user_id), "있음" if had else "없음", "-")
+    name = await _resolve_name(user_id)
     if not had:
-        return f"{user_id}님한테는 원래 이모지 태그가 없었어요!!"
-    return f"네!! {user_id}님의 이모지 태그를 전부 제거했어요!!"
+        return f"{name}님한테는 원래 이모지 태그가 없었어요!!"
+    return f"네!! {name}님의 이모지 태그를 전부 제거했어요!!"
 
 
 _REST_COMMAND_NAME = "done"
@@ -897,6 +931,7 @@ async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[s
         await _send(message, False, "그건 사용하실 수 없어요!!")
         return
     dm, remaining_args = _extract_boolean(tokens, spec.arity)
+    guild_token = _current_guild.set(message.guild)
     try:
         response = await spec.handler(remaining_args)
     except _AdminError as e:
@@ -908,6 +943,8 @@ async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[s
         # 보여 명령어가 조용히 실패한 것처럼 느껴진다. 최소한 실패했다는 건 알려준다.
         logging.exception("Admin command '%s' failed unexpectedly", spec.name)
         response = "어라, 처리하다가 문제가 생겼어요!! 잠시 후 다시 시도해줘."
+    finally:
+        _current_guild.reset(guild_token)
     await _send(message, dm, response)
 
 
