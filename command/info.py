@@ -12,8 +12,7 @@ from db.history import get_recent
 from db.ranking import compute_percentile, count_total, get_rank
 from db.users import get_user
 
-# "햄미가 알려주는 내 정보"라는 딱딱한 고정 문구 대신, 매번 다른 인트로 한 줄을
-# 무작위로 고른다 (API로 생성 후 검수해서 고정, 사용자 요청). 내가 나를 볼 때(/내정보) 전용.
+# 매번 다른 인트로 한 줄을 무작위로 고른다. 내가 나를 볼 때(/내정보) 전용.
 _INTRO_LINES = (
     "햄미 정보 살짝 보여줄게!! _(찡긋)_",
     "햄미의 요모조모 알려줄게!! _(두근)_",
@@ -37,10 +36,9 @@ _INTRO_LINES = (
     "햄미 정보 출발한다구!! _(출발)_",
 )
 
-# 다른 사람을 소개할 때(/니정보) 전용 고정 문구 풀. 햄미는 "님" 존칭을 쓰지 않는다(사용자
-# 확정, 2026-08-27). "님"이 없으면 뒤따르는 조사(을/를, 이야/야)가 이름의 받침 유무에 따라
-# 달라지므로, 해당 조사가 필요한 자리는 {을를}/{이야} 자리표시자로 남기고 포맷 시점에
-# `core.korean.josa()`로 계산해 채운다 (나머지 줄은 조사가 안 붙는 자리라 손댈 필요 없음).
+# 다른 사람을 소개할 때(/니정보) 전용 고정 문구 풀. "님" 존칭을 안 쓰므로 조사(을/를,
+# 이야/야)가 이름의 받침 유무에 따라 달라지는 자리는 {을를}/{이야} 자리표시자로 남기고
+# 포맷 시점에 josa()로 계산해 채운다.
 _INTRO_OTHER_LINES = (
     "내가 {name}{을를} 소개해주께!! _(으쓱)_",
     "짜잔!! {name} 정보 가져왔어!! _(자랑)_",
@@ -88,9 +86,8 @@ async def handle(
     guild: discord.Guild | None = None,
 ) -> tuple[str, discord.Embed]:
     """target_name이 None이면 본인(/내정보) 조회, 아니면 그 이름의 다른 사람(/니정보) 조회.
-    guild를 주면 그 서버 안에서의 호감도 순위도 같이 계산한다(등록된 서버원 기준). 업적은
-    이제 별도 명령어(/내업적, /니업적, `command/achievements.py`)로 분리돼 여기서는
-    안 보여준다(사용자 확정, 2026-08-27 — 업적이 늘어나며 정보량이 많아져서 분리)."""
+    guild를 주면 그 서버 안에서의 호감도 순위도 같이 계산한다. 업적은 별도 명령어
+    (/내업적, /니업적)로 분리돼 여기서는 안 보여준다."""
     is_self = target_name is None
 
     user = await get_user(user_id)
@@ -116,8 +113,7 @@ async def handle(
         guild_rank = None
         guild_total = None
 
-    # 햄미는 "님" 존칭을 쓰지 않는다(사용자 확정) — "의"는 받침 유무와 무관하게 불변이라
-    # 별도 조사 계산 없이 안전하다.
+    # "의"는 받침 유무와 무관하게 불변이라 별도 조사 계산 없이 안전하다.
     title = "나의 정보" if is_self else f"{target_name}의 정보"
     description = _SELF_DESCRIPTION if is_self else _OTHER_DESCRIPTION_TEMPLATE.format(name=target_name)
     heart_field_name = "💕 햄미와 나" if is_self else f"💕 햄미와 {target_name}"

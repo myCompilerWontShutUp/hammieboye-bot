@@ -47,9 +47,7 @@ _FALLBACK_GREETINGS = (
     "좋은 아침이야!! 오늘도 잘 부탁해!! _(포근)_",
 )
 
-# 2026-08-27: 취침 중 방해금지 모드(누가 깨워서 30분 더 잔 컨셉)가 발동한 날 전용 기상
-# 문구 20개. 평소 인사(LLM 생성, 날짜/기념일 인식)와 달리 API 호출 없이 이 풀에서 무작위로
-# 고른다 — 피곤하고 누가 깨워서 늦었다는 톤(사용자 확정).
+# 방해금지 모드가 발동한 날 전용 기상 문구. 평소 인사와 달리 API 호출 없이 무작위로 고른다.
 _TIRED_WAKE_LINES = (
     "으...누가 자꾸 깨워서 늦게 일어나써... 오늘은 쪼금 피곤해. _(피곤)_",
     "한밤중에 누가 불러서 진짜 늦잠 자버려써... 굿모닝... _(하품)_",
@@ -187,7 +185,6 @@ async def _generate(task: str) -> str:
             input=task,
             max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
             reasoning={"effort": "low"},
-            # §51: config.OPENAI_FAST_MODE로 켜고 끈다(.env만 바꾸면 즉시 롤백 가능).
             **openai_service_tier_kwargs(),
         )
         return result.output_text.strip()
@@ -197,12 +194,8 @@ async def _generate(task: str) -> str:
 
 
 async def post_daily_greeting(*, tired: bool = False) -> None:
-    """매일 기상 시각에 아침 인사를 게시한다.
-
-    tired=True면(그날 밤 방해금지 이벤트가 발동해 기상이 07:00로 늦춰진 경우, §28) 평소의
-    LLM 생성 인사(날짜/기념일 인식) 대신, API 호출 없이 `_TIRED_WAKE_LINES` 20개 중 하나를
-    무작위로 골라 "누가 깨워서 늦었다"는 피곤한 톤으로 대체한다.
-    """
+    """매일 기상 시각에 아침 인사를 게시한다. tired=True면(방해금지로 기상이 늦춰진 날)
+    LLM 생성 대신 `_TIRED_WAKE_LINES`에서 무작위로 고른다."""
     if _client is None:
         return
 

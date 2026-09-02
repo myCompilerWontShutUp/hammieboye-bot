@@ -7,24 +7,20 @@ from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.users import get_user, set_plastic_cooldown
 
-# CLAUDE.md 섹션 3-1 (2026-08-27: 10분 -> 3분, 2026-09-01: 3분 -> 30초로 재단축, 사용자 확정).
-# 성공 시 쿨타임이 흐르지 않는 규칙은 그대로다 — 아래 handle()의 실패 분기에서만 설정된다.
+# 성공 시엔 쿨타임이 흐르지 않는다 — 아래 handle()의 실패 분기에서만 설정된다.
 _COOLDOWN = timedelta(seconds=30)
 _METHOD = "plastic_bottle"
 _STREAK_TARGET = 3
 _SUCCESS_RATE = 0.5
 
-# 오늘의 성공(+1)/연속 3회 보너스(+3) 중 하나라도 이미 받은 상태에서 그 조건을 또
-# 달성하면(호감도는 더 안 오름) 왜 안 올랐는지 알 수 있게 이 문구를 한 번만 덧붙인다
-# (사용자 확정, 둘 다 이미 받은 상태여도 문구는 중복 없이 한 줄만).
+# 오늘의 성공(+1)/연속 3회 보너스(+3) 중 이미 받은 게 있는데 또 달성하면(호감도 안 오름)
+# 왜 안 올랐는지 알 수 있게 이 문구를 한 번만 덧붙인다.
 _ALREADY_CLAIMED_TODAY_NOTE = "(오늘은 이미 '페트병'으로 호감도를 획득했습니다)"
 
-# 섹션 4-5: 쿨타임 고정 메시지를 이 횟수까지는 그냥 보여주고, 그다음부터 남용 페널티.
-# count 1~2: 평범한 쿨타임 안내, count == 3(_COOLDOWN_ABUSE_FREE_COUNT): 마지막 경고,
-# count 4+: 실제 페널티(-1) 적용.
+# 쿨타임 고정 메시지는 이 횟수까지는 그냥 보여주고 그다음부터 남용 페널티.
+# 1~2회: 평범한 안내, 3회(_COOLDOWN_ABUSE_FREE_COUNT): 마지막 경고, 4회+: 페널티(-1).
 _COOLDOWN_ABUSE_FREE_COUNT = 3
 
-# 상황별 고정 문구 풀 (API로 생성 후 검수해서 고정, 사용자 요청 — 최소 20개씩).
 _COOLDOWN_MESSAGES = (
     "앗, 방금 던져써!! 아직 쿨타임이 안 끝나서 또 못 던져!! _(당황)_",
     "페트병아 쪼금만 기다려줘!! 햄미 손이 아직 쉬는 중이야!! _(초조)_",
@@ -113,7 +109,6 @@ _FAIL_MESSAGES = (
     "페트병 던지기 실패!! 그래도 다시 도전하면 되지!! _(씩씩)_",
     "이번엔 졌지만 다음엔 이길 거야!! 햄미, 재도전 간다!! _(신남)_",
 )
-# 연속 성공 1회차 — 쿨타임 없이 바로 또 던질 수 있음을 언급.
 _SUCCESS_STREAK1_MESSAGES = (
     "성공해써!! 바로 또 던질 수 이써!! _(신남)_",
     "우와, 성공!! 쿨타임 업시 바로 또 던져도 대!! _(들뜸)_",
@@ -136,7 +131,6 @@ _SUCCESS_STREAK1_MESSAGES = (
     "첫 성공 완료!! 바로 이어서 또 던질래!! _(들뜸)_",
     "성공했어!! 쿨타임 없으니까 계속 가보자!! _(자신감)_",
 )
-# 연속 성공 2회차 — 한 번만 더 하면 호감도가 많이 오를 것 같다는 기대감 언급.
 _SUCCESS_STREAK2_MESSAGES = (
     "두 번 연속 성공!! 한번만 더 하면 호감도 많이 오를 것 같아!! _(기대)_",
     "우와, 두 번째 성공!! 다음이 진짜 중요해!! _(두근)_",
@@ -159,7 +153,7 @@ _SUCCESS_STREAK2_MESSAGES = (
     "두 번 연속 성공!! 다음 한 번이 승부처야!! _(긴장)_",
     "성공 두 번!! 한 번 더 하면 호감도 많이 오를 거야!! _(기대)_",
 )
-# 연속 성공 3회차 — 보너스(+3)가 실제로 지급되는 순간. "세 번"/"보너스"를 정확히 언급한다.
+# 3회차: 보너스(+3)가 실제로 지급되는 순간이라 "세 번"/"보너스"를 정확히 언급한다.
 _SUCCESS_STREAK_MESSAGES = (
     "페트병 던지기 세 번 연속 성공이야!! 보너스까지 받았어!! _(폭발)_",
     "햄미 완전 천재 햄스터 같아!! 보너스 냠냠이다!! _(신남)_",
@@ -182,8 +176,7 @@ _SUCCESS_STREAK_MESSAGES = (
     "이렇게 잘할 줄 몰라써!! 나 완전 뿌듯해!! _(자신감)_",
     "햄미 최고 기록 갱신!! 페트병 던지기 왕이다!! _(승리)_",
 )
-# 연속 성공 4회차 이상 — 보너스는 이미 다 받았지만(하루 최대 4) 매우 행복한 톤은 계속 유지.
-# "세 번"/"보너스" 같은 사실과 다른 표현은 쓰지 않는다 (환각 방지 원칙과 일관성 유지).
+# 4회차 이상: 보너스는 이미 다 받았으니 "세 번"/"보너스" 언급 없이 톤만 유지한다.
 _SUCCESS_STREAK_CONTINUED_MESSAGES = (
     "또 성공했어!! 오늘 완전 물올랐어!! _(황홀)_",
     "연속 성공 계속된다!! 이 기세 최고야!! _(신남)_",
@@ -276,13 +269,11 @@ async def handle(user_id: int) -> str:
     else:
         already_claimed_today = True
 
-    # "페트병 댄스"는 성공 전체를 통틀어 최초 1회(오늘 이미 획득했어도 매일 초기화되는
-    # plastic_success_claimed와 달리, award()가 전체 기간 기준으로 알아서 중복 방지한다).
+    # 전체 기간 기준 최초 1회만(award()가 멱등이라 매일 초기화되는 플래그와 무관하게 판정).
     if await award_achievement(user_id, achievements.plastic_dance.ID):
         achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance.NAME}!!")
 
-    # 하루 동안 페트병으로 얻을 수 있는 호감도는 최대 4(성공 +1, 연속 3회 보너스 +3)로
-    # 고정된다 — 4회차 이상 연속 성공해도 이 보너스는 딱 한 번만 지급된다.
+    # 하루 최대 획득량은 4(성공 +1, 연속 3회 보너스 +3) — 4회차 이상은 보너스 미지급.
     if new_streak >= _STREAK_TARGET and not stats["plastic_streak_bonus_claimed"]:
         result = await add_affection(user_id, 3, _METHOD)
         total_delta += result["applied_amount"]
@@ -299,8 +290,7 @@ async def handle(user_id: int) -> str:
         achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
 
     await update_daily_stats(user_id, update_fields)
-    # 같은 던지기에서 다른 마일스톤(예: 3연속 보너스)으로 실제 새 호감도를 받았다면, 그
-    # 옆에 "이미 획득함" 노트를 같이 보여주면 모순돼 보이므로 진짜 아무것도 못 받았을 때만 붙인다.
+    # 같은 던지기에서 다른 마일스톤으로 새 호감도를 받았다면 "이미 획득함" 노트는 모순돼 보이므로 생략.
     if already_claimed_today and not gained_new_affection:
         message += f"\n{_ALREADY_CLAIMED_TODAY_NOTE}"
     for notice in achievement_notices:
@@ -315,7 +305,6 @@ async def _register_cooldown_abuse(user_id: int, remaining: timedelta) -> tuple[
     counts[_METHOD] = count
     await update_daily_stats(user_id, {"cooldown_abuse_counts": counts})
 
-    # 남은 시간은 스포일러 마크다운으로 가려서 직접 눌러야 보이게 한다 (사용자 확정).
     remaining_label = f" (남은 시간: ||{_format_remaining(remaining)}||)"
 
     if count > _COOLDOWN_ABUSE_FREE_COUNT:

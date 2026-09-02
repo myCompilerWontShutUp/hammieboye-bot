@@ -13,9 +13,9 @@ _COLLECTION_NOTICE = (
 
 
 async def handle(interaction: discord.Interaction) -> None:
-    if interaction.user.bot:  # 실제 사용자만 응답 대상 (확인사항 2)
+    if interaction.user.bot:
         return
-    # ephemeral 응답이라 취침 시간대와 무관하게 24시간 동작한다 (사용자 확정, 2026-08-27).
+    # ephemeral 응답이라 취침 게이트 없이 24시간 동작한다.
     await interaction.response.defer(ephemeral=True)
     await touch_channel(interaction)
     await interaction.edit_original_response(content=_COLLECTION_NOTICE)

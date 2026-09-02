@@ -29,22 +29,17 @@ from db.users import increment_help_count
 _client: discord.Client | None = None
 _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# CLAUDE.md 섹션 3-2 (2026-08-26: 하루 5회 -> 3회로 축소했다가, 2026-08-27에 5회로 롤백)
 _DAILY_EVENT_COUNT = 5
-# 2026-08-27: 전송 가능 시간대를 07:00~23:00에서 07:30~22:30(오후 10시 30분)으로
-# 축소(사용자 확정 — 최초엔 오전 10시 30분으로 잘못 반영했다가 정정함).
 WINDOW_START = time(7, 30)
 WINDOW_END = time(22, 30)
 _EVENT_WINDOW = timedelta(minutes=10)
 
-# 부름 이벤트 인접 최소 간격(관리자 g-call-event 수동 생성에서도 동일하게 준수, 사용자 확정)
 MIN_GAP_MINUTES = 30
 
-# 활성 이벤트는 하루 5번, 10분씩만 존재하는데도 handle_potential_response가 자연어
-# 메시지마다 매번 조회하면 대부분의 시간에 낭비되는 DB 왕복이다. 아주 짧게(수 초) 캐싱해서
-# 지연시간을 줄인다 — claim()/부정반응 -5는 여전히 DB RPC로 원자적으로 처리되므로(claim의
-# claimed_by IS NULL/expires_at 체크가 진짜 정합성 보장 지점), 이 캐시가 살짝 stale해도
-# 이중 지급/만료 이벤트 오판정 같은 문제는 생기지 않는다.
+# 활성 이벤트는 하루 5번, 10분씩만 존재하는데 handle_potential_response는 자연어
+# 메시지마다 매번 조회하므로 아주 짧게 캐싱한다 — claim()/부정반응은 여전히 DB RPC로
+# 원자적으로 처리돼서(claimed_by IS NULL/expires_at 체크), 캐시가 살짝 stale해도
+# 이중 지급 같은 문제는 안 생긴다.
 _ACTIVE_EVENTS_CACHE_TTL = timedelta(seconds=5)
 _active_events_cache: list[dict] = []
 _active_events_cache_until: datetime | None = None
@@ -83,12 +78,10 @@ _PROMPT_TEXTS = (
     "낮잠 잘 자리 좀 만들어줄 사람 없나...",
 )
 
-# §40(2026-08-30, 사용자 확정): 클레임된 뒤 1분 동안은 "진짜 도와주려던" 반응(relevant
-# 분류)에 고정 +1 + 전용 감사 문구로 응답한다 — 경쟁이 치열해서 아깝게 놓친 사용자에게도
-# 성의 표시를 하기 위함. 이 유예 기간 중 irrelevant/negative 분류는 콜 이벤트 관점에서는
-# 완전히 무시한다(콜 이벤트 전용 페널티 없음) — 다만 그 메시지가 자연어의 다른 페널티
-# (분당 과호출/반복 발화/감정)까지 면제받는 건 아니다(사용자 확정) — `override_response`를
-# None으로 반환해서 core/chat.py의 나머지 파이프라인이 평소처럼 그대로 적용되게 한다.
+# 클레임된 뒤 1분 동안은 relevant 반응에 고정 +1 + 전용 감사 문구로 응답한다(경쟁에
+# 아깝게 밀린 유저에게도 성의 표시). 이 유예 기간의 irrelevant/negative는 콜 이벤트
+# 관점에서는 완전히 무시하고, override_response를 None으로 반환해 자연어의 다른
+# 페널티(과호출/반복/감정)는 core/chat.py에서 평소대로 그대로 적용되게 한다.
 _GRACE_PERIOD = timedelta(minutes=1)
 _ALREADY_HELPED_REWARD = 1
 _ALREADY_HELPED_METHOD = "call_event_already_helped"
@@ -96,12 +89,9 @@ _RECENTLY_CLAIMED_CACHE_TTL = timedelta(seconds=5)
 _recently_claimed_cache: list[dict] = []
 _recently_claimed_cache_until: datetime | None = None
 
-# 각 부름 이벤트 프롬프트가 실제로 필요로 하는 것(사용자 확정, 2026-08-30 — "이벤트에
-# 맞춰서 만들어야 합니다", 예: "물 마시고시퍼..." -> "물은 이미 누가 줫어! 그래도 고마워!").
-# _PROMPT_TEXTS의 15개 항목과 정확히 1:1로 대응해야 하므로, 아래 assert로 즉시 검증한다.
-# "물건을 준다"류(먹이/물/간식 등)와 "행동을 해준다"류(놀아주기/손질 등)로 나눠서 각각
-# 다른 동사 템플릿을 쓴다 — "물은 이미 줘써"는 자연스럽지만 "털 손질은 이미 줘써"는
-# 어색하므로, 항목의 성격에 맞는 동사를 골라야 문법적으로 자연스럽다.
+# 각 프롬프트가 실제로 필요로 하는 것 — "물건을 준다"류(먹이/물 등)와 "행동을 해준다"류
+# (놀아주기/손질 등)를 나눠 어울리는 동사 템플릿을 쓴다. _PROMPT_TEXTS와 1:1 대응해야
+# 하므로 아래 assert로 검증한다.
 _ALREADY_HELPED_GIVE_ITEMS = {
     "배고파... 뭐 먹을 거 없나?": "먹이",
     "목말라... 물이 다 떨어졌어": "물",
@@ -163,7 +153,7 @@ def _build_already_helped_lines() -> dict[str, tuple[str, ...]]:
     return result
 
 
-# {prompt_text: (해당 이벤트 전용 문구 10개, ...)} — 총 15개 이벤트 x 10개 = 150개.
+# {prompt_text: (전용 문구 10개, ...)}
 _ALREADY_HELPED_LINES_BY_PROMPT = _build_already_helped_lines()
 
 
@@ -178,11 +168,9 @@ async def _get_recently_claimed_cached() -> list[dict]:
 
 
 async def _grant_already_helped(user_id: int, prompt_text: str) -> tuple[int, str | None, bool, str | None]:
-    """이미 클레임된 이벤트에 "진짜 도와주려던" relevant 반응이 왔을 때 공통으로 쓴다 —
-    이벤트가 아직 활성 상태인데 클레임 경쟁에서 근소하게 진 경우(claim() 실패)와, 클레임된
-    지 1분 이내인 유예 기간 경우 둘 다 동일하게 취급한다. "도와준 횟수"(help_count)는
-    포함하되(사용자 확정), "햄미의 요청" 업적은 진짜 첫 클레임 성공자만 유지한다(업적
-    설명 자체가 "처음으로"라 여기서는 부여하지 않음)."""
+    """이미 클레임된 이벤트에 "진짜 도와주려던" relevant 반응이 왔을 때 쓴다 — 클레임
+    경쟁에서 근소하게 진 경우와 클레임 후 유예 기간(1분 이내) 둘 다 동일 취급. 도와준
+    횟수는 증가시키지만, "햄미의 요청" 업적은 진짜 첫 클레임 성공자만 유지한다."""
     result = await add_affection(user_id, _ALREADY_HELPED_REWARD, _ALREADY_HELPED_METHOD)
     await _try_increment_help_count(user_id)
     lines = _ALREADY_HELPED_LINES_BY_PROMPT.get(prompt_text, _ALREADY_HELPED_LINES_BY_PROMPT[_PROMPT_TEXTS[0]])
@@ -207,10 +195,7 @@ _RESPONSE_JUDGE_SCHEMA = {
     "additionalProperties": False,
 }
 
-# 10분 동안 아무도 반응하지 않아 이벤트가 만료됐을 때, 원래 프롬프트 메시지를 지우고 그
-# 대신 올리는 고정 문구 풀. 예전엔 이때 전원 -1이 같이 적용됐지만 그 규칙은 폐기됐다
-# (§35-2, 2026-08-27 — "아무도 안 도와줬다고 호감도를 깎지 않는다"). 지금은 순수하게
-# 아쉬움을 표현하는 안내 문구로만 남아있다.
+# 10분 무응답으로 만료됐을 때 원래 프롬프트 메시지를 지우고 대신 올리는 아쉬움 문구 풀.
 _TIMEOUT_LINES = (
     "아무도 안 놀아줘서 삐져써!! _(화남)_",
     "아무도 물을 안 가져다줘서 내가 직접 마셨어... _(슬픔)_",
@@ -234,11 +219,9 @@ _TIMEOUT_LINES = (
     "아무도 안 와줘서 오늘은 진짜 서운했어... _(서운)_",
 )
 
-# §35-3 (2026-08-27, 사용자 확정): 부름 이벤트가 활성 상태인 동안 관련 없는(irrelevant)
-# 잡담을 하면, 정상 LLM 답변을 아예 생성하지 않고 이 고정 문구로 완전히 대체한다. negative
-# (-5)보다 약한 -1을 적용하고, 이벤트가 진행되는 동안은 동일인물 여부와 무관하게 매번
-# 적용된다(1인당 1회 제한 없음). 특정 이벤트 문구(물/밥 등)를 언급하지 않고 "지금 내 부탁이
-# 먼저"라는 취지로만 일반화해서, 15개 부름 이벤트 문구 어디에도 자연스럽게 어울리게 했다.
+# 부름 이벤트가 활성 상태인 동안 관련 없는(irrelevant) 잡담이면 정상 생성 대신 이
+# 고정 문구로 완전히 대체하고 -1을 적용한다(negative의 -5보다 약함, 1인당 제한 없음).
+# 특정 이벤트 문구를 언급하지 않고 일반화해 15개 프롬프트 어디에나 자연스럽게 어울린다.
 _IRRELEVANT_PENALTY = -1
 _IRRELEVANT_REDIRECT_LINES = (
     "지금은 그거 말고 내 부탁 좀 들어줄래?? _(칭얼)_",
@@ -270,7 +253,7 @@ def init(client: discord.Client) -> None:
 
 
 async def schedule_today() -> None:
-    """매일 06:30(KST)에 그날 보낼 5개 시각을 한 번에 전부 결정해둔다 (인접 간격 최소 30분 보장)."""
+    """매일 06:30(KST)에 그날 보낼 5개 시각을 한 번에 결정한다(인접 간격 최소 30분)."""
     times = random_times_in_window(
         _DAILY_EVENT_COUNT, WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES
     )
@@ -281,14 +264,12 @@ async def schedule_today() -> None:
 
 
 async def schedule_one(scheduled_at: datetime) -> dict:
-    """이벤트 하나를 지정 시각에 예약한다. 정규 스케줄링과 관리자 수동 생성(g-call-event) 둘 다 이걸 쓴다 —
-    똑같은 방식으로 등록되므로 이후 tick()의 게시/보상/페널티 처리도 실제 이벤트와 완전히 동일하다."""
+    """정규 스케줄링과 관리자 수동 생성(gn call event) 둘 다 이걸 써서 동일하게 등록된다."""
     prompt_text = random.choice(_PROMPT_TEXTS)
     return await schedule(scheduled_at, prompt_text)
 
 
 async def tick() -> None:
-    """주기적으로 호출: 예정된 이벤트 게시 + 만료된 미응답 이벤트 페널티 처리."""
     await _post_due_events()
     await _expire_unclaimed_events()
 
@@ -319,25 +300,21 @@ async def _post_one(event: dict) -> None:
 
     now = datetime.now(timezone.utc)
     await mark_posted(event["id"], now, now + _EVENT_WINDOW, messages)
-    _invalidate_active_events_cache()  # 방금 게시됨 → 캐시가 곧바로 "활성 있음"을 반영하도록
+    _invalidate_active_events_cache()
 
 
 async def _expire_unclaimed_events() -> None:
-    """10분 동안 아무도 반응하지 않은 부름 이벤트를 처리한다. 예전엔 여기서 등록된 모든
-    유저에게 호감도 -1을 일괄 적용했지만, 그 규칙은 폐기됐다(사용자 확정, 2026-08-27 —
-    "아무도 안 도와줬다고 해서 호감도를 깎지 않는다"). 이제는 원본 메시지를 지우고 아쉬운
-    문구로 대체하기만 한다. `get_expired_unpenalized()`/`penalty_applied` 이름은 예전
-    페널티 로직의 흔적이지만, 지금은 "이미 처리(만료 공지)됐는지"만 판정하는 용도로
-    그대로 재사용한다 — DB 컬럼명 변경은 별도 마이그레이션이 필요해 이번엔 손대지 않았다.
-    """
+    """10분 무응답 이벤트를 처리한다. 전원 -1 페널티는 폐지됐고, 지금은 원본 메시지를
+    지우고 아쉬운 문구로 대체하기만 한다. get_expired_unpenalized/penalty_applied
+    이름은 예전 페널티 로직의 흔적이지만 "이미 처리됐는지" 판정 용도로 재사용한다."""
     for event in await get_expired_unpenalized():
         await mark_penalty_applied(event["id"])
         await _announce_timeout(event)
 
 
 async def _announce_timeout(event: dict) -> None:
-    """무응답 만료 시 원래 프롬프트 메시지를 지우고, 그 자리에 실망/서운함이 담긴 고정
-    문구를 새로 올린다 (사용자 확정 — 개인화된 호감도 수치는 표시하지 않는다)."""
+    """무응답 만료 시 원래 프롬프트 메시지를 지우고 아쉬움 문구를 새로 올린다
+    (개인화된 호감도 수치는 표시하지 않는다)."""
     if _client is None:
         return
     line = random.choice(_TIMEOUT_LINES)
@@ -362,27 +339,20 @@ async def _announce_timeout(event: dict) -> None:
 async def handle_potential_response(
     user_id: int, guild_id: int, text: str
 ) -> tuple[int, str | None, bool, str | None]:
-    """자연어 메시지 하나가 활성 부름 이벤트에 대한 반응인지 확인하고, 해당하면 보상/페널티를 적용한다.
+    """자연어 메시지가 활성 부름 이벤트에 대한 반응인지 확인하고 보상/페널티를 적용한다.
+    항상 호출되며(호감도 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
 
-    이 함수는 항상 호출되며(호감도가 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
-    반환값은 (이번 호출로 실제 적용된 호감도 증감분, 새로 얻은 업적 안내 문구 또는 None,
-    이 메시지가 실제로 부름 이벤트에 대한 반응이었는지, 응답을 완전히 대체할 고정 문구
-    또는 None):
-    - 세 번째 값(§32)은 분류 결과가 "relevant"(보상 클레임에 실패했어도)/"negative"/
-      "irrelevant"였으면 True, 그 외(활성 이벤트 없음/분류 실패)면 False다. `core/chat.py`가
-      "오늘 대화 상한을 넘긴 상태에서도 부름 이벤트 응답은 남용 카운트에서 제외"하는 데 쓴다.
-    - 네 번째 값(§35-3, 신규)은 분류가 "irrelevant"(이벤트가 활성 상태인데 관련 없는
-      잡담)일 때만 고정 문구를 담아 반환한다 — `core/chat.py`는 이 값이 있으면 실제 LLM
-      생성을 아예 건너뛰고(API 호출 없음, nl_count도 증가 안 함) 이 문구로 완전히
-      대체한다(사용자 확정). 다만 이건 "정상 생성 답변"을 대체하는 것뿐이라, 호감도<0/
-      상한 소진/반복 발화 페널티처럼 애초에 생성 자체를 안 하는 다른 고정 응답 분기에는
-      영향을 주지 않는다(그 경우엔 -1만 델타에 반영되고 텍스트는 원래 분기의 문구가 그대로
-      나간다).
-    - §40: 활성 이벤트가 없어도, 클레임된 지 1분 이내(유예 기간)면 relevant 분류에 한해
-      `_grant_already_helped()`로 고정 +1 + 감사 문구를 준다. 그 유예 기간 중
-      irrelevant/negative는 콜 이벤트 관점에서 완전히 무시한다(콜 이벤트 전용 페널티
-      없음) — `(0, None, False, None)`을 반환해서 `core/chat.py`의 나머지 파이프라인
-      (분당 과호출/반복 발화/감정 등 기존 자연어 페널티)은 평소처럼 그대로 적용되게 한다.
+    반환값: (적용된 호감도 증감, 새 업적 안내 또는 None, 이벤트 반응이었는지, 응답을
+    완전히 대체할 고정 문구 또는 None).
+    - 세 번째 값은 relevant(클레임 실패 포함)/negative/irrelevant면 True, 그 외(활성
+      이벤트 없음/분류 실패)면 False — core/chat.py가 "상한 초과 상태에서도 부름 이벤트
+      응답은 남용 카운트에서 제외"하는 데 쓴다.
+    - 네 번째 값은 irrelevant일 때만 채워지며, core/chat.py는 이 값이 있으면 LLM 생성을
+      건너뛰고 이 문구로 완전히 대체한다. 호감도<0/상한 소진/반복 페널티처럼 애초에
+      생성을 안 하는 다른 고정 분기에는 영향 없다.
+    - 활성 이벤트가 없어도 클레임된 지 1분 이내(유예 기간)면 relevant에 한해
+      `_grant_already_helped()`로 고정 +1을 준다. 유예 기간 중 irrelevant/negative는
+      완전히 무시(`(0, None, False, None)`)해서 다른 자연어 페널티만 평소대로 적용된다.
     """
     events = await _get_active_events_cached()
     if not events:
@@ -396,8 +366,6 @@ async def handle_potential_response(
         return result["applied_amount"], None, True, None
 
     if classification == "irrelevant":
-        # 분류 자체가 실패한 경우(API 오류 등, classification is None)와는 구분한다 —
-        # 그건 사용자 잘못이 아니므로 페널티 없이 이벤트와 무관하게 정상 처리한다.
         result = await add_affection(user_id, _IRRELEVANT_PENALTY)
         return result["applied_amount"], None, True, random.choice(_IRRELEVANT_REDIRECT_LINES)
 
@@ -407,17 +375,14 @@ async def handle_potential_response(
     reward = random.randint(1, 10)
     won = await claim(event["id"], user_id, reward)
     if not won:
-        # 이벤트는 아직 활성으로 보였지만(캐시가 살짝 낡음) 그 사이 이미 다른 사람이
-        # 클레임에 성공한 경우 — §40 유예 기간과 동일하게 취급한다.
+        # 캐시가 살짝 낡아 활성으로 보였지만 이미 다른 사람이 클레임한 경우.
         return await _grant_already_helped(user_id, event["prompt_text"])
 
-    _invalidate_active_events_cache()  # 클레임 완료 → 캐시가 곧바로 "활성 없음"을 반영하도록
+    _invalidate_active_events_cache()
     result = await add_affection(user_id, reward, "call_event")
     await _try_increment_help_count(user_id)
     await _announce_winner(event, user_id, guild_id)
 
-    # "햄미의 요청"(처음으로 부름 이벤트에 relevant하게 반응해 도와줌) — add_affection의
-    # 호감도 마일스톤 알림과 합쳐서 한 번에 반환한다.
     achievement_notice = result["achievement_notice"]
     if await award_achievement(user_id, achievements.call_event_help.ID):
         extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
@@ -427,10 +392,8 @@ async def handle_potential_response(
 
 
 async def _handle_grace_period(user_id: int, text: str) -> tuple[int, str | None, bool, str | None]:
-    """활성 이벤트가 없을 때, 클레임된 지 1분 이내인 이벤트가 있는지 확인한다(§40).
-    relevant로 분류되면 `_grant_already_helped()`로 넘기고, 그 외(irrelevant/negative/
-    분류 실패)는 콜 이벤트와 완전히 무관하게 처리한다 — 즉 이벤트 자체가 없는 것과
-    동일하게 `(0, None, False, None)`을 반환해서 평범한 자연어로 흘러가게 둔다."""
+    """활성 이벤트가 없을 때 클레임된 지 1분 이내인 이벤트가 있는지 확인한다. relevant면
+    `_grant_already_helped()`로, 그 외는 이벤트 자체가 없는 것과 동일하게 처리한다."""
     recently_claimed = await _get_recently_claimed_cached()
     if not recently_claimed:
         return 0, None, False, None
@@ -442,10 +405,7 @@ async def _handle_grace_period(user_id: int, text: str) -> tuple[int, str | None
 
 
 async def _try_increment_help_count(user_id: int) -> None:
-    """"도와준 횟수" 증가는 보조 통계일 뿐이라, 여기서 실패해도(예: 마이그레이션 미적용으로
-    RPC가 아직 없는 경우) 정작 중요한 호감도 지급·최종 답장 전송까지 막으면 안 된다 —
-    실제로 이 호출이 그대로 예외를 던지게 뒀다가 add_affection은 이미 적용됐는데 그 뒤
-    코드가 전부 중단돼 응답 자체가 안 나가는 사고가 있었다."""
+    # 보조 통계일 뿐이라 여기서 실패해도 호감도 지급·최종 응답까지 막으면 안 된다.
     try:
         await increment_help_count(user_id)
     except Exception:
@@ -460,7 +420,6 @@ async def _classify_response(prompt_text: str, reply_text: str) -> str | None:
             input=f"Hammie가 올린 메시지: {prompt_text}\n사용자 답장: {reply_text}",
             max_output_tokens=100,
             reasoning={"effort": "none"},
-            # §51: config.OPENAI_FAST_MODE로 켜고 끈다(.env만 바꾸면 즉시 롤백 가능).
             **openai_service_tier_kwargs(),
             text={
                 "format": {
@@ -482,9 +441,8 @@ async def _announce_winner(event: dict, winner_id: int, winner_guild_id: int) ->
         return
     winner_guild = _client.get_guild(winner_guild_id)
     guild_name = winner_guild.name if winner_guild is not None else "어떤 서버"
-    # 다른 서버에 보이는 문구라 실제 멘션(핑) 대신 실제 이름(서버 별명 아님)만 적는다.
-    # 햄미는 "님" 존칭을 쓰지 않으므로(사용자 확정), 이름의 받침 유무에 맞는 "이/가" 조사를
-    # core.korean.josa()로 계산해서 붙인다.
+    # 다른 서버에 보이는 문구라 실제 멘션 대신 이름(서버 별명 아님)만 적는다. 존칭을
+    # 안 쓰므로 받침 유무에 맞는 "이/가" 조사를 josa()로 계산한다.
     winner_name = await resolve_real_name(_client, winner_id)
     note = f"\n\n({guild_name} 서버의 {winner_name}{josa(winner_name, '이', '가')} 해줬어!)"
 

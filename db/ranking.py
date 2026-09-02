@@ -97,11 +97,8 @@ async def count_total(member_ids: list[int] | None = None) -> int:
 
 
 def compute_percentile(rank: int, total: int) -> int:
-    """순위를 "상위 N%"로 변환한다 (사용자 확정 규칙):
-    - 1위는 무조건 1%, 꼴등은 무조건 99% (범위는 1~99% 사이로 고정, 0%/100%는 없음)
-    - 소수점은 버림(내림)
-    - 인원이 1명뿐이면 1%
-    """
+    """순위를 "상위 N%"로 변환한다. 1위는 무조건 1%, 꼴등은 무조건 99%(범위 1~99% 고정,
+    0%/100% 없음), 소수점 버림, 인원 1명이면 1%."""
     if total <= 1:
         return 1
     return ((rank - 1) * 98) // (total - 1) + 1

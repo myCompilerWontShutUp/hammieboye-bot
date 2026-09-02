@@ -86,7 +86,6 @@ async def classify(text: str) -> ClassifyResult:
             input=text,
             max_output_tokens=150,
             reasoning={"effort": "none"},
-            # §51: config.OPENAI_FAST_MODE로 켜고 끈다(.env만 바꾸면 즉시 롤백 가능).
             **openai_service_tier_kwargs(),
             text={
                 "format": {

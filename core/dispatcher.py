@@ -26,18 +26,14 @@ from events.scheduler import (
 _TICK_INTERVAL_SECONDS = 30
 _LATE_WAKE_DELAY_SECONDS = 30 * 60
 
-# §42(2026-08-30, 사용자 확정): 호출 단어(prefix)가 확인되면(자고 있을 때 제외) "답변중..."이
-# 무조건 즉시 떠야 한다. §41에서 core/chat.py 안으로 옮겼던 플레이스홀더 관리를 여기(호출
-# 단어 확인 직후, touch_channel/ensure_user 등 그 어떤 DB 조회보다도 앞)로 다시 옮긴다 —
-# chat.py에 넘기기 전에도 dispatcher 자체가 이미 Supabase 왕복을 2~3번 거치고 있어서,
-# 그 안에서만 플레이스홀더를 관리하면 그마저도 늦게 뜨는 문제가 있었다.
+# 호출 단어가 확인되면(자고 있을 때 제외) 다른 어떤 DB 조회보다도 먼저 이 플레이스홀더가
+# 즉시 떠야 한다 — 그래서 관리는 core/chat.py가 아니라 여기서 한다.
 _THINKING_PLACEHOLDER = "_답변중..._"
 
 
 async def _run_wake_sequence() -> None:
-    """매일 06:30(KST)에 실행. 그날 밤 방해금지 이벤트가 발동했으면(§28) 기상 자체를
-    30분 늦춰서(07:00) "누가 깨워서 늦게 일어났다"는 컨셉을 실제로 반영하고, 아침 인사도
-    피곤한 톤의 고정 문구로 대체한다. 발동 안 했으면 평소대로 즉시 진행."""
+    """매일 06:30(KST) 실행. 그날 밤 방해금지가 발동했으면 기상을 30분 늦추고(07:00)
+    아침 인사도 피곤한 톤으로 대체한다. 미발동이면 평소대로 즉시 진행."""
     tired = is_late_wake_today()
     if tired:
         await asyncio.sleep(_LATE_WAKE_DELAY_SECONDS)
@@ -55,8 +51,6 @@ def _strip_call_prefix(content: str) -> str | None:
 
 
 async def _send_placeholder(message: discord.Message) -> discord.Message | None:
-    """"답변중..." 플레이스홀더를 답장으로 보낸다. 실패해도 None을 반환할 뿐, 나머지
-    흐름은 그대로 계속된다 — 플레이스홀더는 있으면 좋은 것일 뿐 핵심 기능이 아니다."""
     try:
         return await message.reply(_THINKING_PLACEHOLDER)
     except discord.HTTPException:
@@ -70,14 +64,9 @@ async def _delete_placeholder(placeholder: discord.Message | None) -> None:
     try:
         await placeholder.delete()
     except discord.HTTPException:
-        # 이미 지워졌거나 권한이 바뀐 경우 등 — 최종 답장은 어차피 별도 메시지로 새로
-        # 전송되므로 여기서 실패해도 사용자에게 보이는 결과에는 영향이 없다.
         logging.exception("Failed to delete thinking placeholder")
 
 
-# Discord 메시지 하드 제한(2000자) 안전장치 — admin/console.py::_send()와 동일한 패턴.
-# 평소엔 페르소나가 100자 제한을 지켜서 필요 없었지만, 관리자 명령어 자연어 설명 기능
-# (§6, 10배 토큰 예산)이 훨씬 긴 응답을 낼 수 있게 되면서 일반 자연어 경로에도 필요해졌다.
 _MAX_MESSAGE_LENGTH = 2000
 _TOO_LONG_NOTICE = "내용이 너무 길어서 파일로 첨부했어요!!"
 
@@ -85,9 +74,6 @@ _TOO_LONG_NOTICE = "내용이 너무 길어서 파일로 첨부했어요!!"
 async def _reply(
     message: discord.Message, response: str | discord.Embed | tuple[str, discord.Embed]
 ) -> None:
-    # 누가 무엇을 물어봐서 나온 답인지 구분하기 쉽도록, 항상 답장(reply)으로 보낸다.
-    # 평소(2000자 이하)엔 기존과 동일하게 content를 위치 인자로 넘긴다 — 새 안전장치는
-    # 넘칠 때만 관여하고, 그 외엔 기존 호출 형태를 그대로 유지한다.
     if isinstance(response, tuple):
         text, embed = response
         if len(text) > _MAX_MESSAGE_LENGTH:
@@ -116,14 +102,12 @@ def setup_dispatcher(client: discord.Client) -> None:
         nonlocal scheduler_started
         logging.info("Logged in as %s (id: %s)", client.user, client.user.id)
 
-        # 재연결 시 on_ready가 다시 불릴 수 있어서, 백그라운드 태스크는 최초 1번만 시작한다.
         if scheduler_started:
             return
         scheduler_started = True
 
-        # 슬래시 커맨드는 길드 단위로 등록해서 즉시 반영되게 한다 (§13-A 확정).
-        # 길드 하나가 실패(예: applications.commands 스코프 누락)해도 나머지 길드의
-        # 동기화와 아래 스케줄러 부트스트랩이 전부 막히면 안 되므로 길드별로 격리한다.
+        # 길드별로 격리 — 하나가 실패(예: applications.commands 스코프 누락)해도 나머지
+        # 동기화와 아래 스케줄러 부트스트랩은 계속돼야 한다.
         for guild_id in ALLOWED_GUILD_IDS:
             guild = discord.Object(id=guild_id)
             try:
@@ -138,13 +122,10 @@ def setup_dispatcher(client: discord.Client) -> None:
         greeting.init(client)
         presence.init(client)
         admin.init(client)
-        await admin.bootstrap()  # prime 행 시드 + 권한자(prime/op) 인메모리 캐시 로드
+        await admin.bootstrap()
 
-        # 봇이 취침 시간대 도중에 켜졌을 수도 있으니, 다음 00:00/06:30을 기다리지 말고 바로 맞춘다.
-        # 방해금지(triggered) 여부는 DB에 남아있지만 presence와 §28의 지연 기상 플래그는
-        # 프로세스 메모리뿐이라 재배포/재시작하면 사라진다 — 여기서 DB 기준으로 복원한다
-        # (실사용 중 발견: PR 배포로 재시작하니 방해금지 상태였던 게 "쿨쿨 자는 중"으로
-        # 되돌아가 보였던 버그).
+        # 방해금지(triggered) 여부는 DB에 남지만 presence/지연 기상 플래그는 프로세스
+        # 메모리뿐이라 재시작하면 사라진다 — DB 기준으로 복원한다.
         tonight_triggered = await any_triggered_tonight()
         if tonight_triggered:
             mark_late_wake()
@@ -153,23 +134,18 @@ def setup_dispatcher(client: discord.Client) -> None:
         else:
             await presence.wake_up()
 
-        start_daily(0, 0, presence.enter_sleep)  # 취침 시작: 자리비움 전환
-        # 기상(온라인 전환 + 부름 이벤트 5개 시각 산출 + nl_cap 동결 + 아침 인사)을 한
-        # 시퀀스로 묶는다 — 방해금지 발동 시 전부 30분 늦춰서 함께 실행해야 하기 때문(§28).
+        start_daily(0, 0, presence.enter_sleep)
+        # 기상 시퀀스(온라인 전환+부름 이벤트 산출+nl_cap 동결+아침 인사)를 한 함수로 묶는다
+        # — 방해금지 발동 시 전부 30분 늦춰서 함께 실행해야 하기 때문.
         start_daily(6, 30, _run_wake_sequence)
-        # 정확히 자정(00:00)에 실행한다(사용자 확정: 23:59는 "11시 59분에 자러 감을 선언"하는
-        # 꼴이라 안 되고, 00:00이어야 한다 — 예전에 00:01로 1분 늦춰 구현한 건 불필요한
-        # 임의 변경이었다). 함수 내부에서 "어제" 날짜를 명시적으로 계산해서 집계하므로,
-        # 00:00:00 시점에 실행돼도(그 순간 이미 새 날짜다) 정확하다.
-        start_daily(0, 0, sleep_event.announce_and_reward)  # 최다 대화자 발표 + 전원 보상
-        start_interval(_TICK_INTERVAL_SECONDS, call_event.tick)  # 예정 게시 + 무응답 만료 점검
+        # 00:00 정각 — 내부에서 "어제" 날짜를 명시적으로 계산하므로 자정 직후에 돌아도 정확하다.
+        start_daily(0, 0, sleep_event.announce_and_reward)
+        start_interval(_TICK_INTERVAL_SECONDS, call_event.tick)
 
     @client.event
     async def on_message(message: discord.Message) -> None:
-        # 실제 사용자에게만 응답한다 — 봇 계정(message.author.bot)뿐 아니라 웹훅으로 온
-        # 메시지("앱"으로 표시되는 것들, message.author.bot이 항상 True로 뜨리라는 보장이
-        # 없어 명시적으로 한 번 더 확인)와 디스코드 시스템 메시지(입장/고정/부스트 알림 등)도
-        # 전부 걸러낸다. 일반 답장(reply)은 MessageType.reply라 default와 함께 허용해야 한다.
+        # 실제 유저만: 봇 계정, 웹훅("앱"으로 표시), 시스템 메시지(입장/고정 등)는 제외.
+        # 일반 답장(reply)은 default와 함께 명시적으로 허용해야 한다.
         if message.author.bot or message.webhook_id is not None:
             return
         if message.type not in (discord.MessageType.default, discord.MessageType.reply):
@@ -177,13 +153,10 @@ def setup_dispatcher(client: discord.Client) -> None:
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
             return
         if admin.should_intercept(message):
-            # 관리자 콘솔은 취침 시간대와 무관하게 항상 동작한다 (§13-F 확정).
             await admin.handle(message)
             return
         if is_sleep_time_for(message.channel.id):
-            # 취침 시간(00:00~06:30)엔 원칙적으로 무슨 일이 있어도 응답하지 않지만,
-            # 봇을 맨션한 경우만 예외로 취침 중 깨움 이벤트 로직을 태운다. (테스트 서버의
-            # 고정 awake/asleep 채널이면 실제 시간 대신 그 채널의 고정 상태를 따른다.)
+            # 취침 중엔 봇 맨션만 예외로 깨움 이벤트를 태운다.
             if client.user in message.mentions:
                 await wake_event.handle_mention(message)
             return
@@ -192,23 +165,15 @@ def setup_dispatcher(client: discord.Client) -> None:
         if not user_message:
             return
 
-        # §42: 호출 단어가 확인된 순간(자고 있을 때는 이미 위에서 걸러짐) "답변중..."을
-        # 무조건 즉시 띄운다 — 그 아래 touch_channel/ensure_user/동의 확인/카운터 증가/
-        # 자연어 파이프라인 전체(콜 이벤트 판정, 분류, 생성)가 이 플레이스홀더 아래에서
-        # 진행되도록, 가능한 가장 이른 시점(첫 DB 조회보다도 전)에 보낸다.
         placeholder = await _send_placeholder(message)
         try:
-            # 부름/취침/아침 인사 이벤트가 어느 채널에 올릴지는, 유저가 봇을 실제로 부른 채널을
-            # 기준으로 정한다. get_user(읽기 전용 조회)와는 서로 독립적이라 동시에 처리한다
-            # (지연시간 최적화). 여기서 ensure_user(쓰기)를 쓰지 않는 이유: 미동의 사용자가
-            # 그냥 말을 걸기만 해도 DB에 행이 생기는 문제가 있었다 — 실제 동의(/가입)만이
-            # 행을 만들어야 한다.
+            # get_user는 읽기 전용 — ensure_user(쓰기)를 쓰면 미동의 사용자가 말만 걸어도
+            # 행이 생겨버린다. 행 생성은 오직 실제 /가입 성공 시에만 일어나야 한다.
             _, user = await asyncio.gather(
                 set_last_channel(message.guild.id, message.channel.id),
                 get_user(message.author.id),
             )
             if user is None or not user["consent_given"]:
-                # 동의(가입)는 이제 오직 `/가입` 슬래시 커맨드로만 가능하다 — 자연어 문구 인정 폐기.
                 response = onboarding.random_guide()
             else:
                 await asyncio.gather(

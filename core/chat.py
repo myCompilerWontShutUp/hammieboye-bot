@@ -17,12 +17,12 @@ from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.history import get_recent, get_recent_turns, log, set_detected_emotion
 from responses.engine import get_admin_command_response, get_response
 
-# CLAUDE.md 섹션 4-2: 히스토리(30분/최대 50개) 내 누적 3번 반복되면 그다음부터 -1
+# 히스토리(30분/최대 50개) 내 누적 3번 반복되면 그다음부터 -1.
 _HISTORY_WINDOW = timedelta(minutes=30)
 _REPEAT_THRESHOLD = 3
 
-# 반복 발화 대응: 정확히 3번째(아직 페널티 전)엔 전조 반응, 4번째(페널티 시점)부턴 화난 반응으로
-# 자연어 생성을 건너뛰고 고정 문구로만 답한다 — 페널티가 실제로 적용되는데 태연한 답이 나오면 어색함.
+# 반복 발화: 3번째(페널티 전)는 전조 반응, 4번째(페널티 시점)부터는 화난 반응 —
+# 둘 다 생성 대신 고정 문구로 답한다(태연한 생성 답변에 하락 알림만 붙으면 어색함).
 _REPEAT_WARNING_PHRASES = (
     "같은말 계속하지마! 화낼구야... _(짜증)_",
     "어? 방금도 똑같은 말 했잖아... 자꾸 그러면 삐질 거야. _(삐짐)_",
@@ -71,18 +71,17 @@ _REPEAT_ANGRY_PHRASES = (
 # 자연어 생성 시 직전 맥락으로 같이 넣어줄 최근 대화 턴 수 (유저+햄미 답장 합산)
 _CONTEXT_TURN_LIMIT = 5
 
-# "말풍선 한가득" 업적(§21 재배정): 하루 이 횟수 이상 자연어로 대화하면 얻는다.
+# "말풍선 한가득" 업적: 하루 이 횟수 이상 자연어로 대화하면 얻는다.
 _SPEECH_BUBBLE_THRESHOLD = 20
 
-# 자연어 대화 일일 상한(신규): 상한 도달 시 API 호출 없이 고정 문구로만 응답한다.
-# 상한 소진 후 1~4번째 추가 시도는 풀 A(아래) 재사용, 5번째는 마지막 경고(풀 B),
-# 6번째부터는 완전히 무시하며 매번 호감도 -1.
+# 자연어 대화 일일 상한. 도달 시 API 미호출 고정 문구로만 응답한다. 소진 후 1~4번째
+# 시도는 풀 A(아래) 재사용, 5번째는 마지막 경고(풀 B), 6번째부터는 완전 무시 + 매번 -1.
 _OVER_CAP_FREE_ATTEMPTS = 4
 _OVER_CAP_WARNING_ATTEMPT = 5
 _OVER_CAP_IGNORE_RESPONSE = "_(무시)_"
 
-# 상한에 정확히 도달하는 마지막 메시지의 생성 답변 뒤에 이어붙이는 문구 +
-# 상한 소진 후 1~4번째 추가 시도에 재사용하는 고정 문구 풀.
+# 상한에 정확히 도달하는 마지막 메시지의 답변 뒤에 이어붙이는 문구 + 소진 후 1~4번째
+# 시도에 재사용하는 고정 문구 풀.
 _DAILY_LIMIT_PHRASES = (
     "오늘은 너랑 많이 대화해써. 다른 칭구랑 놀고시퍼! 내일바~ _(찡긋)_",
     "햄미 오늘 할 말 다 써버려써!! 낼 또 이야기하자!! _(방긋)_",
@@ -128,20 +127,17 @@ _DAILY_LIMIT_WARNING_PHRASES = (
     "더 부르면 화낼 거야!! 이게 진짜 마지막이야!! _(경고)_",
 )
 
-# CLAUDE.md 섹션 2: 음수 호감도 구간표. 완전 무응답이 아니라 짧은 행동 텍스트로 반응한다.
+# 음수 호감도 구간표. 완전 무응답이 아니라 짧은 행동 텍스트로 반응한다.
 _BITE_THRESHOLD = -20
 _IGNORE_RESPONSE = "(무시)"
 _BITE_RESPONSE = "(콱 깨묾)"
 
-# CLAUDE.md 섹션 3-3(행복 감정 보상)
 _HAPPY_EMOTION = "행복함"
 _HAPPY_METHOD = "happy_emotion"
 
-# 2026-09-01 재정정: 기존 "부정 감정 연속/누적 판정" 기반 -1은 폐지 — 20개 감정 중 하나를
-# 강제로 고르는 구조라 애매한 메시지도 부정으로 분류되면 쌓여서 억울하게 깎이는 문제가
-# 있었다(사용자 확정). 이제는 감정 분류 자체(emotion)는 그대로 계속하되(다른 용도로
-# 저장·활용될 수 있어 유지), 호감도 하락은 오직 새로 추가된 심각한 유해 표현 감지
-# (has_severe_abuse — 심각한 욕설/비방/타인 모욕/성희롱/패드립)에만 연동한다.
+# 감정(20종 강제 분류)의 연속/누적 기반 하락은 폐지 — 애매한 메시지가 부정으로 잘못
+# 분류되기만 해도 누적돼 억울하게 깎이는 문제가 있었다. 하락은 이제 심각한 유해 표현
+# 감지(has_severe_abuse: 욕설/비방/모욕/성희롱/패드립)에만 연동한다.
 _SEVERE_ABUSE_PENALTY = -1
 
 
@@ -150,8 +146,6 @@ async def handle_natural_language(
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     now = datetime.now(timezone.utc)
 
-    # get_recent(4-1/4-2 판정용)과 ensure_nl_cap(일일 상한 조회/동결)은 서로 독립적이라
-    # 동시에 가져온다 (지연시간 최적화).
     recent, stats = await asyncio.gather(
         get_recent(user_id, since=now - _HISTORY_WINDOW),
         ensure_nl_cap(user_id, affection),
@@ -168,43 +162,31 @@ async def handle_natural_language(
     nl_cap = stats["nl_cap"]
     over_cap = stats["nl_count"] >= nl_cap
 
-    # 4-2: 동일 발화 반복 — 정규화 후 비교, 히스토리 내 누적 3번이면 그다음부터 페널티.
-    # 상한을 넘긴 뒤로는 완전히 비활성화한다 (사용자 확정). recent는 get_recent()의 기본값
-    # role="user"로 조회돼 있어(db/history.py) 유저 본인의 발화만 비교 대상이다 — 햄미
-    # 자신의 답장(role="assistant")은 애초에 여기 안 들어오므로 반복 판정에 안 섞인다
-    # (2026-09-01 재확인, 기존에도 이미 올바르게 동작하고 있었음).
+    # 정규화 후 비교. recent는 role="user"만 조회되므로 햄미 자신의 답장은 안 섞인다.
     normalized_text = normalize(text)
     repeat_count = sum(1 for row in recent if normalize(row["content"]) == normalized_text)
-    is_repeat_penalty = not over_cap and repeat_count >= _REPEAT_THRESHOLD  # 4번째부터: 실제 페널티
-    is_repeat_warning = not over_cap and repeat_count == _REPEAT_THRESHOLD - 1  # 정확히 3번째: 전조
+    is_repeat_penalty = not over_cap and repeat_count >= _REPEAT_THRESHOLD
+    is_repeat_warning = not over_cap and repeat_count == _REPEAT_THRESHOLD - 1
 
-    # is_repeat_penalty의 -1은 반드시 event_delta를 계산하기 '전에' 적용해야 한다 — add_affection의
-    # 반환값(new_affection)은 그 순간의 실제 DB 절대값이라, event_delta(델타값)를 나중에 로컬에서
-    # 더할 때 순서가 뒤바뀌면 이미 반영된 값을 또 더해 이중 계산되는 문제가 생긴다.
+    # add_affection의 반환값(new_affection)은 그 순간의 DB 절대값이라, event_delta를
+    # 로컬에서 나중에 더하면 이미 반영된 값을 이중으로 더하게 된다 — 반드시 먼저 적용.
     if is_repeat_penalty:
         _record(await add_affection(user_id, -1))
 
-    # 이후 실제 생성까지 이어질지는 이미 다 결정됐다 — 생성 경로에서만 직전 맥락(히스토리)이
-    # 필요하다. **이번 메시지를 로그에 남기기 전에** 미리 떠 와야 방금 온 메시지가 히스토리에
-    # 중복으로 안 들어간다(생성 프롬프트에 같은 메시지가 두 번 들어가는 걸 방지).
+    # 생성 경로에서만 직전 맥락이 필요하고, 이번 메시지를 로그에 남기기 전에 가져와야
+    # 프롬프트에 같은 메시지가 중복으로 안 들어간다.
     will_generate = (
         affection >= 0 and not over_cap and not is_repeat_penalty and not is_repeat_warning
     )
 
-    # §42(2026-08-30, 사용자 확정): "답변중..." 플레이스홀더는 이제 호출 단어가 확인되는
-    # 즉시(자고 있을 때 제외) `core/dispatcher.py`가 이 함수를 부르기도 전에 띄운다 — 여기서는
-    # 더 이상 플레이스홀더를 관리하지 않는다(§41 당시엔 이 함수 안에서 관리했지만, dispatcher의
-    # touch_channel/ensure_user/카운터 증가 등 여러 DB 왕복이 이 함수 호출 자체보다도 먼저
-    # 일어나서 그마저도 늦게 뜨는 문제가 있었다).
     if will_generate:
-        # 부름 이벤트 응답 판정도 독립적이라 같이 가져온다.
         context_turns, (event_delta, event_achievement, was_event_response, event_override) = await asyncio.gather(
             get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
             call_event.handle_potential_response(user_id, guild_id, text),
         )
     else:
         context_turns = None
-        # 3-2 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다 (섹션 2 예외 규정).
+        # 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다.
         event_delta, event_achievement, was_event_response, event_override = await call_event.handle_potential_response(
             user_id, guild_id, text
         )
@@ -215,24 +197,18 @@ async def handle_natural_language(
         total_delta += event_delta
         current_affection += event_delta
 
-    # 부름 이벤트로 얻은 업적 알림은 이후 어떤 분기로 빠지든(음수 호감도/상한/반복 페널티 등)
-    # 최종 응답에 항상 붙어야 한다 — 이 리스트를 모든 _finalize 호출에 그대로 넘긴다.
+    # 부름 이벤트 업적 알림은 이후 어떤 분기로 빠지든 최종 응답에 붙어야 한다.
     achievement_notices = [event_achievement] if event_achievement else []
 
-    # 음수 호감도면 분류/생성 등 OpenAI API를 아예 호출하지 않고 고정 문구로만 답한다 (섹션 2).
     if affection < 0:
         base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
         return _finalize(base, total_delta, current_affection, achievement_notices)
 
-    # 오늘의 자연어 대화 상한을 이미 다 썼으면, 분류/생성 등 API를 아예 호출하지 않고
-    # 고정 문구로만 답한다 (신규).
     if over_cap:
         return await _handle_over_cap(
             user_id, stats, total_delta, current_affection, achievement_notices, was_event_response
         )
 
-    # 반복 발화 전조/페널티 시점엔 자연어 생성 없이 톤이 맞는 고정 반응으로 답한다 —
-    # 태연하게 생성된 답변에 호감도 하락 알림만 붙이면 어색하다 (사용자 피드백).
     if is_repeat_penalty:
         return _finalize(
             random.choice(_REPEAT_ANGRY_PHRASES), total_delta, current_affection, achievement_notices
@@ -242,21 +218,15 @@ async def handle_natural_language(
             random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
         )
 
-    # §35-3: 부름 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 위에서 total_delta에
-    # 반영됨), 정상 생성을 아예 하지 않고(API 호출 없음, nl_count 미증가) 이 고정 문구로
-    # 완전히 대체한다(사용자 확정) — 여기까지 왔다는 건 호감도<0/상한/반복 페널티 등 다른
-    # 고정 응답 분기에 걸리지 않았다는 뜻이라, "정상 생성 답변"을 대체하는 게 정확히 맞다.
+    # 부름 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 total_delta에 반영됨) 정상
+    # 생성을 하지 않고 이 고정 문구로 대체한다(API 미호출, nl_count 미증가).
     if event_override is not None:
         return _finalize(event_override, total_delta, current_affection, achievement_notices)
 
-    # 여기서부터 실제 OpenAI API 호출(분류+생성) 구간.
-    # RAG 카테고리 분류 + 감정 판정을 한 번의 호출로 처리 (judge 제거, §13-B/C)
+    # 여기부터 실제 OpenAI API 호출(분류+생성) 구간.
     classification = await intent.classify(text)
 
     if classification.emotion is not None:
-        # 방금 남긴 유저 발화 행에 판정된 감정을 채워 넣는다 (기존엔 컬럼만 있고 아무
-        # 코드도 여기 쓰질 않아서 항상 NULL이었던 버그) — 감정 반영(affection)과는
-        # 서로 독립적인 쓰기라 동시에 처리한다.
         _, (message_delta, message_achievement) = await asyncio.gather(
             set_detected_emotion(logged_row["id"], classification.emotion),
             _apply_message_effects(
@@ -269,11 +239,8 @@ async def handle_natural_language(
         if message_achievement:
             achievement_notices.append(message_achievement)
 
-    # 관리자 콘솔 명령어 자연어 설명(신규, §6): 권한자(prime/op)에게만 답하고, 그 외엔
-    # 생성 호출 자체를 안 해서 정보가 새지 않는다. 다른 카테고리(profile 등)와 섞이면
-    # 완화된 지침과 일반 페르소나 지침이 뒤섞이므로, 이 카테고리가 걸리면 단독으로 처리하고
-    # 아래의 일반 RAG 문서/생성 흐름은 타지 않는다. nl_count 증가/첫대화·말풍선 업적
-    # 체크도 건너뛴다(관리 목적 문의는 "대화 횟수"로 안 치는 게 자연스럽다는 판단).
+    # 관리자 명령어 자연어 설명: 권한자에게만 답하고, 비권한자는 생성 호출 자체를 안 해서
+    # 정보가 새지 않는다. 다른 카테고리와 섞이지 않게 단독 분기로 처리한다.
     if "admin_commands" in classification.categories:
         if not admin_console.is_authorized(user_id):
             return _finalize(
@@ -285,25 +252,20 @@ async def handle_natural_language(
     context_note = documents.build_context_note(classification.categories)
     response_text = await get_response(text, history=context_turns, context_note=context_note)
 
-    # "위대하고 귀여운 대화의 시작"(처음으로 햄미와 대화) — 실제 생성까지 도달한 경우에만
-    # 확인한다. §21 재배정: 기존 "말풍선 한가득"의 옛 트리거(첫 자연어 대화)를 인계받았다.
     if await award_achievement(user_id, achievements.first_chat.ID):
         achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.first_chat)}!!")
 
-    # nl_count는 실제로 생성까지 도달한 메시지만 증가시킨다. 오늘의 마지막 메시지(상한에
-    # 정확히 도달)라면 생성된 답변 뒤에 고정 문구를 이어붙인다 (사용자 예시: "일어나써! + 오늘은...").
+    # nl_count는 실제 생성까지 도달한 메시지만 증가시킨다. 상한에 정확히 도달하는
+    # 메시지라면 답변 뒤에 고정 문구를 이어붙인다.
     new_nl_count = stats["nl_count"] + 1
     if new_nl_count >= nl_cap:
         response_text = f"{response_text}\n\n{random.choice(_DAILY_LIMIT_PHRASES)}"
 
-    # "말풍선 한가득"(§21 재배정: 하루 20회 이상 자연어 대화) — 오늘 새로 20회에 도달한
-    # 시점에 최초 1회만 확인한다(award()가 전체 기간 기준 멱등이라 다음 날부턴 다시 안 뜬다).
     if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD and await award_achievement(
         user_id, achievements.speech_bubble.ID
     ):
         achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.speech_bubble)}!!")
 
-    # 서로 독립적인 마무리 작업(오늘 대화 횟수 갱신 + 봇 답장 로그)은 동시에 처리한다.
     await asyncio.gather(
         update_daily_stats(user_id, {"nl_count": new_nl_count}),
         log(user_id, guild_id, response_text, role="assistant"),
@@ -320,10 +282,8 @@ async def _handle_over_cap(
     achievement_notices: list[str],
     was_event_response: bool = False,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
-    # §32: 오늘 대화 상한을 넘긴 상태여도, 이 메시지가 실제로 부름 이벤트에 대한 반응이었다면
-    # (긍정이든 부정이든) 남용 카운터를 건드리지 않는다 — 발견된 버그: 예전엔 이 카운터가
-    # 무조건 올라가서, 6회 이상 누적된 상태에서 부름 이벤트에 반응하면 이벤트 자체의 호감도
-    # 변화(예: 부정 -5)가 적용된 뒤에도 응답이 "_(무시)_"로 덮이고 추가로 -1까지 겹쳐 붙었다.
+    # 이 메시지가 부름 이벤트 반응이었다면(긍/부정 무관) 남용 카운터를 건드리지 않는다 —
+    # 안 그러면 이벤트 자체의 호감도 변화 위에 남용 페널티까지 겹쳐 붙는다.
     if was_event_response:
         return _finalize(
             random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices
@@ -356,7 +316,7 @@ def _finalize(
     current: int,
     achievement_notices: list[str] | None = None,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
-    # embed(또는 embed를 포함한 tuple) 응답에는 이미 호감도가 필드로 보이므로 알림을 따로 안 붙인다.
+    # embed 응답엔 이미 호감도가 필드로 보이므로 알림을 따로 안 붙인다.
     if isinstance(response, (discord.Embed, tuple)):
         return response
     text = response
@@ -370,15 +330,6 @@ def _finalize(
 async def _apply_message_effects(
     user_id: int, emotion: str, has_severe_abuse: bool, stats: dict
 ) -> tuple[int, str | None]:
-    # stats는 handle_natural_language 초반에 이미 조회해둔 오늘 daily_stats 스냅샷을
-    # 그대로 재사용한다 (중복 조회 제거). 이 사이에 happy_emotion_claimed 필드를 건드리는
-    # 다른 호출은 없어 안전하다.
-    #
-    # 2026-09-01 재정정: 기존 "부정 감정 연속/누적" 기반 -1은 폐지했다 — emotion은 20개 중
-    # 하나를 강제로 고르는 구조라, 애매한 메시지가 부정으로 잘못 분류되기만 해도 누적돼서
-    # 억울하게 깎이는 문제가 있었다(사용자 확정). emotion 판정 자체(chat_history.
-    # detected_emotion 기록)는 그대로 유지하되, 호감도 하락은 이제 오직 심각한 유해 표현
-    # 감지(has_severe_abuse)에만 연동한다.
     updates = {}
     delta = 0
     achievement_notice = None

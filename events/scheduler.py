@@ -7,23 +7,19 @@ from discord.ext import tasks
 # 한국시간(KST) 고정 오프셋. 서머타임이 없어서 UTC+9 고정으로 충분하다.
 KST = timezone(timedelta(hours=9))
 
-# CLAUDE.md 섹션 3-5: 취침 00:00, 기상 06:30 (2026-08-25 변경 — 기존 08:00에서 앞당김).
 SLEEP_START = time(0, 0)
 WAKE_TIME = time(6, 30)
 
-# 2026-08-27: 취침 중 맨션 깨움 이벤트(방해금지 모드)가 발동한 밤은, "누가 중간에 깨워서
-# 30분 더 잤다"는 컨셉으로 그날의 실제 기상 시각을 07:00로 미룬다(사용자 확정).
+# 취침 중 맨션 깨움 이벤트(방해금지 모드)가 발동한 밤은 "누가 중간에 깨워서 30분 더
+# 잤다"는 컨셉으로 그날의 실제 기상 시각을 미룬다.
 DELAYED_WAKE_TIME = time(7, 0)
 
 _DailyCallback = Callable[[], Awaitable[None]]
 
-# 테스트 서버 전용 채널 고정 상태 (2026-08-28, 사용자 확정 — 기존 `hammie awake`/
-# `hammie asleep`/`hammie sync` 관리자 명령어를 완전히 대체). `.env`에 넣지 않고 코드에
-# 항상 고정값으로 둔다. awake/asleep 채널은 실제 시간과 무관하게 그 상태로 강제되고,
-# sync 채널은 실제 시간(is_sleep_time)을 그대로 따른다 — 부름/기상/취침 같은 봇이 스스로
-# 올리는 전역 메시지도 이 서버에서는 항상 sync 채널로만 간다(resolve_broadcast_channel_id
-# 참고). awake/asleep 채널은 자동 게시 대상이 아니라, 누군가 먼저 말을 걸었을 때만 그
-# 고정된 상태로 반응하는 순수 반응형 채널이다.
+# 테스트 서버 전용 채널 고정 상태. awake/asleep 채널은 실제 시간과 무관하게 그 상태로
+# 강제되고, sync 채널은 실제 시간(is_sleep_time)을 그대로 따른다 — 봇이 스스로 올리는
+# 전역 메시지도 이 서버에서는 항상 sync 채널로만 간다. awake/asleep 채널은 자동 게시
+# 대상이 아니라 누군가 먼저 말을 걸었을 때만 반응하는 순수 반응형 채널이다.
 TEST_GUILD_ID = 1541345080680644651
 TEST_AWAKE_CHANNEL_ID = 1541345084493144068
 TEST_ASLEEP_CHANNEL_ID = 1542920701214724186
@@ -77,8 +73,7 @@ def resolve_broadcast_channel_id(guild_id: int, last_channel_id: int | None) -> 
 
 
 def format_footer_time(now: datetime) -> str:
-    """모든 시스템 임베드(`/내정보`, `/소개`, `/랭킹`)의 footer 공용 포맷. 날짜 + 12시간제
-    시각(AM/PM)만 적고, "GMT"/"KST" 같은 시간대 약어는 쓰지 않는다 (사용자 확정)."""
+    """시스템 임베드 footer 공용 포맷. "GMT"/"KST" 같은 시간대 약어는 쓰지 않는다."""
     period = "AM" if now.hour < 12 else "PM"
     return f"{now.strftime('%Y. %m. %d.')} {now.strftime('%I:%M')} {period}"
 
@@ -110,10 +105,9 @@ def random_times_in_window(
 ) -> list[time]:
     """[start, end) 구간 안에서 서로 다른 count개의 시각을 무작위로 뽑아 오름차순으로 반환한다.
 
-    min_gap_minutes > 0이면 인접한 두 시각 사이 간격이 항상 그 값 이상이 되도록 보장한다
-    (부름 이벤트 최소 간격 30분, 사용자 확정). 재시도(rejection sampling) 없이, 구간을
-    (count-1)*min_gap만큼 줄인 뒤 뽑아서 각 포인트에 순서대로 간격을 더하는 방식으로
-    간격을 원천적으로 보장한다.
+    min_gap_minutes > 0이면 인접한 두 시각 사이 간격이 항상 그 값 이상이 되도록 보장한다.
+    재시도(rejection sampling) 없이, 구간을 (count-1)*min_gap만큼 줄인 뒤 뽑아서 각
+    포인트에 순서대로 간격을 더하는 방식으로 원천적으로 보장한다.
     """
     start_seconds = start.hour * 3600 + start.minute * 60 + start.second
     end_seconds = end.hour * 3600 + end.minute * 60 + end.second

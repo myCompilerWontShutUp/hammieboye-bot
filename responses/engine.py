@@ -12,9 +12,8 @@ from config import (
 
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# 답변 전 "추론" 토큰이 max_output_tokens 예산을 같이 갉아먹어서 짧은 답변조차
-# 추론만 하다가 잘려버릴 수 있다. "none"은 gpt-5.6-luna(현재 OPENAI_MODEL 기본값) 기준 —
-# nano처럼 "none"을 지원 안 하는 모델로 바꾸면 이 값도 "minimal"로 같이 올려야 한다.
+# "none"은 현재 OPENAI_MODEL(gpt-5.6-luna) 기준 — 이걸 지원 안 하는 모델로 바꾸면
+# "minimal"로 올려야 한다(안 그러면 추론 토큰이 max_output_tokens 예산을 갉아먹는다).
 _REASONING = {"effort": "none"}
 
 # instructions는 모든 요청에서 완전히 동일한 문자열을 유지해야 캐시가 재사용된다.
@@ -108,7 +107,7 @@ Hammie: 조아. 이번에는 햄미가 알아보기 쉽게 차근차근 설명�
 
 _FALLBACK_RESPONSE = "으엥 지금은 말이 잘 안 나와... 쪼금 이따가 다시 불러줄래??"
 
-# CLAUDE.md 섹션 7 확정본. supabase/schema.sql의 emotion 타입과 정확히 동일해야 한다.
+# supabase/schema.sql의 emotion 타입과 정확히 동일해야 한다.
 POSITIVE_EMOTIONS = (
     "신남", "행복함", "반가움", "호기심", "뿌듯함",
     "편안함", "장난스러움", "기대됨", "애정 느낌", "황홀함",
@@ -119,16 +118,9 @@ NEGATIVE_EMOTIONS = (
 )
 
 
-# 2026-09-02: OpenAI Responses API의 service_tier="fast"(="priority"와 동일 처리, 응답의
-# service_tier는 항상 "priority"로 찍힘 — openai 파이썬 SDK 3.3.1의
-# openai.types.responses.service_tier.ServiceTier 타입과 response_create_params.py의
-# docstring으로 실제 지원 여부를 확인했고, 일반 텍스트 호출/json_schema 구조화 출력 호출
-# 둘 다 실제 API로 정상 동작함을 라이브로 검증했다(사용자 지시: "openai API를 잘 확인하여
-# 안전하게 적용"). 실측(8회씩 비교) 결과 평균 차이가 호출 간 편차보다 작아 확실한 속도
-# 개선을 보장할 수 없다는 걸 사용자에게 안내했고, §51-2에서 config.OPENAI_FAST_MODE
-# 플래그로 빼서 .env 값만 바꾸면(재배포만, 코드 수정 없이) 언제든 롤백 가능하게 했다.
-# 사용자 확정: 관리자 명령어 자연어 설명(10배 토큰 완화, 아래 get_admin_command_response)에는
-# 이 플래그와 무관하게 항상 적용하지 않는다 — 그 외 모든 생성 호출엔 플래그를 따른다.
+# service_tier="fast"는 config.OPENAI_FAST_MODE(.env)로 켜고 끈다 — 실측상 속도 개선이
+# 호출 간 편차보다 작아 확실하지 않아 언제든 롤백 가능하게 플래그로 뺐다. 관리자 명령어
+# 자연어 설명(get_admin_command_response)에는 이 플래그와 무관하게 항상 적용하지 않는다.
 _DEFAULT_SERVICE_TIER = "fast" if OPENAI_FAST_MODE else None
 
 
@@ -140,10 +132,8 @@ async def _generate(
     prompt_cache_key: str | None = OPENAI_PROMPT_CACHE_KEY,
     service_tier: str | None = _DEFAULT_SERVICE_TIER,
 ) -> str | None:
-    # prompt_cache_key/service_tier 둘 다 None이면 인자 자체를 생략한다 — SDK에 명시적으로
-    # None을 넘기는 것과 파라미터를 안 넘기는 것이 항상 동일하게 처리된다는 보장이 없어서,
-    # 이 값을 안 쓰는 호출(예: 관리자 명령어 설명, 저빈도라 캐싱/패스트모드 이득이 적음)은
-    # 기존에 이 값들을 아예 안 넘기던 core/intent.py 등과 동일한 방식으로 맞춘다.
+    # None이면 인자 자체를 생략한다 — SDK에 명시적 None을 넘기는 것과 안 넘기는 것이
+    # 항상 동일하게 처리된다는 보장이 없어서다.
     kwargs = {}
     if prompt_cache_key is not None:
         kwargs["prompt_cache_key"] = prompt_cache_key
@@ -172,7 +162,6 @@ def _build_input(
 
     turns = []
     if context_note:
-        # RAG 문서 근거 자료를 "사용자에게 안 보이는" 참고 메시지로 맨 앞에 끼워 넣는다.
         turns.append({"role": "user", "content": context_note})
     if history:
         turns.extend({"role": row["role"], "content": row["content"]} for row in history)
@@ -190,19 +179,15 @@ async def get_response(
     return draft if draft is not None else _FALLBACK_RESPONSE
 
 
-# 관리자(권한자)에게 답하는 자연어 전용 지침(신규, 2026-09-01, 2026-09-01 재정정). 일반
-# SYSTEM_PROMPT의 "100자 제한/목록 형식 금지"는 여러 줄 명령어 목록을 정확히 보여줘야 하는
-# 이 기능과 정면으로 충돌해서, 이 기능에서만 별도의 완화된 지침을 쓴다(사용자 확정) — 길이·
-# 형식 제약만 푼다. 말투는 반말이 아니라 **관리자 콘솔의 기존 명령어 응답과 동일한 존댓말**로
-# 통일했다(사용자 확정, "여기서 자연어 말투는 기존 명령어와 동일한 존댓말입니다") — 이
-# 지침은 §44-6(관리자 명령어를 일반 채팅으로 물어볼 때)과 §49("주인님 가라사대" 뒤에
-# 명령어가 아닌 자연어가 왔을 때) 둘 다에서 재사용된다. 정적 문자열이라 이 지침 자체도
-# 프롬프트 캐싱 대상이지만, 호출 빈도가 낮아(권한자만, 드물게) 별도 캐시 키를 쓰지 않는다.
+# 관리자(권한자) 전용 지침 — 일반 SYSTEM_PROMPT의 "100자 제한/목록 금지"는 여러 줄
+# 명령어 목록을 보여줘야 하는 이 기능과 충돌해서 길이·형식 제약만 푼다. 말투는 반말이
+# 아니라 관리자 콘솔의 기존 명령어 응답과 동일한 존댓말로 통일한다.
 _ADMIN_INSTRUCTIONS = """\
-너는 플라스틱 페트병을 흔드는 작은 햄스터 봇 "Hammie(햄미)"다. 지금은 관리자(권한자)에게
+너는 플라스틱 페트병을 흔드는 작은 햄스터 봇 "Hammie(햄미)"다. 지금은 권한자에게
 존댓말로 답하는 특별한 상황이다 — 관리자 콘솔의 다른 명령어 응답들과 똑같은 톤이다
 (발음을 살짝 뭉개는 건 유지해도 되지만, 반말이 아니라 존댓말 어미를 쓴다. 예: "~이에요!!",
-"~해요!!", "~드릴게요!!").
+"~해요!!", "~드릴게요!!"). 상대를 부를 일이 있으면 반드시 "주인님"이라고 부른다 —
+"관리자님"이라는 호칭은 절대 쓰지 않는다.
 
 # 형식
 
@@ -232,14 +217,8 @@ _ADMIN_INSTRUCTIONS = """\
 
 
 async def get_admin_command_response(message: str, doc_text: str) -> str:
-    """관리자에게 존댓말로 자연어 답변을 생성한다. 권한 확인은 호출부(core/chat.py의
-    admin_commands 카테고리 분기, 또는 admin/console.py의 "주인님 가라사대 {자연어}" 분기)가
-    이미 마쳤다는 전제 — 여기서는 생성만 담당한다. 목록이 길어질 수 있어 토큰 예산의
-    "상한"을 평소의 10배로 늘린다(사용자 확정, "리스트가 잘리지 않도록" / "토큰 제한을
-    10배까지") — 다만 실제로 그만큼 길게 쓰라는 뜻은 아니라서, 짧게 답해도 되는 질문은
-    짧게 답하도록 _ADMIN_INSTRUCTIONS에 명시했다(사용자 확정, "필요에 따라서만 10배
-    해제를 하고, 그렇지 않을 때는 일반 텍스트와 비슷하게"). FastMode(service_tier)는
-    이 호출에는 적용하지 않는다(사용자 확정)."""
+    """관리자에게 존댓말로 답한다. 권한 확인은 호출부(core/chat.py, admin/console.py)가
+    이미 마쳤다는 전제. 명령어 목록이 길어질 수 있어 토큰 상한을 10배로 늘린다."""
     input_payload = [
         {"role": "user", "content": doc_text},
         {"role": "user", "content": message},

@@ -104,37 +104,27 @@ async def _resolve_target(interaction: discord.Interaction, 이름: str) -> disc
 
 
 async def handle(interaction: discord.Interaction, 이름: str) -> None:
-    """/니정보: "모르는 사람"(개인 전용) 응답과 "찾음"(공개) 응답은 공개 범위가 서로 달라서,
-    이 함수가 분기를 다 확인한 뒤에야 defer 여부/공개 범위를 스스로 결정한다 — 그래야 무거운
-    조회(info_handle, 실제 이름 조회)에만 "생각 중" 표시가 붙고, 가벼운 실패 분기는 그대로
-    즉시 응답한다(지연시간 최적화, 두 응답의 ephemeral이 서로 달라 defer를 미리 걸 수 없기도
-    하다)."""
+    """"모르는 사람"(개인 전용)과 "찾음"(공개) 응답은 공개 범위가 달라서, 분기를 다
+    확인한 뒤에야 defer 여부를 스스로 결정한다."""
     member = await _resolve_target(interaction, 이름)
     if member is None:
         return
     guild = interaction.guild
 
-    # 여기서부터가 실제로 느린 구간(info_handle의 여러 DB 호출 + 실제 이름 조회)이라 defer한다.
     await interaction.response.defer()
     text, embed = await info_handle(member.id, target_name=member.display_name, guild=guild)
-    # 취침 중엔 수첩 문구로만 답하고, 깨어있으면 text를 그대로 쓴다 — text(_INTRO_OTHER_LINES)가
-    # 이미 대상자 이름을 문장 안에 자연스럽게 포함하고 있으므로, 예전처럼 실제 이름을 앞에
-    # 따로 붙이면 "서희\n서희를 한번 살펴볼까??"처럼 이름이 중복 노출되는 버그가 된다
-    # (사용자 발견·확정, 2026-08-28 — §32-6에서 취침 중 노출만 고치고 평시 중복은 놓쳤었다).
+    # text(_INTRO_OTHER_LINES)가 이미 대상자 이름을 문장 안에 포함하고 있으므로 실제
+    # 이름을 따로 앞에 붙이지 않는다(붙이면 이름이 중복 노출된다).
     content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
     await interaction.edit_original_response(content=content, embed=embed)
 
 
 async def handle_achievements(interaction: discord.Interaction, 이름: str) -> None:
-    """/니업적: /니정보와 동일한 대상자 해석·가시성·취침 처리 패턴을 그대로 따르되,
-    보여주는 내용만 업적 임베드로 바꾼다."""
     member = await _resolve_target(interaction, 이름)
     if member is None:
         return
 
     await interaction.response.defer()
     text, embed = await achievements_view.handle(member.id, target_name=member.display_name)
-    # /니정보와 동일한 이유로 real_name 접두어를 붙이지 않는다 — achievements_view의
-    # _INTRO_OTHER_LINES도 이미 대상자 이름을 문장 안에 포함하고 있다.
     content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
     await interaction.edit_original_response(content=content, embed=embed)
