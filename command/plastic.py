@@ -7,8 +7,9 @@ from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.users import get_user, set_plastic_cooldown
 
-# CLAUDE.md 섹션 3-1 (2026-08-27: 10분 -> 3분으로 단축, 사용자 확정)
-_COOLDOWN = timedelta(minutes=3)
+# CLAUDE.md 섹션 3-1 (2026-08-27: 10분 -> 3분, 2026-09-01: 3분 -> 30초로 재단축, 사용자 확정).
+# 성공 시 쿨타임이 흐르지 않는 규칙은 그대로다 — 아래 handle()의 실패 분기에서만 설정된다.
+_COOLDOWN = timedelta(seconds=30)
 _METHOD = "plastic_bottle"
 _STREAK_TARGET = 3
 _SUCCESS_RATE = 0.5

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 
 import discord
@@ -74,17 +75,35 @@ async def _delete_placeholder(placeholder: discord.Message | None) -> None:
         logging.exception("Failed to delete thinking placeholder")
 
 
+# Discord 메시지 하드 제한(2000자) 안전장치 — admin/console.py::_send()와 동일한 패턴.
+# 평소엔 페르소나가 100자 제한을 지켜서 필요 없었지만, 관리자 명령어 자연어 설명 기능
+# (§6, 10배 토큰 예산)이 훨씬 긴 응답을 낼 수 있게 되면서 일반 자연어 경로에도 필요해졌다.
+_MAX_MESSAGE_LENGTH = 2000
+_TOO_LONG_NOTICE = "내용이 너무 길어서 파일로 첨부했어요!!"
+
+
 async def _reply(
     message: discord.Message, response: str | discord.Embed | tuple[str, discord.Embed]
 ) -> None:
     # 누가 무엇을 물어봐서 나온 답인지 구분하기 쉽도록, 항상 답장(reply)으로 보낸다.
+    # 평소(2000자 이하)엔 기존과 동일하게 content를 위치 인자로 넘긴다 — 새 안전장치는
+    # 넘칠 때만 관여하고, 그 외엔 기존 호출 형태를 그대로 유지한다.
     if isinstance(response, tuple):
         text, embed = response
-        await message.reply(content=text, embed=embed)
+        if len(text) > _MAX_MESSAGE_LENGTH:
+            await message.reply(content=_TOO_LONG_NOTICE, embed=embed, file=_as_text_file(text))
+        else:
+            await message.reply(content=text, embed=embed)
     elif isinstance(response, discord.Embed):
         await message.reply(embed=response)
+    elif len(response) > _MAX_MESSAGE_LENGTH:
+        await message.reply(_TOO_LONG_NOTICE, file=_as_text_file(response))
     else:
         await message.reply(response)
+
+
+def _as_text_file(text: str) -> discord.File:
+    return discord.File(io.BytesIO(text.encode("utf-8")), filename="result.txt")
 
 
 def setup_dispatcher(client: discord.Client) -> None:
@@ -119,6 +138,7 @@ def setup_dispatcher(client: discord.Client) -> None:
         greeting.init(client)
         presence.init(client)
         admin.init(client)
+        await admin.bootstrap()  # prime 행 시드 + 권한자(prime/op) 인메모리 캐시 로드
 
         # 봇이 취침 시간대 도중에 켜졌을 수도 있으니, 다음 00:00/06:30을 기다리지 말고 바로 맞춘다.
         # 방해금지(triggered) 여부는 DB에 남아있지만 presence와 §28의 지연 기상 플래그는

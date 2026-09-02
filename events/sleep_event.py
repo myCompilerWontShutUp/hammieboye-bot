@@ -9,7 +9,7 @@ from config import ALLOWED_GUILD_IDS
 from core.discord_names import resolve_real_name
 from events.scheduler import KST, resolve_broadcast_channel_id
 from db.achievements import award as award_achievement
-from db.affection import add_affection
+from db.affection import add_affection_uncapped
 from db.client import select
 from db.daily_stats import get_active_users_for, get_top_talkers_for
 from db.guild_channels import get_last_channel
@@ -65,6 +65,12 @@ async def announce_and_reward() -> None:
     1) 가장 많이 대화한 사용자 1명을 "1위"로 발표만 하고 (동점이면 타이브레이크로 단독 선정)
     2) 그날 활동(자연어 또는 공개 슬래시 커맨드)한 사용자 전원에게 호감도 +1을 지급한다
        (사용자 확정 — 기존엔 1위에게만 지급했으나, 표시(1위)와 보상(전원)을 분리했다).
+
+    이 +1은 add_affection_uncapped()로 지급해서 그날의 자연어 +20 획득 상한(daily_gain)
+    계산에 포함되지 않는다(사용자 확정, 2026-09-01) — 취침 이벤트는 그날 대화량과 무관하게
+    "하루를 마무리하며 다 같이" 주는 보상이라, 그날 이미 상한을 다 채운 사용자도 정상적으로
+    받아야 하고, 반대로 이 +1이 그날 다른 자연어 활동으로 벌 수 있는 몫을 깎아 먹어서도 안
+    된다는 취지.
     """
     target_date_str = _target_date_str(datetime.now(KST))
 
@@ -72,7 +78,7 @@ async def announce_and_reward() -> None:
     chatters = await get_active_users_for(target_date_str)
 
     for user_id in chatters:
-        await add_affection(user_id, 1, _METHOD)
+        await add_affection_uncapped(user_id, 1, _METHOD)
 
     if winner_id is not None:
         await _post_announcement(winner_id, bool(chatters))

@@ -15,6 +15,8 @@ KNOWN_TABLES = (
     "guild_sleep_state",
     "withdrawn_users",
     "user_achievements",
+    "admin_ops",
+    "admin_sessions",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -29,6 +31,8 @@ _ORDER_COLUMN = {
     "guild_sleep_state": "updated_at",
     "withdrawn_users": "withdrawn_at",
     "user_achievements": "earned_at",
+    "admin_ops": "granted_at",
+    "admin_sessions": "updated_at",
 }
 
 
@@ -96,11 +100,13 @@ async def get_last_event() -> dict | None:
     return rows[0] if rows else None
 
 
-async def dump_table(name: str, amount: int) -> list[dict]:
+async def dump_table(name: str, amount: int | None) -> list[dict]:
+    """amount가 None이면(sh db의 "*") limit 파라미터 자체를 생략해서 PostgREST 기본
+    최대치까지 반환한다 — 응답이 길어지는 건 admin/console.py의 파일 첨부 폴백이 처리한다."""
     if name not in KNOWN_TABLES:
         raise ValueError(f"unknown table: {name}")
     order_column = _ORDER_COLUMN[name]
-    return await select(
-        name,
-        {"select": "*", "order": f"{order_column}.desc", "limit": str(amount)},
-    )
+    params = {"select": "*", "order": f"{order_column}.desc"}
+    if amount is not None:
+        params["limit"] = str(amount)
+    return await select(name, params)
