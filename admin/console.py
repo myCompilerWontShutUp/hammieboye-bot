@@ -690,14 +690,30 @@ def _parse_emoji_tokens(token: str) -> list[str]:
     return [t for t in token.split(_EMOJI_NAME_SEPARATOR) if t]
 
 
+# Discord의 실제 이모지 셋(5,721개 공개 shortcode 기준으로 대조 확인)과 emoji_lib를 비교했을
+# 때, "regional_indicator_a"~"z"(U+1F1E6~U+1F1FF, 낱개 알파벳 리액션) 26개만 emoji_lib에
+# 통째로 없다 — 국기 이모지(예: 🇰🇷)를 만드는 조합용 문자라 CLDR 별칭 목록에서 빠져있을 뿐
+# Discord 리액션 자체는 정상 지원한다. 그 외엔 실제로 존재하지 않는 이름/별칭 차이일 뿐이라
+# 추가로 보완할 진짜 누락은 없었다.
+_EXTRA_EMOJI_ALIASES = {
+    f"regional_indicator_{chr(letter)}": chr(0x1F1E6 + letter - ord("a"))
+    for letter in range(ord("a"), ord("z") + 1)
+}
+# emoji_lib.is_emoji()도 EMOJI_DATA 기반이라 낱개 리전 인디케이터 문자(🇦 등)는 리터럴로
+# 입력해도 인식 못 한다 — 이름/문자 둘 다 이 보완 테이블로 커버해야 한다.
+_EXTRA_EMOJI_CHARS = set(_EXTRA_EMOJI_ALIASES.values())
+
+
 def _resolve_emoji(token: str) -> str | None:
     """이모지 문자 그대로(예: 👍)를 받거나, 표준 유니코드 이모지의 영문 별칭(예: thumbsup)을
     받아 실제 이모지 문자로 바꾼다. 어느 쪽도 아니면 None."""
-    if emoji_lib.is_emoji(token):
+    if emoji_lib.is_emoji(token) or token in _EXTRA_EMOJI_CHARS:
         return token
     placeholder = f":{token}:"
     resolved = emoji_lib.emojize(placeholder, language="alias")
-    return None if resolved == placeholder else resolved
+    if resolved != placeholder:
+        return resolved
+    return _EXTRA_EMOJI_ALIASES.get(token)
 
 
 async def _handle_bt_set(args: list[str]) -> str:
