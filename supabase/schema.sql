@@ -10,6 +10,7 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS admin_chat_history CASCADE;
 DROP TABLE IF EXISTS admin_sessions CASCADE;
 DROP TABLE IF EXISTS admin_ops CASCADE;
 DROP TABLE IF EXISTS user_achievements CASCADE;
@@ -330,6 +331,23 @@ CREATE TABLE admin_sessions (
   expires_at    timestamptz NOT NULL,
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- ------------------------------------------------------------
+-- 9-5. admin_chat_history — "주인님 가라사대" 자연어 전용 히스토리 (신규)
+--    최대 5턴/30분 창으로 core/chat.py의 일반 자연어 히스토리와 동일하게 동작하지만,
+--    chat_history와는 완전히 별개 테이블이라 두 히스토리가 서로 섞이지 않는다. admin_ops와
+--    동일한 이유로 users를 참조하지 않는다.
+-- ------------------------------------------------------------
+
+CREATE TABLE admin_chat_history (
+  id            bigserial PRIMARY KEY,
+  user_id       bigint NOT NULL,
+  content       text NOT NULL,
+  role          text NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'assistant')),
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_admin_chat_history_user_recent ON admin_chat_history (user_id, created_at DESC);
 
 -- ------------------------------------------------------------
 -- 10. 원자적 호감도 증감 RPC (일일 +20 상한 적용, affection_log 기록)
@@ -662,3 +680,4 @@ ALTER TABLE withdrawn_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_achievements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_chat_history ENABLE ROW LEVEL SECURITY;

@@ -17,6 +17,7 @@ KNOWN_TABLES = (
     "user_achievements",
     "admin_ops",
     "admin_sessions",
+    "admin_chat_history",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -33,6 +34,7 @@ _ORDER_COLUMN = {
     "user_achievements": "earned_at",
     "admin_ops": "granted_at",
     "admin_sessions": "updated_at",
+    "admin_chat_history": "created_at",
 }
 
 

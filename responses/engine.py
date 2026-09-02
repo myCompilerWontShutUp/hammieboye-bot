@@ -216,15 +216,15 @@ _ADMIN_INSTRUCTIONS = """\
 """
 
 
-async def get_admin_command_response(message: str, doc_text: str) -> str:
+async def get_admin_command_response(
+    message: str, doc_text: str, history: list[dict] | None = None
+) -> str:
     """관리자에게 존댓말로 답한다. 권한 확인은 호출부(core/chat.py, admin/console.py)가
-    이미 마쳤다는 전제. 명령어 목록이 길어질 수 있어 토큰 상한을 10배로 늘린다."""
-    input_payload = [
-        {"role": "user", "content": doc_text},
-        {"role": "user", "content": message},
-    ]
+    이미 마쳤다는 전제. 명령어 목록이 길어질 수 있어 토큰 상한을 10배로 늘린다. history는
+    "주인님 가라사대" 자연어 전용 히스토리(일반 자연어 chat_history와는 별개 저장소)에서
+    가져온 최근 맥락이다."""
     draft = await _generate(
-        input_payload,
+        _build_input(message, history, doc_text),
         instructions=_ADMIN_INSTRUCTIONS,
         max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS * 10,
         prompt_cache_key=None,

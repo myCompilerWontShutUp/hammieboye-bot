@@ -26,6 +26,8 @@ from db.admin import (
     log_command,
     set_affection,
 )
+from db.admin_history import get_recent_turns as get_recent_admin_turns
+from db.admin_history import log as log_admin_turn
 from db.admin_ops import grant as grant_op
 from db.admin_ops import has_op
 from db.admin_ops import list_all as list_ops
@@ -60,6 +62,15 @@ _SESSION_TIMEOUT = timedelta(seconds=60)
 _SESSION_OPEN_MESSAGE = "넵! 명령을 내려주세요!"
 _SESSION_TIMEOUT_MESSAGE = "아무 명령이 없어서 놀러가볼게요!!"
 _REST_MESSAGE = "넵! 전 놀러가볼게요~!"
+
+# 자연어 응답만 실제로 API 호출이 걸려 지연이 체감된다(명령어 실행은 순수 DB/문자열
+# 처리라 필요 없음) — core/dispatcher.py와 동일한 패턴으로 그 호출 구간에만 띄운다.
+_THINKING_PLACEHOLDER = "_답변중..._"
+
+# "주인님 가라사대" 자연어 히스토리(core/chat.py의 일반 자연어와 동일한 30분/최대 5턴
+# 윈도우를 쓰되, chat_history와는 완전히 별개인 admin_chat_history에 저장돼 섞이지 않는다).
+_ADMIN_HISTORY_WINDOW = timedelta(minutes=30)
+_ADMIN_CONTEXT_TURN_LIMIT = 5
 
 # 명령어 이름이 여러 단어일 수 있어(예: "sh db list") ":" 앞부분 전체를 이름 후보로
 # 삼는다 — 접두어 일치가 아니라 전체 문자열 일치라서 "sh db"와 "sh db list"가 안 헷갈린다.
@@ -752,6 +763,23 @@ async def _send(
         logging.exception("Failed to send admin console response")
 
 
+async def _send_placeholder(message: discord.Message) -> discord.Message | None:
+    try:
+        return await message.reply(_THINKING_PLACEHOLDER)
+    except discord.HTTPException:
+        logging.exception("Failed to send admin console thinking placeholder")
+        return None
+
+
+async def _delete_placeholder(placeholder: discord.Message | None) -> None:
+    if placeholder is None:
+        return
+    try:
+        await placeholder.delete()
+    except discord.HTTPException:
+        logging.exception("Failed to delete admin console thinking placeholder")
+
+
 async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[str]) -> None:
     if spec.requires_prime and not _is_prime(message.author.id):
         await _send(message, False, "그건 사용하실 수 없어요!!")
@@ -789,8 +817,10 @@ async def handle(message: discord.Message) -> None:
 
     "{호출 단어} 주인님 가라사대 {텍스트}"는 "--"로 시작하지 않는 한 항상 자연어 질문으로
     취급해 권한자에게 존댓말+완화된 토큰 예산으로 답한다 — oneshot과 마찬가지로 세션을
-    전혀 열지도 연장하지도 않는 완전히 독립적인 1회성 응답이다. 즉시 명령을 실행하려면
-    "--{명령어}"(공백 없이)를 쓴다.
+    전혀 열지도 연장하지도 않는 완전히 독립적인 1회성 응답이다. 생성 중엔 "답변중..."
+    플레이스홀더를 띄우고, 최근 최대 5턴(30분 이내)의 대화 맥락을 같이 넣어준다 — 이
+    히스토리는 일반 자연어(chat_history)와 완전히 별개 테이블(admin_chat_history)에
+    저장돼 서로 섞이지 않는다. 즉시 명령을 실행하려면 "--{명령어}"(공백 없이)를 쓴다.
 
     명령어 전용 방에서는 권한자가 등록된 명령어를 그대로 쳐도 세션/트리거 없이 즉시 실행된다.
 
@@ -825,8 +855,24 @@ async def handle(message: discord.Message) -> None:
                 # oneshot과 동일하게 완전히 독립적인 1회성 응답 — 세션을 열지도 연장하지도
                 # 않는다. 열려 있던 세션이 있어도 그대로 두고(건드리지 않음), 타이머와
                 # 무관하게 매번 답한다.
-                response = await get_admin_command_response(freeform_text, all_commands_text())
+                user_id = message.author.id
+                placeholder = await _send_placeholder(message)
+                try:
+                    now = datetime.now(timezone.utc)
+                    context_turns = await get_recent_admin_turns(
+                        user_id,
+                        since=now - _ADMIN_HISTORY_WINDOW,
+                        limit=_ADMIN_CONTEXT_TURN_LIMIT,
+                    )
+                    response = await get_admin_command_response(
+                        freeform_text, all_commands_text(), history=context_turns
+                    )
+                finally:
+                    await _delete_placeholder(placeholder)
                 await _send(message, False, response)
+                # 히스토리는 일반 자연어(chat_history)와 완전히 별개 테이블에 남겨서 섞이지 않는다.
+                await log_admin_turn(user_id, freeform_text)
+                await log_admin_turn(user_id, response, role="assistant")
         return
 
     if not is_authorized:
