@@ -885,6 +885,13 @@ async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[s
         response = await spec.handler(remaining_args)
     except _AdminError as e:
         response = str(e)
+    except Exception:
+        # _AdminError는 사용법/검증 오류라 그대로 보여주면 되지만, 그 외 예외(DB 순단
+        # 등)를 여기서 못 잡으면 handle()까지 그대로 새서 discord.py 기본 에러 핸들러가
+        # 로그만 남기고 아무 응답도 안 보낸다 — 사용자 입장에선 "아무 반응 없음"으로
+        # 보여 명령어가 조용히 실패한 것처럼 느껴진다. 최소한 실패했다는 건 알려준다.
+        logging.exception("Admin command '%s' failed unexpectedly", spec.name)
+        response = "어라, 처리하다가 문제가 생겼어요!! 잠시 후 다시 시도해줘."
     await _send(message, dm, response)
 
 
