@@ -7,7 +7,7 @@ import discord
 from openai import AsyncOpenAI
 
 import achievements
-from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL
+from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL, openai_service_tier_kwargs
 from core.discord_names import resolve_real_name
 from core.korean import josa
 from events.scheduler import KST, random_times_in_window, resolve_broadcast_channel_id
@@ -460,6 +460,8 @@ async def _classify_response(prompt_text: str, reply_text: str) -> str | None:
             input=f"Hammie가 올린 메시지: {prompt_text}\n사용자 답장: {reply_text}",
             max_output_tokens=100,
             reasoning={"effort": "none"},
+            # §51: config.OPENAI_FAST_MODE로 켜고 끈다(.env만 바꾸면 즉시 롤백 가능).
+            **openai_service_tier_kwargs(),
             text={
                 "format": {
                     "type": "json_schema",

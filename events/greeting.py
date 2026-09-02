@@ -6,7 +6,13 @@ import discord
 from korean_lunar_calendar import KoreanLunarCalendar
 from openai import AsyncOpenAI
 
-from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL, OPENAI_MAX_OUTPUT_TOKENS
+from config import (
+    ALLOWED_GUILD_IDS,
+    OPENAI_API_KEY,
+    OPENAI_JUDGE_MODEL,
+    OPENAI_MAX_OUTPUT_TOKENS,
+    openai_service_tier_kwargs,
+)
 from events.scheduler import KST, resolve_broadcast_channel_id
 from db.guild_channels import get_last_channel
 from responses.engine import SYSTEM_PROMPT
@@ -181,6 +187,8 @@ async def _generate(task: str) -> str:
             input=task,
             max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
             reasoning={"effort": "low"},
+            # §51: config.OPENAI_FAST_MODE로 켜고 끈다(.env만 바꾸면 즉시 롤백 가능).
+            **openai_service_tier_kwargs(),
         )
         return result.output_text.strip()
     except Exception:

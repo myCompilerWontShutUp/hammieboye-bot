@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
-from config import OPENAI_API_KEY, OPENAI_MODEL
+from config import OPENAI_API_KEY, OPENAI_MODEL, openai_service_tier_kwargs
 from responses.engine import NEGATIVE_EMOTIONS, POSITIVE_EMOTIONS
 
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -86,6 +86,8 @@ async def classify(text: str) -> ClassifyResult:
             input=text,
             max_output_tokens=150,
             reasoning={"effort": "none"},
+            # §51: config.OPENAI_FAST_MODE로 켜고 끈다(.env만 바꾸면 즉시 롤백 가능).
+            **openai_service_tier_kwargs(),
             text={
                 "format": {
                     "type": "json_schema",
