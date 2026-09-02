@@ -144,9 +144,9 @@ def setup_dispatcher(client: discord.Client) -> None:
 
     @client.event
     async def on_message(message: discord.Message) -> None:
-        # 실제 유저만: 봇 계정, 웹훅("앱"으로 표시), 시스템 메시지(입장/고정 등)는 제외.
-        # 일반 답장(reply)은 default와 함께 명시적으로 허용해야 한다.
-        if message.author.bot or message.webhook_id is not None:
+        # 웹훅(익명 릴레이라 안정적인 정체성이 없음)과 시스템 메시지(입장/고정 등)는
+        # 항상 제외. 일반 답장(reply)은 default와 함께 명시적으로 허용해야 한다.
+        if message.webhook_id is not None:
             return
         if message.type not in (discord.MessageType.default, discord.MessageType.reply):
             return
@@ -155,7 +155,12 @@ def setup_dispatcher(client: discord.Client) -> None:
 
         # "bt set"으로 걸린 이모지 태그는 호출 단어/명령어/취침 시간대와 완전히 무관하게
         # 이 유저의 모든 메시지에 적용된다 — 아래 어떤 분기로 흐르든 상관없이 먼저 처리한다.
+        # 봇/애플리케이션 계정도 이 태그 하나만은 대상이 된다(자기 자신은 _parse_user_id가
+        # bt set 등록 자체를 막아서 이 봇이 스스로에게 반응을 다는 일은 없다).
         await admin.apply_emoji_tags(message)
+
+        if message.author.bot:
+            return
 
         if admin.should_intercept(message):
             await admin.handle(message)

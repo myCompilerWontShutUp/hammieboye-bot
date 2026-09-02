@@ -686,38 +686,40 @@ async def _user_exists(user_id: int) -> bool:
         raise _AdminError("지금은 사용자 확인이 어려워요!! 잠시 후 다시 시도해줘.") from e
 
 
-def _parse_emoji_names(token: str) -> list[str]:
-    return [name for name in token.split(_EMOJI_NAME_SEPARATOR) if name]
+def _parse_emoji_tokens(token: str) -> list[str]:
+    return [t for t in token.split(_EMOJI_NAME_SEPARATOR) if t]
 
 
-def _resolve_emoji(name: str) -> str | None:
-    """표준 유니코드 이모지 영문 별칭(예: fire, thumbsup)을 실제 이모지 문자로 바꾼다.
-    별칭이 존재하지 않으면 emoji_lib.emojize가 입력을 그대로 돌려주므로 그걸로 판별한다."""
-    placeholder = f":{name}:"
+def _resolve_emoji(token: str) -> str | None:
+    """이모지 문자 그대로(예: 👍)를 받거나, 표준 유니코드 이모지의 영문 별칭(예: thumbsup)을
+    받아 실제 이모지 문자로 바꾼다. 어느 쪽도 아니면 None."""
+    if emoji_lib.is_emoji(token):
+        return token
+    placeholder = f":{token}:"
     resolved = emoji_lib.emojize(placeholder, language="alias")
     return None if resolved == placeholder else resolved
 
 
 async def _handle_bt_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: bt set : {user_id} {emoji_names} {boolean}")
+        raise _AdminError("사용법: bt set : {user_id} {emojis} {boolean}")
     user_id = _parse_user_id(args[0])
-    names = _parse_emoji_names(args[1])
-    if not names:
-        raise _AdminError("emoji_names가 비어 있어요!!")
+    tokens = _parse_emoji_tokens(args[1])
+    if not tokens:
+        raise _AdminError("emojis가 비어 있어요!!")
     if not await _user_exists(user_id):
         raise _AdminError(f"그런 사용자는 없는 것 같아요!! ({user_id})")
 
     resolved: list[str] = []
     invalid: list[str] = []
-    for name in names:
-        emoji_char = _resolve_emoji(name)
+    for t in tokens:
+        emoji_char = _resolve_emoji(t)
         if emoji_char is None:
-            invalid.append(name)
+            invalid.append(t)
         else:
             resolved.append(emoji_char)
     if invalid:
-        raise _AdminError(f"존재하지 않는 이모지 이름이 있어요!! ({', '.join(invalid)})")
+        raise _AdminError(f"존재하지 않는 이모지예요!! ({', '.join(invalid)})")
 
     # 완전 리셋 — 기존에 걸려 있던 이모지 목록은 유지하지 않고 통째로 대체한다.
     await set_emoji_tags_row(user_id, resolved)
@@ -786,7 +788,7 @@ _COMMAND_LIST = (
     _CommandSpec("op grant", 1, "{user_id} {boolean}", "해당 유저에게 관리자 권한을 부여 (최초 주인 전용)", _handle_op_grant, requires_prime=True),
     _CommandSpec("op revoke", 1, "{user_id} {boolean}", "해당 유저의 관리자 권한을 제거 (최초 주인 전용)", _handle_op_revoke, requires_prime=True),
     _CommandSpec("op list", 0, "{boolean}", "권한을 가진 사용자 전부 표시 (최초 주인 전용)", _handle_op_list, requires_prime=True),
-    _CommandSpec("bt set", 2, "{user_id} {emoji_names} {boolean}", "해당 유저가 말할 때마다 emoji_names(콤마 구분, 예: fire,thumbsup)를 순서대로 반응으로 건다 — 완전 리셋", _handle_bt_set),
+    _CommandSpec("bt set", 2, "{user_id} {emojis} {boolean}", "해당 유저가 말할 때마다 emojis(콤마 구분, 이모지 문자 또는 영문 별칭 둘 다 가능 — 예: 👍,👎 또는 thumbsup,thumbsdown)를 순서대로 반응으로 건다 — 완전 리셋", _handle_bt_set),
     _CommandSpec("bt stop", 1, "{user_id} {boolean}", "해당 유저에게 걸린 이모지 태그를 전부 제거", _handle_bt_stop),
     _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_done),
     _CommandSpec("c", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 매개변수 포함해서 나열 (string 생략 시 전체, \"*\"와 동일)", _handle_c),
