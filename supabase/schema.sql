@@ -10,6 +10,8 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS admin_sessions CASCADE;
+DROP TABLE IF EXISTS admin_ops CASCADE;
 DROP TABLE IF EXISTS user_achievements CASCADE;
 DROP TABLE IF EXISTS withdrawn_users CASCADE;
 DROP TABLE IF EXISTS admin_command_log CASCADE;
@@ -297,6 +299,36 @@ CREATE TABLE user_achievements (
   achievement_id    text NOT NULL,
   earned_at           timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, achievement_id)
+);
+
+-- ------------------------------------------------------------
+-- 9-3. admin_ops — 관리자 콘솔("주인님 가라사대") 권한 (신규)
+--    최초 명령어 제공자(prime=true)는 부팅 시 항상 시드된다. 그 외 행은 prime이 op grant로
+--    부여한 권한자다 — op 명령어(grant/revoke/list) 자체를 뺀 모든 관리자 명령어에서 prime과
+--    동일한 권한을 갖는다. users를 참조하지 않는다(등록 여부는 grant 시점에만 확인하고,
+--    이후 유저가 탈퇴해도 권한 기록 자체는 별개로 남아도 무방한 순수 운영 데이터라서).
+-- ------------------------------------------------------------
+
+CREATE TABLE admin_ops (
+  user_id       bigint PRIMARY KEY,
+  prime         boolean NOT NULL DEFAULT false,
+  granted_at    timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO admin_ops (user_id, prime) VALUES (691254112339230720, true);
+
+-- ------------------------------------------------------------
+-- 9-4. admin_sessions — 관리자 콘솔 세션 상태 거울 (신규)
+--    유저(주인/권한자)마다 독립적인 60초 세션 쿨타임을 인메모리 타이머(asyncio.Task)로
+--    관리하는데, 이 테이블은 그 상태를 조회/감사 가능하게 남기는 거울일 뿐 만료 판정의
+--    근거로 쓰지 않는다(메시지마다 이 테이블을 읽으면 성능이 나빠지므로).
+-- ------------------------------------------------------------
+
+CREATE TABLE admin_sessions (
+  user_id       bigint PRIMARY KEY,
+  channel_id    bigint NOT NULL,
+  expires_at    timestamptz NOT NULL,
+  updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
 -- ------------------------------------------------------------
@@ -628,3 +660,5 @@ ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE withdrawn_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_achievements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_ops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;

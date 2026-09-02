@@ -6,6 +6,8 @@ import discord
 
 import achievements
 import documents
+import documents.admin_commands as admin_commands_doc
+from admin import console as admin_console
 from core.base import normalize
 from core import intent
 from events import call_event
@@ -13,11 +15,7 @@ from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.history import get_recent, get_recent_turns, log, set_detected_emotion
-from responses.engine import NEGATIVE_EMOTIONS, get_response
-
-# CLAUDE.md 섹션 4-1: 분당 자연어 최대 10회, 초과분 1회당 -1
-_RATE_LIMIT_PER_MINUTE = 10
-_RATE_LIMIT_WINDOW = timedelta(seconds=60)
+from responses.engine import get_admin_command_response, get_response
 
 # CLAUDE.md 섹션 4-2: 히스토리(30분/최대 50개) 내 누적 3번 반복되면 그다음부터 -1
 _HISTORY_WINDOW = timedelta(minutes=30)
@@ -135,11 +133,16 @@ _BITE_THRESHOLD = -20
 _IGNORE_RESPONSE = "(무시)"
 _BITE_RESPONSE = "(콱 깨묾)"
 
-# CLAUDE.md 섹션 3-3 / 4-3
+# CLAUDE.md 섹션 3-3(행복 감정 보상)
 _HAPPY_EMOTION = "행복함"
 _HAPPY_METHOD = "happy_emotion"
-_NEGATIVE_EMOTION_STREAK_THRESHOLD = 2
-_NEGATIVE_EMOTION_DAILY_THRESHOLD = 5
+
+# 2026-09-01 재정정: 기존 "부정 감정 연속/누적 판정" 기반 -1은 폐지 — 20개 감정 중 하나를
+# 강제로 고르는 구조라 애매한 메시지도 부정으로 분류되면 쌓여서 억울하게 깎이는 문제가
+# 있었다(사용자 확정). 이제는 감정 분류 자체(emotion)는 그대로 계속하되(다른 용도로
+# 저장·활용될 수 있어 유지), 호감도 하락은 오직 새로 추가된 심각한 유해 표현 감지
+# (has_severe_abuse — 심각한 욕설/비방/타인 모욕/성희롱/패드립)에만 연동한다.
+_SEVERE_ABUSE_PENALTY = -1
 
 
 async def handle_natural_language(
@@ -162,20 +165,14 @@ async def handle_natural_language(
         total_delta += result["applied_amount"]
         current_affection = result["new_affection"]
 
-    # 4-1: 분당 자연어 과호출 — 슬라이딩 윈도우로 집계 (고정 버킷이면 경계에서 우회 가능, 섹션 9-1-4 참고)
-    recent_in_last_minute = sum(
-        1
-        for row in recent
-        if datetime.fromisoformat(row["created_at"]) >= now - _RATE_LIMIT_WINDOW
-    )
-    if recent_in_last_minute >= _RATE_LIMIT_PER_MINUTE:
-        _record(await add_affection(user_id, -1))
-
     nl_cap = stats["nl_cap"]
     over_cap = stats["nl_count"] >= nl_cap
 
     # 4-2: 동일 발화 반복 — 정규화 후 비교, 히스토리 내 누적 3번이면 그다음부터 페널티.
-    # 상한을 넘긴 뒤로는 완전히 비활성화한다 (사용자 확정).
+    # 상한을 넘긴 뒤로는 완전히 비활성화한다 (사용자 확정). recent는 get_recent()의 기본값
+    # role="user"로 조회돼 있어(db/history.py) 유저 본인의 발화만 비교 대상이다 — 햄미
+    # 자신의 답장(role="assistant")은 애초에 여기 안 들어오므로 반복 판정에 안 섞인다
+    # (2026-09-01 재확인, 기존에도 이미 올바르게 동작하고 있었음).
     normalized_text = normalize(text)
     repeat_count = sum(1 for row in recent if normalize(row["content"]) == normalized_text)
     is_repeat_penalty = not over_cap and repeat_count >= _REPEAT_THRESHOLD  # 4번째부터: 실제 페널티
@@ -260,15 +257,30 @@ async def handle_natural_language(
         # 방금 남긴 유저 발화 행에 판정된 감정을 채워 넣는다 (기존엔 컬럼만 있고 아무
         # 코드도 여기 쓰질 않아서 항상 NULL이었던 버그) — 감정 반영(affection)과는
         # 서로 독립적인 쓰기라 동시에 처리한다.
-        _, (emotion_delta, emotion_achievement) = await asyncio.gather(
+        _, (message_delta, message_achievement) = await asyncio.gather(
             set_detected_emotion(logged_row["id"], classification.emotion),
-            _apply_emotion_effects(user_id, classification.emotion, stats),
+            _apply_message_effects(
+                user_id, classification.emotion, classification.has_severe_abuse, stats
+            ),
         )
-        total_delta += emotion_delta
-        if emotion_delta:
-            current_affection += emotion_delta
-        if emotion_achievement:
-            achievement_notices.append(emotion_achievement)
+        total_delta += message_delta
+        if message_delta:
+            current_affection += message_delta
+        if message_achievement:
+            achievement_notices.append(message_achievement)
+
+    # 관리자 콘솔 명령어 자연어 설명(신규, §6): 권한자(prime/op)에게만 답하고, 그 외엔
+    # 생성 호출 자체를 안 해서 정보가 새지 않는다. 다른 카테고리(profile 등)와 섞이면
+    # 완화된 지침과 일반 페르소나 지침이 뒤섞이므로, 이 카테고리가 걸리면 단독으로 처리하고
+    # 아래의 일반 RAG 문서/생성 흐름은 타지 않는다. nl_count 증가/첫대화·말풍선 업적
+    # 체크도 건너뛴다(관리 목적 문의는 "대화 횟수"로 안 치는 게 자연스럽다는 판단).
+    if "admin_commands" in classification.categories:
+        if not admin_console.is_authorized(user_id):
+            return _finalize(
+                "너한테는 알려줄 수 없어!!", total_delta, current_affection, achievement_notices
+            )
+        admin_response = await get_admin_command_response(text, admin_commands_doc.get_text())
+        return _finalize(admin_response, total_delta, current_affection, achievement_notices)
 
     context_note = documents.build_context_note(classification.categories)
     response_text = await get_response(text, history=context_turns, context_note=context_note)
@@ -355,27 +367,25 @@ def _finalize(
     return text
 
 
-async def _apply_emotion_effects(user_id: int, emotion: str, stats: dict) -> tuple[int, str | None]:
+async def _apply_message_effects(
+    user_id: int, emotion: str, has_severe_abuse: bool, stats: dict
+) -> tuple[int, str | None]:
     # stats는 handle_natural_language 초반에 이미 조회해둔 오늘 daily_stats 스냅샷을
-    # 그대로 재사용한다 (중복 조회 제거). 이 사이에 negative_emotion_streak/daily_count/
-    # happy_emotion_claimed 필드를 건드리는 다른 호출은 없어 안전하다.
+    # 그대로 재사용한다 (중복 조회 제거). 이 사이에 happy_emotion_claimed 필드를 건드리는
+    # 다른 호출은 없어 안전하다.
+    #
+    # 2026-09-01 재정정: 기존 "부정 감정 연속/누적" 기반 -1은 폐지했다 — emotion은 20개 중
+    # 하나를 강제로 고르는 구조라, 애매한 메시지가 부정으로 잘못 분류되기만 해도 누적돼서
+    # 억울하게 깎이는 문제가 있었다(사용자 확정). emotion 판정 자체(chat_history.
+    # detected_emotion 기록)는 그대로 유지하되, 호감도 하락은 이제 오직 심각한 유해 표현
+    # 감지(has_severe_abuse)에만 연동한다.
     updates = {}
     delta = 0
     achievement_notice = None
 
-    if emotion in NEGATIVE_EMOTIONS:
-        streak_before = stats["negative_emotion_streak"]
-        daily_before = stats["negative_emotion_daily_count"]
-        if (
-            streak_before >= _NEGATIVE_EMOTION_STREAK_THRESHOLD
-            or daily_before >= _NEGATIVE_EMOTION_DAILY_THRESHOLD
-        ):
-            result = await add_affection(user_id, -1)
-            delta += result["applied_amount"]
-        updates["negative_emotion_streak"] = streak_before + 1
-        updates["negative_emotion_daily_count"] = daily_before + 1
-    elif stats["negative_emotion_streak"] != 0:
-        updates["negative_emotion_streak"] = 0
+    if has_severe_abuse:
+        result = await add_affection(user_id, _SEVERE_ABUSE_PENALTY)
+        delta += result["applied_amount"]
 
     if emotion == _HAPPY_EMOTION and not stats["happy_emotion_claimed"]:
         result = await add_affection(user_id, 1, _HAPPY_METHOD)
