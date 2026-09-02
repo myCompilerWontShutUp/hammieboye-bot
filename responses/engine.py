@@ -4,6 +4,7 @@ from openai import AsyncOpenAI
 
 from config import (
     OPENAI_API_KEY,
+    OPENAI_FAST_MODE,
     OPENAI_MAX_OUTPUT_TOKENS,
     OPENAI_MODEL,
     OPENAI_PROMPT_CACHE_KEY,
@@ -118,20 +119,36 @@ NEGATIVE_EMOTIONS = (
 )
 
 
+# 2026-09-02: OpenAI Responses API의 service_tier="fast"(="priority"와 동일 처리, 응답의
+# service_tier는 항상 "priority"로 찍힘 — openai 파이썬 SDK 3.3.1의
+# openai.types.responses.service_tier.ServiceTier 타입과 response_create_params.py의
+# docstring으로 실제 지원 여부를 확인했고, 일반 텍스트 호출/json_schema 구조화 출력 호출
+# 둘 다 실제 API로 정상 동작함을 라이브로 검증했다(사용자 지시: "openai API를 잘 확인하여
+# 안전하게 적용"). 실측(8회씩 비교) 결과 평균 차이가 호출 간 편차보다 작아 확실한 속도
+# 개선을 보장할 수 없다는 걸 사용자에게 안내했고, §51-2에서 config.OPENAI_FAST_MODE
+# 플래그로 빼서 .env 값만 바꾸면(재배포만, 코드 수정 없이) 언제든 롤백 가능하게 했다.
+# 사용자 확정: 관리자 명령어 자연어 설명(10배 토큰 완화, 아래 get_admin_command_response)에는
+# 이 플래그와 무관하게 항상 적용하지 않는다 — 그 외 모든 생성 호출엔 플래그를 따른다.
+_DEFAULT_SERVICE_TIER = "fast" if OPENAI_FAST_MODE else None
+
+
 async def _generate(
     input_payload,
     *,
     instructions: str = SYSTEM_PROMPT,
     max_output_tokens: int = OPENAI_MAX_OUTPUT_TOKENS,
     prompt_cache_key: str | None = OPENAI_PROMPT_CACHE_KEY,
+    service_tier: str | None = _DEFAULT_SERVICE_TIER,
 ) -> str | None:
-    # prompt_cache_key는 None이면 아예 인자 자체를 생략한다 — SDK에 명시적으로 None을
-    # 넘기는 것과 파라미터를 안 넘기는 것이 항상 동일하게 처리된다는 보장이 없어서, 이
-    # 값을 안 쓰는 호출(예: 관리자 명령어 설명, 저빈도라 캐싱 이득이 적음)은 기존에
-    # prompt_cache_key를 아예 안 넘기던 core/intent.py 등과 동일한 방식으로 맞춘다.
+    # prompt_cache_key/service_tier 둘 다 None이면 인자 자체를 생략한다 — SDK에 명시적으로
+    # None을 넘기는 것과 파라미터를 안 넘기는 것이 항상 동일하게 처리된다는 보장이 없어서,
+    # 이 값을 안 쓰는 호출(예: 관리자 명령어 설명, 저빈도라 캐싱/패스트모드 이득이 적음)은
+    # 기존에 이 값들을 아예 안 넘기던 core/intent.py 등과 동일한 방식으로 맞춘다.
     kwargs = {}
     if prompt_cache_key is not None:
         kwargs["prompt_cache_key"] = prompt_cache_key
+    if service_tier is not None:
+        kwargs["service_tier"] = service_tier
     try:
         result = await _client.responses.create(
             model=OPENAI_MODEL,
@@ -173,38 +190,56 @@ async def get_response(
     return draft if draft is not None else _FALLBACK_RESPONSE
 
 
-# 관리자 콘솔 명령어를 자연어로 물어보는 기능 전용 지침(신규, 2026-09-01). 일반 SYSTEM_PROMPT의
-# "100자 제한/목록 형식 금지"는 여러 줄 명령어 목록을 정확히 보여줘야 하는 이 기능과 정면으로
-# 충돌해서, 이 기능에서만 별도의 완화된 지침을 쓴다(사용자 확정) — 반말/장난스러운 톤은
-# 유지하되 길이·형식 제약만 푼다. 정적 문자열이라 이 지침 자체도 프롬프트 캐싱 대상이지만,
-# 호출 빈도가 낮아(권한자만, 드물게) 별도 캐시 키를 쓰지 않는다.
+# 관리자(권한자)에게 답하는 자연어 전용 지침(신규, 2026-09-01, 2026-09-01 재정정). 일반
+# SYSTEM_PROMPT의 "100자 제한/목록 형식 금지"는 여러 줄 명령어 목록을 정확히 보여줘야 하는
+# 이 기능과 정면으로 충돌해서, 이 기능에서만 별도의 완화된 지침을 쓴다(사용자 확정) — 길이·
+# 형식 제약만 푼다. 말투는 반말이 아니라 **관리자 콘솔의 기존 명령어 응답과 동일한 존댓말**로
+# 통일했다(사용자 확정, "여기서 자연어 말투는 기존 명령어와 동일한 존댓말입니다") — 이
+# 지침은 §44-6(관리자 명령어를 일반 채팅으로 물어볼 때)과 §49("주인님 가라사대" 뒤에
+# 명령어가 아닌 자연어가 왔을 때) 둘 다에서 재사용된다. 정적 문자열이라 이 지침 자체도
+# 프롬프트 캐싱 대상이지만, 호출 빈도가 낮아(권한자만, 드물게) 별도 캐시 키를 쓰지 않는다.
 _ADMIN_INSTRUCTIONS = """\
 너는 플라스틱 페트병을 흔드는 작은 햄스터 봇 "Hammie(햄미)"다. 지금은 관리자(권한자)에게
-관리자 콘솔 명령어를 설명해주는 특별한 상황이다.
+존댓말로 답하는 특별한 상황이다 — 관리자 콘솔의 다른 명령어 응답들과 똑같은 톤이다
+(발음을 살짝 뭉개는 건 유지해도 되지만, 반말이 아니라 존댓말 어미를 쓴다. 예: "~이에요!!",
+"~해요!!", "~드릴게요!!").
 
-# 말투
+# 형식
 
-* 반말로, 귀엽고 장난스러운 말투(SYSTEM_PROMPT와 같은 톤, 발음을 살짝 뭉개는 것도 좋음)는
-  유지하되, 아래 형식 제약은 평소와 다르게 전부 허용된다.
-* 답변 길이 제한(100자)이 없다. 필요한 만큼 자세히 답해도 된다.
-* 여러 줄, 목록(예: "- sh event all : ... - sh event next : ...")을 써도 된다.
-* 답변 전체가 1800자를 넘기지 않도록 한다.
-* 답변 끝에 `_(감정)_` 형식의 짧은 감정 태그를 붙인다(SYSTEM_PROMPT와 동일한 규칙).
+* 기본은 평소 대화와 비슷하게 짧고 간결하게 답한다 — 인사, 예/아니오로 답할 수 있는
+  질문, 짧은 확인·되물음 같은 건 평소처럼 한두 문장으로 끝낸다. 길게 늘어놓을 필요가
+  없는 질문에 억지로 길게 답하지 않는다.
+* 여러 명령어를 나열해야 하거나(예: "sh 명령어가 뭐 있어요?"), 하나를 자세히 설명해야
+  할 때(예: "sh version 설명해줘요")**만** 100자 제한을 풀고 여러 줄/목록 형식을 쓴다.
+  이런 경우가 아니면 100자 안팎을 유지한다.
+* 목록/자세한 설명이 필요한 경우에도 답변 전체가 1900자를 넘기지 않도록 한다(디스코드
+  메시지 한도 2000자에 여유를 둔 값).
+* 감정 태그(`_(감정)_`)는 붙이지 않는다 — 관리자 콘솔의 다른 명령어 응답들도 안 붙인다.
 
 # 근거 자료 사용 규칙
 
-* 아래에 주어지는 참고 자료(관리자 명령어 전체 목록)에 실제로 있는 내용만 근거로 답한다.
-* 목록에 없는 명령어를 지어내거나, 있는 것처럼 답하지 않는다 — 모르면 모른다고 답한다.
-* "sh 명령어가 뭐 있어?"처럼 접두어/키워드로 물으면, 자료에서 그 키워드로 시작하는
-  명령어들만 골라서 보여준다. "sh version 설명해줘"처럼 특정 명령어를 물으면, 그 명령어의
-  설명을 자세히 풀어서 답한다.
+* 아래에 주어지는 참고 자료(관리자 명령어 전체 목록 + 공통 파라미터 설명)에 실제로 있는
+  내용만 근거로 답한다.
+* 목록에 없는 명령어를 지어내거나, 있는 것처럼 답하지 않는다.
+* "자료에 없어요", "문서에 안 나와 있어요"처럼 참고 자료를 보고 있다는 사실 자체를 절대
+  언급하거나 암시하지 않는다 — 모를 때는 이유를 설명하지 말고 "그건 잘 모르겠어요!!"처럼
+  자연스럽게 모른다고만 답한다.
+* "sh 명령어가 뭐 있어요?"처럼 접두어/키워드로 물으면, 자료에서 그 키워드로 시작하는
+  명령어들만 골라서 보여준다. "sh version 설명해줘요"처럼 특정 명령어를 물으면, 그 명령어의
+  설명을 자세히 풀어서 답한다. "{boolean}이 뭐예요?"처럼 공통 파라미터를 물으면 자료에 있는
+  공통 파라미터 설명으로 답한다.
 """
 
 
 async def get_admin_command_response(message: str, doc_text: str) -> str:
-    """관리자 콘솔 명령어를 자연어로 물어보는 질문에 답한다. 권한 확인은 호출부
-    (core/chat.py)가 이미 마쳤다는 전제 — 여기서는 생성만 담당한다. 목록이 길어질 수
-    있어 토큰 예산을 평소의 10배로 늘린다(사용자 확정, "리스트가 잘리지 않도록")."""
+    """관리자에게 존댓말로 자연어 답변을 생성한다. 권한 확인은 호출부(core/chat.py의
+    admin_commands 카테고리 분기, 또는 admin/console.py의 "주인님 가라사대 {자연어}" 분기)가
+    이미 마쳤다는 전제 — 여기서는 생성만 담당한다. 목록이 길어질 수 있어 토큰 예산의
+    "상한"을 평소의 10배로 늘린다(사용자 확정, "리스트가 잘리지 않도록" / "토큰 제한을
+    10배까지") — 다만 실제로 그만큼 길게 쓰라는 뜻은 아니라서, 짧게 답해도 되는 질문은
+    짧게 답하도록 _ADMIN_INSTRUCTIONS에 명시했다(사용자 확정, "필요에 따라서만 10배
+    해제를 하고, 그렇지 않을 때는 일반 텍스트와 비슷하게"). FastMode(service_tier)는
+    이 호출에는 적용하지 않는다(사용자 확정)."""
     input_payload = [
         {"role": "user", "content": doc_text},
         {"role": "user", "content": message},
@@ -214,5 +249,6 @@ async def get_admin_command_response(message: str, doc_text: str) -> str:
         instructions=_ADMIN_INSTRUCTIONS,
         max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS * 10,
         prompt_cache_key=None,
+        service_tier=None,
     )
     return draft if draft is not None else _FALLBACK_RESPONSE

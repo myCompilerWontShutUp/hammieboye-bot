@@ -42,6 +42,7 @@ from db.call_events import (
 )
 from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.users import ensure_user, get_user
+from responses.engine import get_admin_command_response
 
 _KST = timezone(timedelta(hours=9))
 _INITIAL_AFFECTION = 10
@@ -51,12 +52,18 @@ _ABUSE_RESPONSE = "주인님이 아니시네요!! (콱)"
 
 # 신규(2026-08-25): 매 메시지 접두어 방식을 폐기하고 "토글로 켜고 끄는 세션" 방식으로 전환.
 # 신규(2026-08-27): 트리거는 호출 단어(CALL_PREFIXES) 뒤에 이 문구가 와야 인정된다
-# (예: "해미야 주인님 가라사대", "햄미보이야 주인님 가라사대 c"). 호출 단어를 뗀 나머지는
-# 정규화 없이 문자 그대로 정확히 일치해야 한다 ("주인님가라사대"처럼 공백이 없거나
-# "해미야 주인님 가라사대 테스트"처럼 등록 안 된 명령어가 뒤에 붙으면 둘 다 트리거로 인정 안 됨,
-# 호출 단어 자체가 없어도 인정 안 됨 — 이 경우 응답도 페널티도 없이 완전히 무시한다).
+# (예: "해미야 주인님 가라사대", "햄미보이야 주인님 가라사대 --c"). 호출 단어를 뗀 나머지는
+# 정규화 없이 문자 그대로 정확히 일치해야 한다 ("주인님가라사대"처럼 공백이 없으면 트리거로
+# 인정 안 됨, 호출 단어 자체가 없어도 인정 안 됨 — 이 경우 응답도 페널티도 없이 완전히
+# 무시한다). 2026-09-01 재재정정: "해미야 주인님 가라사대 {텍스트}"는 텍스트가 등록된
+# 명령어 이름과 똑같아도(예: "c") **항상** 자연어 질문으로 취급한다(사용자 확정 —
+# 텍스트만 보고 명령어 여부를 자동판정하면 "c가 뭐야?"류 질문에서 헷갈릴 위험이 있다는
+# 지적). 즉시 명령어를 실행하고 싶으면 "--{명령어}"(하이픈 두 개, 공백 없이 바로
+# 명령어)를 명시적으로 써야 한다(아래 _ONESHOT_MARKER, "oneshot" 모드) — 이 실행은
+# 세션을 열지도 연장하지도 닫지도 않는 완전히 독립적인 1회성 동작이다.
 _PROMPT_PHRASE = "주인님 가라사대"
 _PROMPT_PREFIX = "주인님 가라사대 "
+_ONESHOT_MARKER = "--"
 _SESSION_TIMEOUT = timedelta(seconds=60)
 _SESSION_OPEN_MESSAGE = "넵! 명령을 내려주세요!"
 # 신규(2026-09-01): 60초 동안 명령이 없으면 능동적으로 이 문구를 보내고 세션을 닫는다
@@ -198,35 +205,54 @@ def _strip_any_call_prefix(content: str) -> str | None:
     return None
 
 
-def _match_open_trigger(content: str) -> tuple[bool, str, list[str]] | None:
-    """content가 "{호출 단어} 주인님 가라사대"(패턴 1) 또는 "{호출 단어} 주인님 가라사대
-    {등록된 명령어} : {인자}"(패턴 2)와 정확히 일치하면 (즉시 실행 여부, 명령어 이름,
-    인자들)을 반환한다. 호출 단어가 없거나 그 뒤가 정확히 일치하지 않으면 None (완전히
-    무시 대상)."""
+def _match_open_trigger(content: str) -> tuple[str, str, list[str]] | None:
+    """content가 "{호출 단어} 주인님 가라사대"(모드 "open") 또는 "{호출 단어} 주인님
+    가라사대 --{등록된 명령어} : {인자}"(모드 "oneshot", "--"와 명령어 사이에 공백
+    없이 바로 붙어야 함)와 정확히 일치하면 (모드, 명령어 이름, 인자들)을 반환한다.
+    "open"이면 이름/인자는 빈 값. 호출 단어가 없거나 두 형태 중 어디에도 안 맞으면
+    None — 이 경우 등록된 명령어 이름 여부와 무관하게 자연어 후보로 남는다(아래
+    _extract_freeform_admin_text가 이어서 판정)."""
     stripped = _strip_any_call_prefix(content.strip())
     if stripped is None:
         return None
     if stripped == _PROMPT_PHRASE:
-        return False, "", []
+        return "open", "", []
     if stripped.startswith(_PROMPT_PREFIX):
         remainder = stripped[len(_PROMPT_PREFIX) :]
-        name, args = _split_command_and_args(remainder)
-        if name in _COMMANDS:
-            return True, name, args
+        if remainder.startswith(_ONESHOT_MARKER):
+            command_part = remainder[len(_ONESHOT_MARKER) :]
+            # "--" 바로 뒤에 공백이 오면(예: "-- c") 무효 처리한다(사용자 확정: "--
+            # 뒤에 띄어쓰기는 없다"). 무효면 여기서 실패할 뿐 아래 자연어 판정으로도
+            # 안 넘어간다(_extract_freeform_admin_text가 "--" 시작이면 자체 제외) —
+            # 완전히 무시된다.
+            if command_part and not command_part.startswith(" "):
+                name, args = _split_command_and_args(command_part)
+                if name in _COMMANDS:
+                    return "oneshot", name, args
     return None
 
 
-def _is_malformed_command_trigger(content: str) -> bool:
-    """content가 "{호출 단어} 주인님 가라사대 {무언가}" 형태(패턴 2와 같은 모양)이지만
-    그 "무언가"가 등록된 명령어 이름이 아닌 경우 True. 관리자 전용 "잘못된 명령어입니다!!"
-    응답 대상 판정에 쓴다 — 비관리자에게는 이 판정 자체를 적용하지 않고 기존처럼 자연어로
-    넘어가게 둔다(사용자 확정, 2026-08-28)."""
+def _extract_freeform_admin_text(content: str) -> str | None:
+    """content가 "{호출 단어} 주인님 가라사대 {텍스트}" 형태이고 그 텍스트가
+    _ONESHOT_MARKER("--")로 시작하지 않으면, 그 텍스트 전부를 자연어 질문으로 반환한다
+    — 텍스트가 우연히 등록된 명령어 이름과 똑같아도(예: "c") 자연어로 취급한다
+    (2026-09-01 재재정정, 사용자 확정: "주인님 가라사대 이후에 오는 명령어는 그냥
+    모두 자연어로 받겠습니다" — 텍스트만 보고 명령어 여부를 자동판정하면 "c가 뭐야?"류
+    질문에서 헷갈릴 위험이 있다는 지적). "--"로 시작하면(원샷 명령 시도) 여기선 후보가
+    아니다 — _match_open_trigger의 "oneshot" 모드가 전담하고, 원샷이 실패해도(예:
+    "--"에 등록 안 된 명령어, 또는 "-- " 공백 포함) 자연어로 폴백하지 않고 완전히
+    무시된다.
+
+    권한자에 한해 이 텍스트로 존댓말+완화된 토큰 예산의 답을 준다(사용자 확정) —
+    비권한자에게는 이 함수의 반환값을 아예 안 쓰므로(should_intercept/handle에서
+    is_authorized 체크 후에만 호출) 기존처럼 완전히 무시된다."""
     stripped = _strip_any_call_prefix(content.strip())
     if stripped is None or not stripped.startswith(_PROMPT_PREFIX):
-        return False
+        return None
     remainder = stripped[len(_PROMPT_PREFIX) :]
-    name, _args = _split_command_and_args(remainder)
-    return name not in _COMMANDS
+    if not remainder or remainder.startswith(_ONESHOT_MARKER):
+        return None
+    return remainder
 
 
 def _is_bare_registered_command(content: str) -> bool:
@@ -238,25 +264,41 @@ def _is_bare_registered_command(content: str) -> bool:
 
 
 def should_intercept(message: discord.Message) -> bool:
-    """관리자 세션이 채널에서 활성 상태이거나(접두어 없이 오는 다음 메시지들), 이번 메시지
-    자체가 트리거 패턴과 정확히 일치하거나, 명령어 전용 방에서 권한자가 명령어 이름을
-    그대로 쳤을 때만 True. 권한자가 "{호출 단어} 주인님 가라사대 {잘못된 명령어}"를
-    쳤을 때도(패턴은 맞지만 명령어가 없음) 가로채서 안내해야 하므로 이때도 True —
-    비권한자는 이 경우 가로채지 않고 자연어로 넘어가게 둔다. dispatcher가 이 메시지를
-    admin.handle로 보낼지 말지 결정하는 게이트. 채널 ID 비교가 항상 가장 먼저라 명령어
-    전용 방이 아닌 채널의 메시지엔 이 분기 자체가 비용을 더하지 않는다."""
+    """관리자 콘솔이 이 메시지를 가로채야 하는지 판단한다 (dispatcher가 admin.handle로
+    보낼지 말지 결정하는 게이트). 아래 중 하나라도 해당하면 True:
+
+    1. 명령어 전용 방에서 권한자가 등록된 명령어 이름을 그대로 쳤을 때.
+    2. 세션이 활성 상태인 채널에서 권한자가 접두어 없이 등록된 명령어 이름을 그대로
+       쳤을 때 — **등록된 명령어일 때만**이다. 그 외(예: 평범한 호출 단어 채팅)는 세션이
+       열려 있어도 여기서 가로채지 않고 통과시켜서, 아래 트리거 판정에도 안 걸리면
+       결국 자연어 파이프라인이 정상 처리하도록 둔다(2026-09-01 재정정 — 예전엔 세션 중
+       모든 메시지를 무조건 가로채서 평범한 대화까지 삼켜버렸다).
+    3. 트리거 패턴과 정확히 일치할 때 — "open"(단독) 또는 "oneshot"("--{등록된
+       명령어}", 세션을 안 건드리는 1회성 즉시 실행).
+    4. 권한자가 "{호출 단어} 주인님 가라사대 {텍스트}"를 쳤을 때(원샷 패턴("--")이
+       아닌 모든 텍스트, 등록된 명령어 이름과 같아도 포함) — 항상 자연어 질문으로
+       취급해 답해야 하므로 가로챈다. 비권한자는 이 경우 가로채지 않고 자연어로
+       넘어가게 둔다.
+
+    채널 ID 비교가 항상 가장 먼저라 명령어 전용 방이 아닌 채널의 메시지엔 그 분기 자체가
+    비용을 더하지 않는다."""
     is_authorized = _is_authorized(message.author.id)
-    if is_authorized and _session_active_in(message.author.id, message.channel.id):
-        return True
+
     if (
         message.channel.id == _COMMAND_ROOM_CHANNEL_ID
         and is_authorized
         and _is_bare_registered_command(message.content)
     ):
         return True
+
+    if is_authorized and _session_active_in(message.author.id, message.channel.id):
+        if _is_bare_registered_command(message.content):
+            return True
+        # 등록된 명령어가 아니면 여기선 안 가로채고 아래 트리거 판정으로 넘어간다.
+
     if _match_open_trigger(message.content) is not None:
         return True
-    return is_authorized and _is_malformed_command_trigger(message.content)
+    return is_authorized and _extract_freeform_admin_text(message.content) is not None
 
 
 def _parse_int(token: str, label: str) -> int:
@@ -680,10 +722,10 @@ async def _handle_op_list(args: list[str]) -> str:
     return "\n".join(lines) if lines else "권한을 가진 사용자가 없어요!!"
 
 
-_REST_COMMAND_NAME = "쉬어"
+_REST_COMMAND_NAME = "done"
 
 
-async def _handle_rest(args: list[str]) -> str:
+async def _handle_done(args: list[str]) -> str:
     return _REST_MESSAGE
 
 
@@ -728,24 +770,37 @@ _COMMAND_LIST = (
     _CommandSpec("op grant", 1, "{user_id} {boolean}", "해당 유저에게 관리자 권한을 부여 (최초 주인 전용)", _handle_op_grant, requires_prime=True),
     _CommandSpec("op revoke", 1, "{user_id} {boolean}", "해당 유저의 관리자 권한을 제거 (최초 주인 전용)", _handle_op_revoke, requires_prime=True),
     _CommandSpec("op list", 0, "{boolean}", "권한을 가진 사용자 전부 표시 (최초 주인 전용)", _handle_op_list, requires_prime=True),
+    _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_done),
     _CommandSpec("c", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 매개변수 포함해서 나열 (string 생략 시 전체, \"*\"와 동일)", _handle_c),
     _CommandSpec("c hp", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 설명과 함께 나열 (string 생략 시 전체)", _handle_c_hp),
     _CommandSpec("c np", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 이름으로 나열 (string 생략 시 전체)", _handle_c_np),
 )
 
-# "쉬어"는 세션을 끄는 조작일 뿐 "명령어" 취급이 아니다(사용자 확정, 2026-09-01) — c/c hp/c np
-# 목록과 관리자 명령어 자연어 설명(all_commands_text())에서 둘 다 빠져야 하므로 _COMMAND_LIST에
-# 넣지 않는다. 대신 실제 실행(트리거/세션 중 bare command/명령어 전용 방)은 계속 동작해야
-# 하므로, 조회용 _COMMAND_LIST와는 별개로 디스패치용 _COMMANDS에만 합류시킨다.
-_REST_SPEC = _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_rest)
+# 2026-09-01 재정정: "쉬어"를 조회 목록에서 뺐던 §44-8 결정을 사용자 지시로 되돌린다 —
+# "done"으로 개명하고 다른 명령어와 동일하게 _COMMAND_LIST에 넣어서 c/c hp/c np와
+# 관리자 명령어 자연어 설명 문서에 정상적으로 노출되게 한다.
+_COMMANDS = {spec.name: spec for spec in _COMMAND_LIST}
 
-_COMMANDS = {spec.name: spec for spec in (*_COMMAND_LIST, _REST_SPEC)}
+
+# 관리자 명령어 자연어 설명 기능(§44-6, §49)의 RAG 문서 본문 — 이 모듈이 명령어 레지스트리를
+# 직접 갖고 있으므로 여기서 조립한다(documents/admin_commands.py는 이 함수를 그대로 부르는
+# 얇은 래퍼일 뿐이라 순환 import가 생기지 않는다: admin.console은 documents 쪽을 아예 안
+# 쳐다본다). {boolean}의 뜻을 문서에 직접 안 넣으면, 모델이 그걸 물어봤을 때 답을 몰라서
+# "자료에 없어" 같은 메타 발언으로 새는 문제가 있었다(2026-09-01 발견·수정) — 이제 아래
+# 안내문 하나로 모든 명령어에 공통 적용되는 뜻을 명시한다.
+_COMMANDS_DOC_PREAMBLE = (
+    "관리자 콘솔에서 쓸 수 있는 명령어 전부 (\"{호출 단어} 주인님 가라사대\"로 세션을 열고 "
+    "그 안에서 실행함, 형식은 \"이름 : 파라미터 - 설명\"):\n\n"
+    "모든 명령어의 마지막 파라미터인 {boolean}은 공통 옵션이다 — true면 결과를 DM으로 "
+    "보내고, false거나 생략하면 지금 이 채널에 그대로 보여준다. true/false만 인정하고 "
+    "1/0은 인정하지 않는다.\n\n"
+)
 
 
 def all_commands_text() -> str:
-    """관리자 명령어 전체를 "이름 : 파라미터 - 설명" 형식으로 나열한다. 관리자 명령어
-    자연어 설명 기능(documents/admin_commands.py)의 RAG 문서 본문으로 그대로 쓰인다."""
-    return "\n".join(f"{spec.name} : {spec.params} - {spec.description}" for spec in _COMMAND_LIST)
+    """관리자 명령어 전체를 안내문 + "이름 : 파라미터 - 설명" 형식으로 나열한다."""
+    lines = "\n".join(f"{spec.name} : {spec.params} - {spec.description}" for spec in _COMMAND_LIST)
+    return _COMMANDS_DOC_PREAMBLE + lines
 
 
 _TRUE_TOKENS = ("true",)
@@ -826,22 +881,33 @@ async def _penalize_abuse(message: discord.Message) -> None:
 
 
 async def handle(message: discord.Message) -> None:
-    """관리자 콘솔(§13-F, 2026-09-01 유저별 세션 + 명령어 전용 방 + op 권한 시스템으로 확장)을
-    처리한다.
+    """관리자 콘솔(§13-F, 2026-09-01 유저별 세션 + 명령어 전용 방 + op 권한 시스템 +
+    자연어 응답으로 확장)을 처리한다.
 
     권한자(최초 주인 또는 op로 권한을 부여받은 유저)는 `{호출 단어} 주인님 가라사대`로
     세션을 **유저 단위**로 연다(여러 명이 각자 독립적인 60초 쿨타임을 가짐). 세션이
     열려있는 동안은 접두어 없이 보낸 메시지도 그대로 명령어로 해석한다 — 등록된 명령어면
-    실행하고 60초 타이머를 연장하고, 등록 안 된 말이면 세션/타이머를 그대로 둔 채 조용히
-    무시한다(신규 — 예전엔 즉시 세션이 닫혀서, 그다음 유효한 명령까지 응답이 안 갔다).
-    60초 동안 유효한 명령이 없으면 능동적으로 작별 인사(_SESSION_TIMEOUT_MESSAGE)를 보내고
-    세션을 닫는다(_session_timeout). "쉬어" 명령어로 즉시 세션을 닫을 수도 있다.
+    실행하고 60초 타이머를 연장한다. 등록된 명령어가 아니면(예: 평범한 호출 단어 채팅) 이
+    함수 자체가 아예 안 불린다(should_intercept가 안 가로챔) — 세션/타이머는 그대로 둔
+    채 자연어 파이프라인이 정상 처리한다(2026-09-01 재정정 — 예전엔 세션 중 모든 비명령어
+    메시지를 조용히 삼켰는데, 그러면 평범한 대화까지 막혀버리는 문제가 있었다). 60초 동안
+    유효한 명령이 없으면 능동적으로 작별 인사(_SESSION_TIMEOUT_MESSAGE)를 보내고 세션을
+    닫는다(_session_timeout). "done" 명령어로 즉시 세션을 닫을 수도 있다.
+
+    "{호출 단어} 주인님 가라사대 {텍스트}"는 텍스트가 "--"로 시작하지 않는 한 **항상**
+    자연어 질문/대화로 취급해 권한자에게 존댓말 + 완화된 토큰 예산(최대 1900자)으로
+    답한다(2026-09-01 재재정정 — 텍스트가 등록된 명령어 이름과 똑같아도(예: "c")
+    자연어로 취급한다, 예전엔 "잘못된 명령어입니다!!"로 막거나 명령어 이름과 일치하면
+    자동으로 즉시실행했었다). 세션도 같이 열린다/연장된다. 즉시 명령어를 실행하고
+    싶으면 "--{명령어}"(하이픈 두 개, 공백 없이 바로 명령어)를 써야 한다 — 이건 세션을
+    전혀 안 건드리는 완전히 독립적인 1회성 실행이다("oneshot" 모드, 아래 참고).
 
     명령어 전용 방(_COMMAND_ROOM_CHANNEL_ID)에서는 권한자라면 세션/트리거 문구 없이
     등록된 명령어 이름을 그대로 쳐도 즉시 실행된다 — 이 방은 세션 개념 자체가 없다.
     트리거 문구로 오는 메시지는 이 방에서도 기존 로직 그대로 정상 동작한다.
 
-    LLM/OpenAI API 호출 없이 순수 문자열 매칭 + DB 조작으로만 처리한다.
+    관리자 명령어 실행 자체는 LLM/OpenAI API 호출 없이 순수 문자열 매칭 + DB 조작으로만
+    처리한다(자연어 응답 분기만 예외적으로 API를 쓴다).
     권한자가 아니면(트리거 문구를 정확히 쳤을 때만) 명령을 실행하지 않고 깨물기 +
     호감도 -1로 응징한다 — 단, 취침 시간대(00:00~06:30)엔 이 오용 감지도 다른 모든 기능과
     동일하게 자고 있다는 반응만 보이고 호감도는 건드리지 않는다. 권한자 본인의 콘솔
@@ -859,22 +925,25 @@ async def handle(message: discord.Message) -> None:
             return
 
     if is_authorized and _session_active_in(message.author.id, message.channel.id):
-        name, args = _split_command_and_args(message.content)
+        name, args = _split_command_and_args(message.content.strip())
         spec = _COMMANDS.get(name)
-        if spec is None:
-            return  # 등록 안 된 말 -> 세션/타이머 그대로 두고 조용히 무시 (신규, 버그 수정)
-        await _dispatch(message, spec, args)
-        await _after_dispatch(message.author.id, message.channel.id, name)
-        return
+        if spec is not None:
+            await _dispatch(message, spec, args)
+            await _after_dispatch(message.author.id, message.channel.id, name)
+            return
+        # 등록된 명령어가 아니면 여기선 처리하지 않고 아래 트리거/자연어 판정으로 넘어간다
+        # (should_intercept가 여기까지 통과시켰다는 건 트리거/자연어 패턴 중 하나에
+        # 해당한다는 뜻이므로, 세션과 무관하게 정상적으로 계속 처리돼야 한다).
 
     match = _match_open_trigger(message.content)
     if match is None:
-        if is_authorized and _is_malformed_command_trigger(message.content):
-            # "{호출 단어} 주인님 가라사대 {등록 안 된 명령어}" — 권한자가 트리거는
-            # 정확히 쳤지만 명령어를 잘못 쓴 경우, 자연어로 새지 않고 바로 안내한다
-            # (세션은 열지 않는다 — 실행할 명령이 없었으므로).
-            await _send(message, False, "잘못된 명령어입니다!!")
-        return  # 트리거 패턴과 정확히 일치하지 않음 -> 완전히 무시 (응답도 페널티도 없음)
+        if is_authorized:
+            freeform_text = _extract_freeform_admin_text(message.content)
+            if freeform_text is not None:
+                await _open_or_extend_session(message.author.id, message.channel.id)
+                response = await get_admin_command_response(freeform_text, all_commands_text())
+                await _send(message, False, response)
+        return  # 트리거/자연어 패턴 어디에도 안 걸림 -> 완전히 무시 (응답도 페널티도 없음)
 
     if not is_authorized:
         if is_sleep_time_for(message.channel.id):
@@ -885,12 +954,14 @@ async def handle(message: discord.Message) -> None:
         await _penalize_abuse(message)
         return
 
-    immediate, name, args = match
-    if not immediate:
+    mode, name, args = match
+    if mode == "open":
         await _open_or_extend_session(message.author.id, message.channel.id)
         await _send(message, False, _SESSION_OPEN_MESSAGE)
         return
 
+    # mode == "oneshot": 세션을 전혀 건드리지 않는 완전히 독립적인 1회성 실행이다 —
+    # 열지도, 연장하지도, 닫지도 않는다(사용자 확정: "실행과 동시에 done이 된다는
+    # 컨셉"이지만 "done" 응답 문구는 안 뜬다). 이미 열려 있던 세션이 있어도 그대로 둔다.
     spec = _COMMANDS[name]  # _match_open_trigger에서 이미 검증됨
     await _dispatch(message, spec, args)
-    await _after_dispatch(message.author.id, message.channel.id, name)
