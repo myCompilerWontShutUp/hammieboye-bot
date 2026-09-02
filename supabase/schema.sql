@@ -10,6 +10,7 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS user_emoji_tags CASCADE;
 DROP TABLE IF EXISTS admin_chat_history CASCADE;
 DROP TABLE IF EXISTS admin_sessions CASCADE;
 DROP TABLE IF EXISTS admin_ops CASCADE;
@@ -350,6 +351,19 @@ CREATE TABLE admin_chat_history (
 CREATE INDEX idx_admin_chat_history_user_recent ON admin_chat_history (user_id, created_at DESC);
 
 -- ------------------------------------------------------------
+-- 9-6. user_emoji_tags — "bt set"/"bt stop" 관리자 명령어 전용 (신규)
+--    관리자가 특정 유저에게 이모지 태그를 걸면, 그 유저가 어느 서버에서 무슨 말을 하든
+--    (호출 단어/명령어 여부 무관) 그 이모지들을 순서대로 반응으로 단다. admin_ops와
+--    동일한 이유로 users를 참조하지 않는다.
+-- ------------------------------------------------------------
+
+CREATE TABLE user_emoji_tags (
+  user_id       bigint PRIMARY KEY,
+  emojis        jsonb NOT NULL,          -- 순서 있는 이모지 문자 배열, 예: ["🔥", "👍"]
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- ------------------------------------------------------------
 -- 10. 원자적 호감도 증감 RPC (일일 +20 상한 적용, affection_log 기록)
 --     상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
 --     이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
@@ -681,3 +695,4 @@ ALTER TABLE user_achievements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_chat_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_emoji_tags ENABLE ROW LEVEL SECURITY;

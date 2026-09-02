@@ -152,6 +152,11 @@ def setup_dispatcher(client: discord.Client) -> None:
             return
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
             return
+
+        # "bt set"으로 걸린 이모지 태그는 호출 단어/명령어/취침 시간대와 완전히 무관하게
+        # 이 유저의 모든 메시지에 적용된다 — 아래 어떤 분기로 흐르든 상관없이 먼저 처리한다.
+        await admin.apply_emoji_tags(message)
+
         if admin.should_intercept(message):
             await admin.handle(message)
             return

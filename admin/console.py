@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Union
 
 import discord
+import emoji as emoji_lib
 
 import achievements
 from command.info import handle as info_handle
@@ -43,6 +44,9 @@ from db.call_events import (
     get_nearest_before,
 )
 from db.daily_stats import ensure_nl_cap, update_daily_stats
+from db.emoji_tags import clear_tags as clear_emoji_tags_row
+from db.emoji_tags import get_all as get_all_emoji_tags
+from db.emoji_tags import set_tags as set_emoji_tags_row
 from db.users import ensure_user, get_user
 from responses.engine import get_admin_command_response
 
@@ -80,6 +84,8 @@ _ARG_SEPARATOR = ":"
 # 실행된다. 세션/타임아웃 개념 자체가 없다. 트리거 문구는 이 방에서도 기존대로 동작한다.
 _COMMAND_ROOM_CHANNEL_ID = 1544276052757708831
 
+_EMOJI_NAME_SEPARATOR = ","
+
 _client: discord.Client | None = None
 
 # 권한자(prime + op 부여 유저) id 캐시. should_intercept가 메시지마다 호출되므로 DB
@@ -87,6 +93,10 @@ _client: discord.Client | None = None
 # 갱신한다. prime 여부는 이 캐시와 무관하게 항상 user_id == ADMIN_USER_ID로 고정 판정한다
 # (op 관리 권한 자체를 캐시 신선도에 의존시키지 않기 위함).
 _authorized_ids: set[int] = set()
+
+# user_id -> 순서 있는 이모지 문자 리스트("bt set"으로 등록). on_message마다 조회하므로
+# _authorized_ids와 동일하게 DB 왕복 없이 O(1) 캐시로 유지하고, bt set/stop 시 write-through.
+_emoji_tags: dict[int, list[str]] = {}
 
 
 def init(client: discord.Client) -> None:
@@ -99,6 +109,8 @@ async def bootstrap() -> None:
     ops = await list_ops()
     global _authorized_ids
     _authorized_ids = {ADMIN_USER_ID} | {row["user_id"] for row in ops}
+    global _emoji_tags
+    _emoji_tags = await get_all_emoji_tags()
 
 
 def _is_authorized(user_id: int) -> bool:
@@ -242,6 +254,20 @@ def should_intercept(message: discord.Message) -> bool:
     if _match_open_trigger(message.content) is not None:
         return True
     return is_authorized and _extract_freeform_admin_text(message.content) is not None
+
+
+async def apply_emoji_tags(message: discord.Message) -> None:
+    """"bt set"으로 등록된 유저가 말한 메시지엔 무조건 반응을 단다 — 호출 단어/명령어
+    처리와 완전히 독립적이라, 다른 어떤 처리보다도 먼저(그리고 그 결과와 무관하게)
+    호출돼야 한다. 순서를 보장하려고 순차적으로(gather 아님) 하나씩 반응을 단다."""
+    emojis = _emoji_tags.get(message.author.id)
+    if not emojis:
+        return
+    for character in emojis:
+        try:
+            await message.add_reaction(character)
+        except discord.HTTPException:
+            logging.exception("Failed to add emoji tag reaction for user %s", message.author.id)
 
 
 def _parse_int(token: str, label: str) -> int:
@@ -646,6 +672,72 @@ async def _handle_op_list(args: list[str]) -> str:
     return "\n".join(lines) if lines else "권한을 가진 사용자가 없어요!!"
 
 
+async def _user_exists(user_id: int) -> bool:
+    """햄미 가입 여부와 무관하게, 그 ID가 실제 Discord 계정인지만 확인한다."""
+    if _client is None:
+        return True
+    try:
+        await _client.fetch_user(user_id)
+        return True
+    except discord.NotFound:
+        return False
+    except discord.HTTPException as e:
+        logging.exception("Failed to verify user existence for %s", user_id)
+        raise _AdminError("지금은 사용자 확인이 어려워요!! 잠시 후 다시 시도해줘.") from e
+
+
+def _parse_emoji_names(token: str) -> list[str]:
+    return [name for name in token.split(_EMOJI_NAME_SEPARATOR) if name]
+
+
+def _resolve_emoji(name: str) -> str | None:
+    """표준 유니코드 이모지 영문 별칭(예: fire, thumbsup)을 실제 이모지 문자로 바꾼다.
+    별칭이 존재하지 않으면 emoji_lib.emojize가 입력을 그대로 돌려주므로 그걸로 판별한다."""
+    placeholder = f":{name}:"
+    resolved = emoji_lib.emojize(placeholder, language="alias")
+    return None if resolved == placeholder else resolved
+
+
+async def _handle_bt_set(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: bt set : {user_id} {emoji_names} {boolean}")
+    user_id = _parse_user_id(args[0])
+    names = _parse_emoji_names(args[1])
+    if not names:
+        raise _AdminError("emoji_names가 비어 있어요!!")
+    if not await _user_exists(user_id):
+        raise _AdminError(f"그런 사용자는 없는 것 같아요!! ({user_id})")
+
+    resolved: list[str] = []
+    invalid: list[str] = []
+    for name in names:
+        emoji_char = _resolve_emoji(name)
+        if emoji_char is None:
+            invalid.append(name)
+        else:
+            resolved.append(emoji_char)
+    if invalid:
+        raise _AdminError(f"존재하지 않는 이모지 이름이 있어요!! ({', '.join(invalid)})")
+
+    # 완전 리셋 — 기존에 걸려 있던 이모지 목록은 유지하지 않고 통째로 대체한다.
+    await set_emoji_tags_row(user_id, resolved)
+    _emoji_tags[user_id] = resolved
+    await log_command("bt set", f"{user_id} {args[1]}", "-", " ".join(resolved))
+    return f"네!! {user_id}님한테 이모지 태그를 걸었어요!! ({' '.join(resolved)})"
+
+
+async def _handle_bt_stop(args: list[str]) -> str:
+    if len(args) != 1:
+        raise _AdminError("사용법: bt stop : {user_id} {boolean}")
+    user_id = _parse_user_id(args[0])
+    had = await clear_emoji_tags_row(user_id)
+    _emoji_tags.pop(user_id, None)
+    await log_command("bt stop", str(user_id), "있음" if had else "없음", "-")
+    if not had:
+        return f"{user_id}님한테는 원래 이모지 태그가 없었어요!!"
+    return f"네!! {user_id}님의 이모지 태그를 전부 제거했어요!!"
+
+
 _REST_COMMAND_NAME = "done"
 
 
@@ -694,6 +786,8 @@ _COMMAND_LIST = (
     _CommandSpec("op grant", 1, "{user_id} {boolean}", "해당 유저에게 관리자 권한을 부여 (최초 주인 전용)", _handle_op_grant, requires_prime=True),
     _CommandSpec("op revoke", 1, "{user_id} {boolean}", "해당 유저의 관리자 권한을 제거 (최초 주인 전용)", _handle_op_revoke, requires_prime=True),
     _CommandSpec("op list", 0, "{boolean}", "권한을 가진 사용자 전부 표시 (최초 주인 전용)", _handle_op_list, requires_prime=True),
+    _CommandSpec("bt set", 2, "{user_id} {emoji_names} {boolean}", "해당 유저가 말할 때마다 emoji_names(콤마 구분, 예: fire,thumbsup)를 순서대로 반응으로 건다 — 완전 리셋", _handle_bt_set),
+    _CommandSpec("bt stop", 1, "{user_id} {boolean}", "해당 유저에게 걸린 이모지 태그를 전부 제거", _handle_bt_stop),
     _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_done),
     _CommandSpec("c", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 매개변수 포함해서 나열 (string 생략 시 전체, \"*\"와 동일)", _handle_c),
     _CommandSpec("c hp", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 설명과 함께 나열 (string 생략 시 전체)", _handle_c_hp),
