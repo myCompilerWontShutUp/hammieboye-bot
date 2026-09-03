@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 
@@ -53,3 +54,35 @@ def get_recent_commits(days: int = 30) -> list[tuple[str, str, str]]:
         h, iso, subject = line.split("|", 2)
         result.append((h, iso, subject))
     return result
+
+
+_MERGE_PR_PATTERN = re.compile(r"Merge pull request #(\d+)")
+
+
+def get_semantic_version() -> str | None:
+    """"0.{PR 번호}.{그 PR 안의 커밋 개수}" 형식(예: "0.25.2"). 이 저장소는 PR을 항상 병합
+    커밋으로 합치므로("Merge pull request #N from ..."), HEAD에서 가장 가까운 병합 커밋의
+    제목에서 PR 번호를 뽑고, 그 병합 커밋의 두 부모 사이(`merge^1..merge^2`, 즉 병합된
+    브랜치에만 있던 커밋들)의 개수를 센다. 병합 커밋이 없거나(얕은 클론 등) 형식이
+    안 맞으면 None — 호출부가 해시만 보여주는 쪽으로 폴백해야 한다."""
+    merge_hash = _git("log", "--merges", "-1", "--format=%H")
+    if not merge_hash:
+        return None
+    subject = _git("log", "-1", "--format=%s", merge_hash)
+    if not subject:
+        return None
+    match = _MERGE_PR_PATTERN.search(subject)
+    if not match:
+        return None
+    count = _git("rev-list", "--count", f"{merge_hash}^1..{merge_hash}^2")
+    if not count or not count.isdigit():
+        return None
+    return f"0.{match.group(1)}.{count}"
+
+
+def get_version_label() -> str:
+    """`v` 명령어와 `an update` 임베드가 공유하는 버전 표시 — "aaaaaa (0.25.2)" 형태.
+    get_semantic_version()이 None이면(병합 커밋을 못 찾음 등) 해시만 반환한다."""
+    commit = get_commit_hash()
+    semantic = get_semantic_version()
+    return f"{commit} ({semantic})" if semantic else commit

@@ -14,10 +14,10 @@ import achievements
 from command.info import handle as info_handle
 from config import ADMIN_USER_ID, ALLOWED_GUILD_IDS, CALL_PREFIXES
 from admin.version import (
-    get_commit_hash,
     get_last_updated_iso,
     get_previous_commit,
     get_recent_commits,
+    get_version_label,
 )
 from core.discord_names import resolve_real_name
 import documents.update_announcement as update_announcement
@@ -519,10 +519,9 @@ async def _handle_sh_db(args: list[str]) -> str:
 
 
 async def _handle_v(args: list[str]) -> str:
-    commit = get_commit_hash()
     updated_dt = datetime.fromisoformat(get_last_updated_iso()).astimezone(_KST)
     updated_label = updated_dt.strftime("%Y-%m-%d %H:%M")
-    return f"지금 버전은 커밋 {commit}이에요!! 마지막 업데이트는 {updated_label}이에요!!"
+    return f"지금 버전은 {get_version_label()}이에요!! 마지막 업데이트는 {updated_label}이에요!!"
 
 
 def _format_commit_date(iso_str: str) -> str:
@@ -842,8 +841,11 @@ _UPDATE_ANNOUNCE_LINES = (
 
 
 def _build_update_embed(entry: update_announcement.UpdateEntry) -> discord.Embed:
+    # 날짜/버전은 entry에 박아둔 값이 아니라 "an update"를 실제로 실행하는 지금 시점의
+    # 것을 그대로 보여준다 — v 명령어가 보여주는 것과 항상 같은 소스(get_version_label).
+    date_label = datetime.now(_KST).strftime("%Y.%m.%d.")
     description = (
-        f"날짜: {entry.date}\n버전: {entry.version}\n\n"
+        f"날짜: {date_label}\n버전: {get_version_label()}\n\n"
         + "\n".join(f"- {c}" for c in entry.changes)
     )
     embed = discord.Embed(title="🔔 햄미의 업데이트 소식", description=description, color=EMBED_COLOR)
