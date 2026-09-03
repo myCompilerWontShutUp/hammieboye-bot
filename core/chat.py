@@ -11,6 +11,8 @@ from admin import console as admin_console
 from core.base import normalize
 from core import intent
 from events import call_event
+from events.scheduler import KST, is_within_morning_greeting_window
+from events.special_days import DAY_TYPE_BIRTHDAY, get_day_type
 from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_nl_cap, update_daily_stats
@@ -140,6 +142,16 @@ _HAPPY_METHOD = "happy_emotion"
 # 감지(has_severe_abuse: 욕설/비방/모욕/성희롱/패드립)에만 연동한다.
 _SEVERE_ABUSE_PENALTY = -1
 
+# 햄미 생일 자연어 축하(3-2)/아침 인사(3-6): 둘 다 날짜·시간대로 좁게 게이트되는 1회성
+# 판정이라 core/intent.py의 공용 분류 스키마를 확장하지 않고 키워드 매칭으로 독립 처리한다.
+_BIRTHDAY_GREETING_REWARD = 10
+_BIRTHDAY_GREETING_METHOD = "birthday_greeting"
+_BIRTHDAY_KEYWORDS = ("생일", "축하")
+
+_MORNING_GREETING_REWARD = 1
+_MORNING_GREETING_METHOD = "morning_greeting"
+_MORNING_GREETING_KEYWORDS = ("잘잤", "굿모닝", "좋은아침")
+
 
 async def handle_natural_language(
     user_id: int, guild_id: int, text: str, affection: int
@@ -223,8 +235,17 @@ async def handle_natural_language(
     if event_override is not None:
         return _finalize(event_override, total_delta, current_affection, achievement_notices)
 
-    # 여기부터 실제 OpenAI API 호출(분류+생성) 구간.
-    classification = await intent.classify(text)
+    # 여기부터 실제 OpenAI API 호출(분류+생성) 구간. 생일/아침 인사 감지는 키워드 매칭이라
+    # API 호출과 무관하게 분류와 병렬로 처리한다.
+    classification, (greeting_delta, greeting_achievement) = await asyncio.gather(
+        intent.classify(text),
+        _apply_greeting_bonuses(user_id, text, stats),
+    )
+    total_delta += greeting_delta
+    if greeting_delta:
+        current_affection += greeting_delta
+    if greeting_achievement:
+        achievement_notices.append(greeting_achievement)
 
     if classification.emotion is not None:
         _, (message_delta, message_achievement) = await asyncio.gather(
@@ -252,7 +273,9 @@ async def handle_natural_language(
     context_note = documents.build_context_note(classification.categories)
     response_text = await get_response(text, history=context_turns, context_note=context_note)
 
-    if await award_achievement(user_id, achievements.first_chat.ID):
+    first_chat_result = await award_achievement(user_id, achievements.first_chat.ID)
+    if first_chat_result["earned"]:
+        _record(first_chat_result)
         achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.first_chat)}!!")
 
     # nl_count는 실제 생성까지 도달한 메시지만 증가시킨다. 상한에 정확히 도달하는
@@ -261,10 +284,13 @@ async def handle_natural_language(
     if new_nl_count >= nl_cap:
         response_text = f"{response_text}\n\n{random.choice(_DAILY_LIMIT_PHRASES)}"
 
-    if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD and await award_achievement(
-        user_id, achievements.speech_bubble.ID
-    ):
-        achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.speech_bubble)}!!")
+    if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD:
+        speech_bubble_result = await award_achievement(user_id, achievements.speech_bubble.ID)
+        if speech_bubble_result["earned"]:
+            _record(speech_bubble_result)
+            achievement_notices.append(
+                f"🏆 업적 달성: {achievements.format_name(achievements.speech_bubble)}!!"
+            )
 
     await asyncio.gather(
         update_daily_stats(user_id, {"nl_count": new_nl_count}),
@@ -325,6 +351,43 @@ def _finalize(
     for notice in achievement_notices or ():
         text += f"\n{notice}"
     return text
+
+
+async def _apply_greeting_bonuses(user_id: int, text: str, stats: dict) -> tuple[int, str | None]:
+    """생일 축하(3-2)/아침 인사(3-6) 자연어 보상. 둘 다 하루 1회, 반복 시엔 추가 지급 없이
+    정상 생성 흐름만 그대로 진행한다(생일 쪽은 "이미 줬어" 같은 메타 발언도 없음)."""
+    updates = {}
+    delta = 0
+    achievement_notice = None
+    normalized = normalize(text)
+    today = datetime.now(KST).date()
+
+    if (
+        get_day_type(today) == DAY_TYPE_BIRTHDAY
+        and not stats["birthday_greeting_claimed"]
+        and all(keyword in normalized for keyword in _BIRTHDAY_KEYWORDS)
+    ):
+        result = await add_affection(user_id, _BIRTHDAY_GREETING_REWARD, _BIRTHDAY_GREETING_METHOD)
+        delta += result["applied_amount"]
+        updates["birthday_greeting_claimed"] = True
+
+    if (
+        is_within_morning_greeting_window()
+        and not stats["morning_greeting_claimed"]
+        and any(keyword in normalized for keyword in _MORNING_GREETING_KEYWORDS)
+    ):
+        result = await add_affection(user_id, _MORNING_GREETING_REWARD, _MORNING_GREETING_METHOD)
+        delta += result["applied_amount"]
+        updates["morning_greeting_claimed"] = True
+        achievement_result = await award_achievement(user_id, achievements.early_bird.ID)
+        if achievement_result["earned"]:
+            delta += achievement_result["applied_amount"]
+            achievement_notice = f"🏆 업적 달성: {achievements.format_name(achievements.early_bird)}!!"
+
+    if updates:
+        await update_daily_stats(user_id, updates)
+
+    return delta, achievement_notice
 
 
 async def _apply_message_effects(

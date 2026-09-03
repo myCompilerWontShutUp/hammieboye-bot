@@ -83,12 +83,18 @@ async def handle_mention(message: discord.Message) -> None:
     else:
         line1, line2 = random.choice(_NIGHTMARE_PAIRS)
         result = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD)
-        notice = format_affection_notice(_NIGHTMARE_DELTA, result["new_affection"])
+        applied_amount = result["applied_amount"]
+        current_affection = result["new_affection"]
         achievement_notice = result["achievement_notice"]
 
-        if await award_achievement(user_id, achievements.nightmare_freed.ID):
+        achievement_result = await award_achievement(user_id, achievements.nightmare_freed.ID)
+        if achievement_result["earned"]:
+            applied_amount += achievement_result["applied_amount"]
+            current_affection = achievement_result["new_affection"]
             extra = f"🏆 업적 달성: {achievements.format_name(achievements.nightmare_freed)}!!"
             achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
+
+        notice = format_affection_notice(applied_amount, current_affection)
 
     reply_text = f"{line1}\n{line2}{notice}"
     if achievement_notice:

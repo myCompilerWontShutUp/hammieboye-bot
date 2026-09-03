@@ -2,6 +2,7 @@ import asyncio
 import contextvars
 import io
 import logging
+import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Union
@@ -11,11 +12,23 @@ import emoji as emoji_lib
 
 import achievements
 from command.info import handle as info_handle
-from config import ADMIN_USER_ID, CALL_PREFIXES
-from admin.version import get_commit_hash, get_last_updated_iso
+from config import ADMIN_USER_ID, ALLOWED_GUILD_IDS, CALL_PREFIXES
+from admin.version import (
+    get_commit_hash,
+    get_last_updated_iso,
+    get_previous_commit,
+    get_recent_commits,
+)
 from core.discord_names import resolve_real_name
-from events.call_event import MIN_GAP_MINUTES, WINDOW_END, WINDOW_START, schedule_one
-from events.scheduler import SLEEP_START, WAKE_TIME, is_sleep_time_for
+import documents.update_announcement as update_announcement
+from events.call_event import WINDOW_END, WINDOW_START
+from events.scheduler import (
+    SLEEP_START,
+    WAKE_TIME,
+    broadcast_to_guilds,
+    format_footer_time,
+    is_sleep_time_for,
+)
 from events.sleep_guard import SLEEP_REPLY
 from db.achievements import award as award_achievement
 from db.achievements import revoke as revoke_achievement
@@ -38,18 +51,19 @@ from db.admin_ops import seed_prime
 from db.admin_sessions import clear_session as clear_session_row
 from db.admin_sessions import save_session as save_session_row
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
-from db.call_events import (
-    delete_event,
-    delete_unposted_after,
-    get_nearest_after,
-    get_nearest_before,
-)
 from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.emoji_tags import clear_tags as clear_emoji_tags_row
 from db.emoji_tags import get_all as get_all_emoji_tags
 from db.emoji_tags import set_tags as set_emoji_tags_row
+from db.guild_channels import (
+    clear_designated_channel,
+    get_designated_channel,
+    load_designated_channels_cache,
+    set_designated_channel,
+)
 from db.users import ensure_user, get_user
 from responses.engine import get_admin_command_response
+from core.base import EMBED_COLOR
 
 _KST = timezone(timedelta(hours=9))
 _INITIAL_AFFECTION = 10
@@ -96,14 +110,21 @@ _current_guild: "contextvars.ContextVar[discord.Guild | None]" = contextvars.Con
     "_current_guild", default=None
 )
 
+# "ds here"/"ds reset"이 "지금 이 채널"을 알아야 하는데, 명령어 핸들러 시그니처가
+# (args: list[str]) -> str라 메시지 객체 자체를 안 받는다 — _current_guild와 동일한
+# 패턴으로 _dispatch()가 핸들러 호출 범위 동안만 채워준다.
+_current_channel: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
+    "_current_channel", default=None
+)
+
 # 권한자(prime + op 부여 유저) id 캐시. should_intercept가 메시지마다 호출되므로 DB
 # 왕복 없이 O(1)로 판정해야 한다 — bootstrap()에서 채우고 grant/revoke 시 write-through로
 # 갱신한다. prime 여부는 이 캐시와 무관하게 항상 user_id == ADMIN_USER_ID로 고정 판정한다
 # (op 관리 권한 자체를 캐시 신선도에 의존시키지 않기 위함).
 _authorized_ids: set[int] = set()
 
-# user_id -> 순서 있는 이모지 문자 리스트("bt set"으로 등록). on_message마다 조회하므로
-# _authorized_ids와 동일하게 DB 왕복 없이 O(1) 캐시로 유지하고, bt set/stop 시 write-through.
+# user_id -> 순서 있는 이모지 문자 리스트("ej set"으로 등록). on_message마다 조회하므로
+# _authorized_ids와 동일하게 DB 왕복 없이 O(1) 캐시로 유지하고, ej set/stop 시 write-through.
 _emoji_tags: dict[int, list[str]] = {}
 
 
@@ -119,6 +140,14 @@ async def bootstrap() -> None:
     _authorized_ids = {ADMIN_USER_ID} | {row["user_id"] for row in ops}
     global _emoji_tags
     _emoji_tags = await get_all_emoji_tags()
+    try:
+        # designated_channel_id 컬럼이 아직 SQL.md 마이그레이션 적용 전이면 여기서
+        # 실패할 수 있다 — 그렇다고 부팅 시퀀스 전체(슬래시 커맨드 동기화/스케줄러 등,
+        # bootstrap() 뒤에 이어지는 on_ready() 나머지 부분)를 막으면 안 되므로, 지정
+        # 채널 기능만 "설정된 곳 없음"으로 조용히 비활성화하고 계속 진행한다.
+        await load_designated_channels_cache()
+    except Exception:
+        logging.exception("Failed to load designated channels cache (migration not applied?)")
 
 
 def _is_authorized(user_id: int) -> bool:
@@ -265,13 +294,13 @@ def should_intercept(message: discord.Message) -> bool:
 
 
 async def apply_emoji_tags(message: discord.Message) -> None:
-    """"bt set"으로 등록된 유저가 말한 메시지엔 무조건 반응을 단다 — 호출 단어/명령어
+    """"ej set"으로 등록된 유저가 말한 메시지엔 무조건 반응을 단다 — 호출 단어/명령어
     처리와 완전히 독립적이라, 다른 어떤 처리보다도 먼저(그리고 그 결과와 무관하게)
     호출돼야 한다. 순서를 보장하려고 순차적으로(gather 아님) 하나씩 반응을 단다."""
     emojis = _emoji_tags.get(message.author.id)
     if not emojis:
         return
-    # bt set이 저장 시점에 이미 중복을 제거하지만, 예전에 저장된 데이터 등 만약을 대비해
+    # ej set이 저장 시점에 이미 중복을 제거하지만, 예전에 저장된 데이터 등 만약을 대비해
     # 여기서도 한 번 더 걸러 같은 이모지로 add_reaction을 두 번 호출하지 않게 한다.
     for character in dict.fromkeys(emojis):
         try:
@@ -291,7 +320,7 @@ def _parse_int(token: str, label: str) -> int:
 _HAMMIE_USER_ID = 1541339665708228648
 _SELF_TARGET_MESSAGE = "그건 저라서 진행할 수 없어요!!"
 
-_SELF_ALIAS = "m"  # {user_id}에 "m"을 넣으면 관리자 본인(ADMIN_USER_ID)을 가리킨다.
+_SELF_ALIAS = "me"  # {user_id}에 "me"를 넣으면 관리자 본인(ADMIN_USER_ID)을 가리킨다.
 
 
 def _parse_user_id(token: str) -> int:
@@ -317,52 +346,52 @@ async def _require_registered(user_id: int) -> dict:
     return user
 
 
-async def _handle_la_up(args: list[str]) -> str:
+async def _handle_fl_up(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: la up : {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: fl up : {user_id} {amount} {boolean}")
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    # 관리자의 직접 수치 조작으로는 업적이 달성되면 안 된다(la set/reset은 별도 RPC라 원래 안전).
-    result = await add_affection_uncapped(user_id, amount, "admin_la_up", check_achievements=False)
+    # 관리자의 직접 수치 조작으로는 업적이 달성되면 안 된다(fl set/reset은 별도 RPC라 원래 안전).
+    result = await add_affection_uncapped(user_id, amount, "admin_fl_up", check_achievements=False)
     new_affection = result["new_affection"]
-    await log_command("la up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+    await log_command("fl up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 호감도를 +{amount} 올려드렸어요!! ({user['affection']} → {new_affection})"
 
 
-async def _handle_la_down(args: list[str]) -> str:
+async def _handle_fl_down(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: la down : {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: fl down : {user_id} {amount} {boolean}")
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    result = await add_affection_uncapped(user_id, -amount, "admin_la_down", check_achievements=False)
+    result = await add_affection_uncapped(user_id, -amount, "admin_fl_down", check_achievements=False)
     new_affection = result["new_affection"]
-    await log_command("la down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+    await log_command("fl down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 호감도를 -{amount} 내렸어요!! ({user['affection']} → {new_affection})"
 
 
-async def _handle_la_set(args: list[str]) -> str:
+async def _handle_fl_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: la set : {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: fl set : {user_id} {amount} {boolean}")
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
     new_affection = await set_affection(user_id, amount)
-    await log_command("la set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+    await log_command("fl set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 호감도를 {amount}로 맞춰드렸어요!! ({user['affection']} → {new_affection})"
 
 
-async def _handle_la_reset(args: list[str]) -> str:
+async def _handle_fl_reset(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: la reset : {user_id} {boolean}")
+        raise _AdminError("사용법: fl reset : {user_id} {boolean}")
     user_id = _parse_user_id(args[0])
     user = await _require_registered(user_id)
     await set_affection(user_id, _INITIAL_AFFECTION)
-    await log_command("la reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
+    await log_command("fl reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
 
@@ -489,50 +518,30 @@ async def _handle_sh_db(args: list[str]) -> str:
     return "\n".join(str(row) for row in rows) if rows else f"{name}: 데이터 없음"
 
 
-async def _handle_gn_call_event(args: list[str]) -> str:
-    if len(args) != 1:
-        raise _AdminError("사용법: gn call event : {time} {boolean}")
-    minutes = _parse_int(args[0], "time")
-    scheduled_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-    min_gap = timedelta(minutes=MIN_GAP_MINUTES)
-
-    before = await get_nearest_before(scheduled_at)
-    if before is not None and scheduled_at - datetime.fromisoformat(before["scheduled_at"]) < min_gap:
-        raise _AdminError(f"최소 간격({MIN_GAP_MINUTES}분) 때문에 생성할 수 없습니다!!")
-
-    after = await get_nearest_after(scheduled_at)
-    if after is not None and datetime.fromisoformat(after["scheduled_at"]) - scheduled_at < min_gap:
-        raise _AdminError(f"최소 간격({MIN_GAP_MINUTES}분) 때문에 생성할 수 없습니다!!")
-
-    await schedule_one(scheduled_at)
-    time_label = _format_event_time(scheduled_at.isoformat())
-    await log_command("gn call event", str(minutes), "없음", time_label)
-    return f"네!! {minutes}분 뒤인 {time_label}에 호출 이벤트를 새로 만들었어요!!"
-
-
-async def _handle_rm_call_event(args: list[str]) -> str:
-    event = await get_next_event()
-    if event is None:
-        return "삭제할 예정된 이벤트가 없어요!!"
-    await delete_event(event["id"])
-    time_label = _format_event_time(event["scheduled_at"])
-    await log_command("rm call event", "", time_label, "삭제됨")
-    return f"네!! 가장 가까운 호출 이벤트({time_label})를 삭제했어요!!"
-
-
-async def _handle_rm_call_event_all(args: list[str]) -> str:
-    deleted = await delete_unposted_after(datetime.now(timezone.utc))
-    if not deleted:
-        return "삭제할 예정된 이벤트가 없어요!!"
-    await log_command("rm call event all", "", f"{len(deleted)}개 예정", "전부 삭제됨")
-    return f"네!! 아직 시작 안 한 호출 이벤트 {len(deleted)}개를 전부 삭제했어요!!"
-
-
-async def _handle_sh_version(args: list[str]) -> str:
+async def _handle_v(args: list[str]) -> str:
     commit = get_commit_hash()
     updated_dt = datetime.fromisoformat(get_last_updated_iso()).astimezone(_KST)
     updated_label = updated_dt.strftime("%Y-%m-%d %H:%M")
     return f"지금 버전은 커밋 {commit}이에요!! 마지막 업데이트는 {updated_label}이에요!!"
+
+
+def _format_commit_date(iso_str: str) -> str:
+    return datetime.fromisoformat(iso_str).astimezone(_KST).strftime("%Y-%m-%d %H:%M")
+
+
+async def _handle_v_last(args: list[str]) -> str:
+    previous = get_previous_commit()
+    if previous is None:
+        return "이전 커밋이 없어요!! (배포 환경의 git 히스토리가 부족할 수도 있어요)"
+    h, iso = previous
+    return f"이전 커밋은 {h}이에요!! ({_format_commit_date(iso)})"
+
+
+async def _handle_v_list(args: list[str]) -> str:
+    commits = get_recent_commits(30)
+    if not commits:
+        return "최근 30일 커밋 기록을 가져올 수 없어요!! (배포 환경의 git 히스토리가 부족할 수도 있어요)"
+    return "\n".join(f"{h} - {_format_commit_date(iso)} - {subject}" for h, iso, subject in commits)
 
 
 async def _handle_sh_hammie_runtime(args: list[str]) -> str:
@@ -550,14 +559,14 @@ async def _handle_ac_list(args: list[str]) -> str:
     return "\n".join(achievements.format_name(module) for module in achievements.REGISTRY.values())
 
 
-async def _handle_ac_list_hp(args: list[str]) -> str:
+async def _handle_ac_help(args: list[str]) -> str:
     return "\n".join(
         f"{achievements.format_name(module)} - {module.HOW_TO_EARN}"
         for module in achievements.REGISTRY.values()
     )
 
 
-async def _handle_ac_list_cd(args: list[str]) -> str:
+async def _handle_ac_code(args: list[str]) -> str:
     return "\n".join(
         f"{achievements.format_name(module)} - {module.CODE}"
         for module in achievements.REGISTRY.values()
@@ -571,14 +580,17 @@ async def _handle_ac_grant(args: list[str]) -> str:
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
     if module is None:
-        return f"그런 업적 코드는 없어요!!\n{await _handle_ac_list_cd([])}"
+        return f"그런 업적 코드는 없어요!!\n{await _handle_ac_code([])}"
     await _require_registered(user_id)
-    granted = await award_achievement(user_id, module.ID)
+    result = await award_achievement(user_id, module.ID)
     name = await _resolve_name(user_id)
-    if not granted:
+    if not result["earned"]:
         return f"{name}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
     await log_command("ac grant", f"{user_id} {code}", "미보유", module.ID)
-    return f"네!! {name}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!!"
+    return (
+        f"네!! {name}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!! "
+        f"(호감도 +{result['applied_amount']}, 현재 {result['new_affection']})"
+    )
 
 
 async def _handle_ac_revoke(args: list[str]) -> str:
@@ -588,7 +600,7 @@ async def _handle_ac_revoke(args: list[str]) -> str:
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
     if module is None:
-        return f"그런 업적 코드는 없어요!!\n{await _handle_ac_list_cd([])}"
+        return f"그런 업적 코드는 없어요!!\n{await _handle_ac_code([])}"
     await _require_registered(user_id)
     revoked = await revoke_achievement(user_id, module.ID)
     name = await _resolve_name(user_id)
@@ -626,18 +638,11 @@ async def _handle_c(args: list[str]) -> str:
     return "\n".join(f"{spec.name} : {spec.params}" for spec in matched)
 
 
-async def _handle_c_hp(args: list[str]) -> str:
+async def _handle_c_help(args: list[str]) -> str:
     matched = _filter_commands(_resolve_filter_keyword(args))
     if not matched:
         return _NO_MATCH_MESSAGE
     return "\n".join(f"{spec.name} : {spec.params} - {spec.description}" for spec in matched)
-
-
-async def _handle_c_np(args: list[str]) -> str:
-    matched = _filter_commands(_resolve_filter_keyword(args))
-    if not matched:
-        return _NO_MATCH_MESSAGE
-    return "\n".join(spec.name for spec in matched)
 
 
 # op grant/revoke의 대상이 햄미 자신이면 _parse_user_id가 이미 막는다 — 여기선 대상이
@@ -743,9 +748,9 @@ def _resolve_emoji(token: str) -> str | None:
     return _EXTRA_EMOJI_ALIASES.get(token)
 
 
-async def _handle_bt_set(args: list[str]) -> str:
+async def _handle_ej_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: bt set : {user_id} {emojis} {boolean}")
+        raise _AdminError("사용법: ej set : {user_id} {emojis} {boolean}")
     user_id = _parse_user_id(args[0])
     tokens = _parse_emoji_tokens(args[1])
     if not tokens:
@@ -772,22 +777,127 @@ async def _handle_bt_set(args: list[str]) -> str:
     # 완전 리셋 — 기존에 걸려 있던 이모지 목록은 유지하지 않고 통째로 대체한다.
     await set_emoji_tags_row(user_id, resolved)
     _emoji_tags[user_id] = resolved
-    await log_command("bt set", f"{user_id} {args[1]}", "-", " ".join(resolved))
+    await log_command("ej set", f"{user_id} {args[1]}", "-", " ".join(resolved))
     name = await _resolve_name(user_id)
     return f"네!! {name}님한테 이모지 태그를 걸었어요!! ({' '.join(resolved)})"
 
 
-async def _handle_bt_stop(args: list[str]) -> str:
+async def _handle_ej_stop(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: bt stop : {user_id} {boolean}")
+        raise _AdminError("사용법: ej stop : {user_id} {boolean}")
     user_id = _parse_user_id(args[0])
     had = await clear_emoji_tags_row(user_id)
     _emoji_tags.pop(user_id, None)
-    await log_command("bt stop", str(user_id), "있음" if had else "없음", "-")
+    await log_command("ej stop", str(user_id), "있음" if had else "없음", "-")
     name = await _resolve_name(user_id)
     if not had:
         return f"{name}님한테는 원래 이모지 태그가 없었어요!!"
     return f"네!! {name}님의 이모지 태그를 전부 제거했어요!!"
+
+
+async def _handle_ds_here(args: list[str]) -> str:
+    guild = _current_guild.get()
+    channel_id = _current_channel.get()
+    if guild is None or channel_id is None:
+        raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
+    before = get_designated_channel(guild.id)
+    await set_designated_channel(guild.id, channel_id)
+    await log_command("ds here", str(guild.id), str(before) if before else "없음", str(channel_id))
+    return f"네!! 이 채널을 이 서버의 지정 채널로 설정했어요!! (<#{channel_id}>)"
+
+
+async def _handle_ds_reset(args: list[str]) -> str:
+    guild = _current_guild.get()
+    if guild is None:
+        raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
+    had = await clear_designated_channel(guild.id)
+    await log_command("ds reset", str(guild.id), "있음" if had else "없음", "없음")
+    if not had:
+        return "이 서버는 원래 지정 채널이 없었어요!!"
+    return "네!! 지정 채널을 해제했어요!! 이제 마지막으로 부른 채널에 표시돼요."
+
+
+_UPDATE_ANNOUNCE_LINES = (
+    "안뇽!! 나는 햄미야! 아까 전에 햄미가 새로운걸 배웠는데, 한번 볼랭? _(신남)_",
+    "얘들아!! 햄미가 조은 소식 가져와써!! 구경하고 가!! _(들뜸)_",
+    "잠깐!! 햄미한테 새로운 게 생겨써!! 얼른 봐봐!! _(신남)_",
+    "짜잔!! 햄미가 업데이트 소식을 들고 와써!! _(자랑)_",
+    "다들 주목!! 햄미가 뭔가 달라져써!! _(기대)_",
+    "헤헤, 햄미 오늘 새 소식 가져와써!! 구경해줘!! _(방실)_",
+    "얘들아 이거 봐!! 햄미한테 새 기능이 생겨써!! _(들뜸)_",
+    "오늘의 조은 소식이야!! 햄미가 알려줄게!! _(신남)_",
+    "짜란!! 햄미 업데이트 완료했다구!! 확인해봐!! _(뿌듯)_",
+    "다들 이리 와봐!! 햄미가 새 소식 준비해써!! _(설렘)_",
+    "햄미 소식 하나 알려줄게!! 잘 들어봐!! _(진지)_",
+    "얘들아!! 방금 햄미한테 무슨 일이 있었게!! _(궁금)_",
+    "짜잔!! 오늘부터 조금 달라진 햄미야!! _(자신감)_",
+    "이거 알려주고 시퍼써!! 햄미 새 소식이야!! _(신남)_",
+    "다들 잘 들어봐!! 햄미가 업데이트됬어!! _(뿌듯)_",
+    "헐랭, 햄미한테 새로운 게 생겨써!! 구경 조!! _(놀람)_",
+    "오늘은 특별한 날이야!! 햄미가 달라져써!! _(설렘)_",
+    "짜잔짜잔!! 햄미의 새 소식 대공개!! _(신남)_",
+    "얘들아 이것도 봐줘!! 햄미가 배운 거야!! _(자랑)_",
+    "다들 조은 소식이야!! 햄미가 한 단계 업그레이드 됬어!! _(뿌듯)_",
+)
+
+
+def _build_update_embed(entry: update_announcement.UpdateEntry) -> discord.Embed:
+    description = (
+        f"날짜: {entry.date}\n버전: {entry.version}\n\n"
+        + "\n".join(f"- {c}" for c in entry.changes)
+    )
+    embed = discord.Embed(title="🔔 햄미의 업데이트 소식", description=description, color=EMBED_COLOR)
+    embed.set_footer(text=format_footer_time(datetime.now(_KST)))
+    return embed
+
+
+def _parse_trailing_boolean(raw: str) -> bool:
+    """raw_args 명령어 중 자유 텍스트 없이 {boolean}만 받는 것들(현재 "an update")이
+    쓰는 파서 — _extract_boolean과 동일한 규칙(true/false만, 대소문자 무관, 생략 시 false)."""
+    token = raw.strip().lower()
+    if token in ("", "false"):
+        return False
+    if token == "true":
+        return True
+    raise _AdminError("boolean은 true 또는 false만 가능해요!!")
+
+
+def _parse_an_msg(raw: str) -> tuple[str, bool]:
+    """'"{text}" {boolean}' 형태를 파싱한다. text 안의 "\\"(백슬래시) 한 글자는 줄바꿈으로
+    치환한다 — 다른 이스케이프 시퀀스는 지원하지 않는다."""
+    raw = raw.strip()
+    if not raw.startswith('"'):
+        raise _AdminError('사용법: an msg : "text" {boolean} (text는 큰따옴표로 감싸야 해요)')
+    end = raw.find('"', 1)
+    if end == -1:
+        raise _AdminError('큰따옴표가 안 닫혔어요!! "text" 형태로 써주세요.')
+    text = raw[1:end].replace("\\", "\n")
+    if not text.strip():
+        raise _AdminError("보낼 text가 비어 있어요!!")
+    return text, _parse_trailing_boolean(raw[end + 1 :])
+
+
+async def _handle_an_msg(raw: str) -> tuple[str, bool]:
+    text, dm = _parse_an_msg(raw)
+    if dm:
+        return text, True
+    if _client is not None:
+        await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=text)
+    return "네!! 모든 서버에 공지했어요!!", False
+
+
+async def _handle_an_update(raw: str) -> tuple[str | tuple[str, discord.Embed], bool]:
+    dm = _parse_trailing_boolean(raw)
+    entry = update_announcement.latest()
+    if entry is None:
+        return "아직 공지할 업데이트가 없어요!!", dm
+    intro = random.choice(_UPDATE_ANNOUNCE_LINES)
+    embed = _build_update_embed(entry)
+    if dm:
+        return (intro, embed), True
+    if _client is not None:
+        await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=intro, embed=embed)
+    return "네!! 모든 서버에 업데이트 소식을 공지했어요!!", False
 
 
 _REST_COMMAND_NAME = "done"
@@ -803,18 +913,23 @@ _Handler = Callable[[list[str]], Awaitable[Union[str, tuple[str, discord.Embed]]
 @dataclass(frozen=True)
 class _CommandSpec:
     name: str
-    arity: int  # boolean을 제외한 필수 인자 개수
+    arity: int  # boolean을 제외한 필수 인자 개수 (raw_args면 무시됨)
     params: str
     description: str
     handler: _Handler
     requires_prime: bool = False  # True면 최초 주인(ADMIN_USER_ID)만 실행 가능
+    # True면 handler가 list[str] 대신 (raw: str)을 받고 str 대신 (응답, dm: bool)을
+    # 반환하는 raw 전용 핸들러다(현재 "an msg"/"an update") — _extract_boolean의 arity
+    # 기반 토큰 분리를 건너뛴다. "an msg"는 자유 텍스트 파싱이 필요해서, "an update"는
+    # boolean의 의미가 반대(§14-9)라 핸들러가 직접 dm을 결정해야 해서 필요하다.
+    raw_args: bool = False
 
 
 _COMMAND_LIST = (
-    _CommandSpec("la up", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 +amount (일일 상한 미적용)", _handle_la_up),
-    _CommandSpec("la down", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 -amount", _handle_la_down),
-    _CommandSpec("la set", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도를 amount로 절대값 설정", _handle_la_set),
-    _CommandSpec("la reset", 1, "{user_id} {boolean}", "해당 유저 호감도를 초기값(10)으로 리셋", _handle_la_reset),
+    _CommandSpec("fl up", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 +amount (일일 상한 미적용)", _handle_fl_up),
+    _CommandSpec("fl down", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 -amount", _handle_fl_down),
+    _CommandSpec("fl set", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도를 amount로 절대값 설정", _handle_fl_set),
+    _CommandSpec("fl reset", 1, "{user_id} {boolean}", "해당 유저 호감도를 초기값(10)으로 리셋", _handle_fl_reset),
     _CommandSpec("tc up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_tc_up),
     _CommandSpec("tc down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_tc_down),
     _CommandSpec("tc set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_tc_set),
@@ -825,25 +940,27 @@ _COMMAND_LIST = (
     _CommandSpec("sh user stats", 1, "{user_id} {boolean}", "해당 유저의 일반 정보(=/내정보) 표시", _handle_sh_user_stats),
     _CommandSpec("sh db list", 0, "{boolean}", "등록된 테이블 이름 전부 표시", _handle_sh_db_list),
     _CommandSpec("sh db", 2, "{name} {amount|*} {boolean}", "해당 테이블 최근 amount개 행(amount가 *면 전체) 표시", _handle_sh_db),
-    _CommandSpec("sh version", 0, "{boolean}", "현재 버전(커밋)과 마지막 업데이트 일시 표시", _handle_sh_version),
     _CommandSpec("sh hammie runtime", 0, "{boolean}", "햄미 활동 시간 및 이벤트 발생 가능 시간 표시", _handle_sh_hammie_runtime),
-    _CommandSpec("gn call event", 1, "{time} {boolean}", "time분 뒤에 호출 이벤트 1개를 수동 생성(최소 간격 30분 준수)", _handle_gn_call_event),
-    _CommandSpec("rm call event", 0, "{boolean}", "가장 가까운(아직 시작 안 한) 호출 이벤트 삭제", _handle_rm_call_event),
-    _CommandSpec("rm call event all", 0, "{boolean}", "아직 시작 안 한 호출 이벤트 전부 삭제", _handle_rm_call_event_all),
+    _CommandSpec("v", 0, "{boolean}", "현재 버전(커밋)과 마지막 업데이트 일시 표시", _handle_v),
+    _CommandSpec("v last", 0, "{boolean}", "바로 이전 커밋과 그 일시 표시", _handle_v_last),
+    _CommandSpec("v list", 0, "{boolean}", "최근 30일간의 커밋을 일시와 함께 나열", _handle_v_list),
     _CommandSpec("ac list", 0, "{boolean}", "업적 이름(희귀도 포함) 목록 표시", _handle_ac_list),
-    _CommandSpec("ac list hp", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ac_list_hp),
-    _CommandSpec("ac list cd", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_list_cd),
+    _CommandSpec("ac help", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ac_help),
+    _CommandSpec("ac code", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_code),
     _CommandSpec("ac grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ac_grant),
     _CommandSpec("ac revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ac_revoke),
     _CommandSpec("op grant", 1, "{user_id} {boolean}", "해당 유저에게 관리자 권한을 부여 (최초 주인 전용)", _handle_op_grant, requires_prime=True),
     _CommandSpec("op revoke", 1, "{user_id} {boolean}", "해당 유저의 관리자 권한을 제거 (최초 주인 전용)", _handle_op_revoke, requires_prime=True),
     _CommandSpec("op list", 0, "{boolean}", "권한을 가진 사용자 전부 표시 (최초 주인 전용)", _handle_op_list, requires_prime=True),
-    _CommandSpec("bt set", 2, "{user_id} {emojis} {boolean}", "해당 유저가 말할 때마다 emojis(콤마 구분, 이모지 문자 또는 영문 별칭 둘 다 가능 — 예: 👍,👎 또는 thumbsup,thumbsdown)를 순서대로 반응으로 건다 — 완전 리셋", _handle_bt_set),
-    _CommandSpec("bt stop", 1, "{user_id} {boolean}", "해당 유저에게 걸린 이모지 태그를 전부 제거", _handle_bt_stop),
-    _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_done),
+    _CommandSpec("ej set", 2, "{user_id} {emojis} {boolean}", "해당 유저가 말할 때마다 emojis(콤마 구분, 이모지 문자 또는 영문 별칭 둘 다 가능 — 예: 👍,👎 또는 thumbsup,thumbsdown)를 순서대로 반응으로 건다 — 완전 리셋", _handle_ej_set),
+    _CommandSpec("ej stop", 1, "{user_id} {boolean}", "해당 유저에게 걸린 이모지 태그를 전부 제거", _handle_ej_stop),
+    _CommandSpec("ds here", 0, "{boolean}", "이 채널을 이 서버의 지정 채널로 설정 (기존 지정 채널이 있으면 덮어씀, 이후 이 서버는 지정 채널 밖에서 자연어/슬래시 명령어가 동작하지 않음)", _handle_ds_here),
+    _CommandSpec("ds reset", 0, "{boolean}", "지정 채널을 해제하고 '마지막 사용 채널' 방식으로 되돌림", _handle_ds_reset),
+    _CommandSpec("an msg", 0, '"{text}" {boolean}', 'text를 그대로 공지 — {boolean}이 다른 명령어와 반대: false(기본)면 모든 서버의 지정/마지막 채널에 방송, true면 관리자 DM으로만 미리보기(방송 안 함). text는 큰따옴표로 감싸고, 안의 "\\"(백슬래시) 한 글자는 줄바꿈으로 바뀜', _handle_an_msg, raw_args=True),
+    _CommandSpec("an update", 0, "{boolean}", "최신 업데이트 기록을 공지 — {boolean} 의미는 an msg와 동일(false=방송, true=DM 미리보기). LLM을 쓰지 않고 기록을 그대로 읽어 보냄", _handle_an_update, raw_args=True),
     _CommandSpec("c", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 매개변수 포함해서 나열 (string 생략 시 전체, \"*\"와 동일)", _handle_c),
-    _CommandSpec("c hp", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 설명과 함께 나열 (string 생략 시 전체)", _handle_c_hp),
-    _CommandSpec("c np", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 이름으로 나열 (string 생략 시 전체)", _handle_c_np),
+    _CommandSpec("c help", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 설명과 함께 나열 (string 생략 시 전체)", _handle_c_help),
+    _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_done),
 )
 
 _COMMANDS = {spec.name: spec for spec in _COMMAND_LIST}
@@ -855,9 +972,13 @@ _COMMANDS = {spec.name: spec for spec in _COMMAND_LIST}
 _COMMANDS_DOC_PREAMBLE = (
     "관리자 콘솔에서 쓸 수 있는 명령어 전부 (\"{호출 단어} 주인님 가라사대\"로 세션을 열고 "
     "그 안에서 실행함, 형식은 \"이름 : 파라미터 - 설명\"):\n\n"
-    "모든 명령어의 마지막 파라미터인 {boolean}은 공통 옵션이다 — true면 결과를 DM으로 "
+    "대부분 명령어의 마지막 파라미터인 {boolean}은 공통 옵션이다 — true면 결과를 DM으로 "
     "보내고, false거나 생략하면 지금 이 채널에 그대로 보여준다. true/false만 인정하고 "
     "1/0은 인정하지 않는다.\n\n"
+    "단, \"an msg\"/\"an update\"(공지 관련 명령어) 두 개는 {boolean}의 의미가 반대다 — "
+    "false(기본)면 햄미가 있는 모든 서버에 실제로 공지를 방송하고, true면 방송하지 않고 "
+    "관리자 DM으로만 미리보기를 보낸다. 이 두 명령어를 설명할 때는 반드시 이 예외를 "
+    "언급해야 한다.\n\n"
 )
 
 
@@ -930,10 +1051,19 @@ async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[s
     if spec.requires_prime and not _is_prime(message.author.id):
         await _send(message, False, "그건 사용하실 수 없어요!!")
         return
-    dm, remaining_args = _extract_boolean(tokens, spec.arity)
+
+    # raw_args 명령어("an msg"/"an update")는 arity 기반 _extract_boolean을 안 거치고,
+    # 원문을 그대로 넘긴 뒤 핸들러가 직접 (응답, dm) 튜플로 boolean까지 함께 반환한다 —
+    # 나머지 전부는 기존처럼 arity로 boolean을 분리한다.
+    dm = False
     guild_token = _current_guild.set(message.guild)
+    channel_token = _current_channel.set(message.channel.id)
     try:
-        response = await spec.handler(remaining_args)
+        if spec.raw_args:
+            response, dm = await spec.handler(" ".join(tokens))
+        else:
+            dm, remaining_args = _extract_boolean(tokens, spec.arity)
+            response = await spec.handler(remaining_args)
     except _AdminError as e:
         response = str(e)
     except Exception:
@@ -945,6 +1075,7 @@ async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[s
         response = "어라, 처리하다가 문제가 생겼어요!! 잠시 후 다시 시도해줘."
     finally:
         _current_guild.reset(guild_token)
+        _current_channel.reset(channel_token)
     await _send(message, dm, response)
 
 

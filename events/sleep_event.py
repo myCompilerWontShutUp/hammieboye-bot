@@ -110,7 +110,8 @@ async def _post_announcement(winner_id: int, reward_given: bool) -> None:
     # 모든 서버로 팬아웃되므로, winner가 실제로 그 서버에 있을 때만 보여준다(다른 업적은
     # 유저 본인의 서버 안에서만 트리거돼 이 문제가 없다).
     achievement_suffix = ""
-    if await award_achievement(winner_id, achievements.daily_top_talker.ID):
+    achievement_result = await award_achievement(winner_id, achievements.daily_top_talker.ID)
+    if achievement_result["earned"]:
         achievement_suffix = f"\n🏆 업적 달성: {achievements.format_name(achievements.daily_top_talker)}!!"
 
     for guild in _client.guilds:

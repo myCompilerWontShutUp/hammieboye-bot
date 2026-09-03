@@ -12,23 +12,43 @@ async def has_earned(user_id: int, achievement_id: str) -> bool:
     return bool(rows)
 
 
-async def award(user_id: int, achievement_id: str) -> bool:
-    """이미 획득한 업적이면 아무 것도 안 하고 False. 처음 획득이면 기록하고 True.
+_LEGENDARY_BONUS = 10
+_NORMAL_BONUS = 3
 
-    has_earned() 확인과 insert()는 원자적이지 않다 — 거의 동시 요청 두 개가 둘 다
-    has_earned()==False로 통과하면 insert() 하나만 성공하고 나머지는 PK 충돌로 409를
-    받을 수 있다. 이걸 못 잡으면 예외가 새서 메시지 처리 전체가 죽으므로, 409는
-    "누군가 먼저 기록함"과 동일하게 취급해 조용히 False를 반환한다.
+
+async def award(user_id: int, achievement_id: str) -> dict:
+    """업적을 부여하고, 새로 획득한 경우 보너스 호감도(일반 +3/전설 +10)까지 함께 지급한다.
+
+    반환값은 {earned, applied_amount, new_affection} — earned=False면 이미 가지고
+    있던 상태(다른 필드는 0/None). has_earned() 확인과 insert()는 원자적이지 않다 —
+    거의 동시 요청 두 개가 둘 다 has_earned()==False로 통과하면 insert() 하나만
+    성공하고 나머지는 PK 충돌로 409를 받을 수 있다. 이걸 못 잡으면 예외가 새서 메시지
+    처리 전체가 죽으므로, 409는 "누군가 먼저 기록함"과 동일하게 취급해 조용히 처리한다.
+
+    보너스 호감도는 상한도, 주말/기념일/생일 배율도 적용받지 않고 항상 전액 지급된다
+    (add_affection_uncapped의 apply_day_multiplier=False). check_achievements=False라
+    이 보너스 자체가 호감도 마일스톤 업적(햄미 러브 유 등)을 다시 트리거하지는 않는다 —
+    아래 순환 임포트 참고.
     """
     if await has_earned(user_id, achievement_id):
-        return False
+        return {"earned": False, "applied_amount": 0, "new_affection": None}
     try:
         await insert("user_achievements", {"user_id": user_id, "achievement_id": achievement_id})
     except aiohttp.ClientResponseError as e:
         if e.status == 409:
-            return False
+            return {"earned": False, "applied_amount": 0, "new_affection": None}
         raise
-    return True
+
+    # db/affection.py가 이미 이 모듈의 maybe_award_affection_milestones()를 최상단에서
+    # import하므로, 여기서 db.affection을 최상단에서 import하면 순환된다 — 지역 import로 끊는다.
+    from db.affection import add_affection_uncapped
+
+    module = achievements.REGISTRY[achievement_id]
+    bonus = _LEGENDARY_BONUS if module.RARITY == achievements.LEGENDARY else _NORMAL_BONUS
+    result = await add_affection_uncapped(
+        user_id, bonus, "achievement_bonus", check_achievements=False, apply_day_multiplier=False
+    )
+    return {"earned": True, "applied_amount": bonus, "new_affection": result["new_affection"]}
 
 
 async def revoke(user_id: int, achievement_id: str) -> bool:
@@ -72,15 +92,15 @@ async def maybe_award_affection_milestones(
     notices: list[str] = []
 
     if applied_amount > 0:
-        if await award(user_id, achievements.hammie_love_you.ID):
+        if (await award(user_id, achievements.hammie_love_you.ID))["earned"]:
             notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.hammie_love_you)}!!")
 
     if new_affection >= _GREAT_OWNER_THRESHOLD:
-        if await award(user_id, achievements.great_owner.ID):
+        if (await award(user_id, achievements.great_owner.ID))["earned"]:
             notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.great_owner)}!!")
 
     if new_affection >= _ALMOND_WORTHY_THRESHOLD:
-        if await award(user_id, achievements.almond_worthy.ID):
+        if (await award(user_id, achievements.almond_worthy.ID))["earned"]:
             notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.almond_worthy)}!!")
 
     return "\n".join(notices) if notices else None

@@ -10,11 +10,12 @@ from core import onboarding, slash_commands
 from core.chat import handle_natural_language
 from core.client import create_tree
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
-from db.guild_channels import set_last_channel
+from db.guild_channels import get_designated_channel, set_last_channel
 from db.guild_sleep_state import any_triggered_tonight
 from db.users import get_user, increment_chat_count
 from events import call_event, greeting, presence, sleep_event, wake_event
 from events.scheduler import (
+    TEST_GUILD_ID,
     is_late_wake_today,
     is_sleep_time,
     is_sleep_time_for,
@@ -153,10 +154,20 @@ def setup_dispatcher(client: discord.Client) -> None:
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
             return
 
-        # "bt set"으로 걸린 이모지 태그는 호출 단어/명령어/취침 시간대와 완전히 무관하게
+        # "ds here"로 지정 채널이 설정된 서버에서는 그 채널 밖 메시지를 아예 처리하지
+        # 않는다(이모지 태그 포함, 읽기 자체를 최적화) — 관리자 콘솔(세션/oneshot/명령어
+        # 전용 방/트리거 오탐 포함)만 예외라 "ds reset"으로 스스로 갇힐 위험이 없다.
+        # 테스트 서버는 자체 3채널 테스트 체계가 이미 있어 이 게이트 대상에서 제외한다.
+        if message.guild.id != TEST_GUILD_ID:
+            designated = get_designated_channel(message.guild.id)
+            if designated is not None and message.channel.id != designated:
+                if not admin.should_intercept(message):
+                    return
+
+        # "ej set"으로 걸린 이모지 태그는 호출 단어/명령어/취침 시간대와 완전히 무관하게
         # 이 유저의 모든 메시지에 적용된다 — 아래 어떤 분기로 흐르든 상관없이 먼저 처리한다.
         # 봇/애플리케이션 계정도 이 태그 하나만은 대상이 된다(자기 자신은 _parse_user_id가
-        # bt set 등록 자체를 막아서 이 봇이 스스로에게 반응을 다는 일은 없다).
+        # ej set 등록 자체를 막아서 이 봇이 스스로에게 반응을 다는 일은 없다).
         await admin.apply_emoji_tags(message)
 
         if message.author.bot:

@@ -27,3 +27,29 @@ def get_commit_hash() -> str:
 def get_last_updated_iso() -> str:
     """마지막 커밋 일시(ISO 8601). git 정보를 못 구하면 프로세스 시작 시각으로 대체한다."""
     return _git("log", "-1", "--format=%cI") or _START_TIME.isoformat()
+
+
+def get_previous_commit() -> tuple[str, str] | None:
+    """(짧은 해시, ISO 일시) — HEAD 바로 이전 커밋. 이전 커밋이 없거나(첫 커밋) git 정보를
+    못 구하면(배포 환경의 얕은 클론 등) None — get_commit_hash()와 달리 폴백 문자열을
+    반환하지 않는다, 호출부가 "정보 없음"과 "정상인데 이전 커밋이 없음"을 구분해야 해서."""
+    output = _git("log", "-2", "--format=%h %cI")
+    if not output:
+        return None
+    lines = output.splitlines()
+    if len(lines) < 2:
+        return None
+    h, iso = lines[1].split(" ", 1)
+    return h, iso
+
+
+def get_recent_commits(days: int = 30) -> list[tuple[str, str, str]]:
+    """(짧은 해시, ISO 일시, 제목) 목록, 최신순. git 정보를 못 구하면 빈 리스트."""
+    output = _git("log", f"--since={days}.days", "--format=%h|%cI|%s")
+    if not output:
+        return []
+    result = []
+    for line in output.splitlines():
+        h, iso, subject = line.split("|", 2)
+        result.append((h, iso, subject))
+    return result
