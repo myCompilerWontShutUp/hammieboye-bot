@@ -3,23 +3,19 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class UpdateEntry:
-    date: str  # "2026-09-03" (KST)
-    version: str  # 커밋 짧은 해시, 예: "c847d67"
     changes: tuple[str, ...]  # 실제 서비스에 체감되는 변경만 — 관리자 명령어/내부 도구
     # 변경은 여기 넣지 않는다.
+    #
+    # 날짜/버전은 여기에 안 담는다 — "an update"가 실제로 방송되는 시점의 날짜/버전
+    # (admin/version.py::get_version_label())을 그때그때 그대로 보여준다(admin/console.py
+    # ::_build_update_embed). 이 항목은 "무엇이 바뀌었는지"만 기록한다.
 
 
 # 최신 항목이 맨 앞. 앞으로 "푸시해주세요" 요청이 있을 때마다 이 튜플 맨 앞에 새 항목을
 # 추가한다(append) — 사용자가 명시적으로 초기화를 지시하기 전까지는 기존 항목을 지우지
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
-#
-# ⚠️ 아래 항목의 version은 아직 실제 커밋 해시가 아니다 — 이번 배치가 아직 커밋/푸시되기
-# 전에 미리 작성한 것이라 자리표시자를 넣어뒀다. 실제로 커밋/푸시할 때 admin/version.py::
-# get_commit_hash()가 반환하는 실제 짧은 해시로 바꿔줄 것.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
-        date="2026-09-03",
-        version="(다음 커밋)",
         changes=(
             "주말과 기념일에는 호감도를 2배, 햄미 생일에는 3배 받을 수 있게 되었습니다. "
             "부름 이벤트도 이런 날에는 더 자주 발생합니다.",
@@ -44,6 +40,6 @@ def get_text() -> str:
     if not ENTRIES:
         return "아직 등록된 업데이트 기록이 없어."
     return "\n\n".join(
-        f"{entry.date} (버전 {entry.version})\n" + "\n".join(f"- {c}" for c in entry.changes)
-        for entry in ENTRIES
+        f"업데이트 {i}\n" + "\n".join(f"- {c}" for c in entry.changes)
+        for i, entry in enumerate(ENTRIES, start=1)
     )
