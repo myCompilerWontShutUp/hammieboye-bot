@@ -150,6 +150,10 @@ CREATE TABLE daily_stats (
   negative_emotion_streak           integer NOT NULL DEFAULT 0,     -- 부정 감정 연속 발생 횟수
   negative_emotion_daily_count      integer NOT NULL DEFAULT 0,     -- 부정 감정 당일 누적 발생 횟수
 
+  -- 생일/아침 인사 자연어 보상 (신규, 1인 1일 1회)
+  birthday_greeting_claimed         boolean NOT NULL DEFAULT false,
+  morning_greeting_claimed          boolean NOT NULL DEFAULT false,
+
   -- 쿨타임 남용(4-5) 카운터 — 이벤트별로 집계 (예: {"plastic_bottle": 2})
   cooldown_abuse_counts              jsonb NOT NULL DEFAULT '{}'::jsonb,
 
@@ -248,15 +252,23 @@ CREATE TABLE global_call_events (
 CREATE INDEX idx_global_call_events_active ON global_call_events (expires_at) WHERE claimed_by IS NULL;
 
 -- ------------------------------------------------------------
--- 8. guild_channels — 서버별 "마지막 활동 채널"
+-- 8. guild_channels — 서버별 "마지막 활동 채널" / "지정 채널"
 --    부름/취침 이벤트처럼 봇이 먼저 말을 거는 기능이 어느 채널에
 --    올릴지 결정할 때 쓴다. 매 메시지마다 최신값으로 덮어쓴다.
+--    designated_channel_id는 관리자 "ds here"/"ds reset" 명령어로 설정하는 서버별
+--    지정 채널 — NULL이면 지정 채널 없음(기존처럼 last_channel_id 사용), 값이 있으면
+--    항상 우선한다.
 -- ------------------------------------------------------------
 
 CREATE TABLE guild_channels (
-  guild_id         bigint PRIMARY KEY,
-  last_channel_id   bigint NOT NULL,
-  updated_at         timestamptz NOT NULL DEFAULT now()
+  guild_id                 bigint PRIMARY KEY,
+  -- nullable로 완화된 이유: "ds here"가 그 서버의 첫 상호작용일 수 있어(자연어로
+  -- last_channel_id가 아직 한 번도 안 채워진 서버) designated_channel_id만 있는 새 행이
+  -- 생길 수 있다 — db/guild_channels.py::get_last_channel()도 이미 int | None을 반환해서
+  -- 호출부 전부 None을 처리하고 있었다.
+  last_channel_id          bigint,
+  designated_channel_id    bigint,
+  updated_at               timestamptz NOT NULL DEFAULT now()
 );
 
 -- ------------------------------------------------------------
@@ -364,10 +376,12 @@ CREATE TABLE user_emoji_tags (
 );
 
 -- ------------------------------------------------------------
--- 10. 원자적 호감도 증감 RPC (일일 +20 상한 적용, affection_log 기록)
+-- 10. 원자적 호감도 증감 RPC (일일 +100 상한 적용, affection_log 기록)
 --     상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
 --     이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
---     +20 일일 상한이 절대 뚫리지 않는다.
+--     +100 일일 상한이 절대 뚫리지 않는다. 날짜(주말/기념일/생일)와 무관하게 고정값 —
+--     주말/기념일/생일 배율은 db/affection.py가 이 함수를 부르기 전에 이미 곱해서
+--     넘긴다(§0 참고).
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION add_affection(
@@ -394,7 +408,7 @@ BEGIN
   FOR UPDATE;
 
   IF p_amount > 0 THEN
-    v_applied := LEAST(p_amount, GREATEST(20 - v_current_gain, 0));
+    v_applied := LEAST(p_amount, GREATEST(100 - v_current_gain, 0));
   ELSE
     v_applied := p_amount;
   END IF;

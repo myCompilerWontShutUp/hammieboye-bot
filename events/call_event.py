@@ -11,6 +11,7 @@ from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL, openai
 from core.discord_names import resolve_real_name
 from core.korean import josa
 from events.scheduler import KST, random_times_in_window, resolve_broadcast_channel_id
+from events.special_days import get_call_event_count
 from db.achievements import award as award_achievement
 from db.affection import add_affection
 from db.call_events import (
@@ -29,7 +30,6 @@ from db.users import increment_help_count
 _client: discord.Client | None = None
 _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-_DAILY_EVENT_COUNT = 5
 WINDOW_START = time(7, 30)
 WINDOW_END = time(22, 30)
 _EVENT_WINDOW = timedelta(minutes=10)
@@ -253,18 +253,18 @@ def init(client: discord.Client) -> None:
 
 
 async def schedule_today() -> None:
-    """매일 06:30(KST)에 그날 보낼 5개 시각을 한 번에 결정한다(인접 간격 최소 30분)."""
-    times = random_times_in_window(
-        _DAILY_EVENT_COUNT, WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES
-    )
+    """매일 06:30(KST)에 그날 보낼 시각을 한 번에 결정한다(인접 간격 최소 30분). 개수는
+    오늘이 평범한 날/주말·기념일/생일이냐에 따라 3/5개로 달라진다(events.special_days)."""
     today_kst = datetime.now(KST).date()
+    times = random_times_in_window(
+        get_call_event_count(today_kst), WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES
+    )
     for t in times:
         scheduled_at = datetime.combine(today_kst, t, tzinfo=KST)
         await schedule_one(scheduled_at)
 
 
 async def schedule_one(scheduled_at: datetime) -> dict:
-    """정규 스케줄링과 관리자 수동 생성(gn call event) 둘 다 이걸 써서 동일하게 등록된다."""
     prompt_text = random.choice(_PROMPT_TEXTS)
     return await schedule(scheduled_at, prompt_text)
 
@@ -372,7 +372,7 @@ async def handle_potential_response(
     if classification != "relevant":
         return 0, None, False, None
 
-    reward = random.randint(1, 10)
+    reward = random.randint(1, 5)
     won = await claim(event["id"], user_id, reward)
     if not won:
         # 캐시가 살짝 낡아 활성으로 보였지만 이미 다른 사람이 클레임한 경우.
@@ -384,11 +384,14 @@ async def handle_potential_response(
     await _announce_winner(event, user_id, guild_id)
 
     achievement_notice = result["achievement_notice"]
-    if await award_achievement(user_id, achievements.call_event_help.ID):
+    applied_amount = result["applied_amount"]
+    achievement_result = await award_achievement(user_id, achievements.call_event_help.ID)
+    if achievement_result["earned"]:
+        applied_amount += achievement_result["applied_amount"]
         extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
         achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
-    return result["applied_amount"], achievement_notice, True, None
+    return applied_amount, achievement_notice, True, None
 
 
 async def _handle_grace_period(user_id: int, text: str) -> tuple[int, str | None, bool, str | None]:

@@ -270,7 +270,10 @@ async def handle(user_id: int) -> str:
         already_claimed_today = True
 
     # 전체 기간 기준 최초 1회만(award()가 멱등이라 매일 초기화되는 플래그와 무관하게 판정).
-    if await award_achievement(user_id, achievements.plastic_dance.ID):
+    achievement_result = await award_achievement(user_id, achievements.plastic_dance.ID)
+    if achievement_result["earned"]:
+        total_delta += achievement_result["applied_amount"]
+        current_affection = achievement_result["new_affection"]
         achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance.NAME}!!")
 
     # 하루 최대 획득량은 4(성공 +1, 연속 3회 보너스 +3) — 4회차 이상은 보너스 미지급.
@@ -286,8 +289,12 @@ async def handle(user_id: int) -> str:
     elif new_streak >= _STREAK_TARGET:
         already_claimed_today = True
 
-    if new_streak >= _STREAK_TARGET and await award_achievement(user_id, achievements.plastic_dance_god.ID):
-        achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
+    if new_streak >= _STREAK_TARGET:
+        god_result = await award_achievement(user_id, achievements.plastic_dance_god.ID)
+        if god_result["earned"]:
+            total_delta += god_result["applied_amount"]
+            current_affection = god_result["new_affection"]
+            achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
 
     await update_daily_stats(user_id, update_fields)
     # 같은 던지기에서 다른 마일스톤으로 새 호감도를 받았다면 "이미 획득함" 노트는 모순돼 보이므로 생략.

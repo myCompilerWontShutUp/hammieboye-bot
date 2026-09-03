@@ -2,6 +2,7 @@ from achievements import (
     almond_worthy,
     call_event_help,
     daily_top_talker,
+    early_bird,
     first_chat,
     great_owner,
     hammie_love_you,
@@ -27,6 +28,7 @@ _MODULES = (
     daily_top_talker,
     nightmare_freed,
     almond_worthy,
+    early_bird,
 )
 
 REGISTRY = {module.ID: module for module in _MODULES}

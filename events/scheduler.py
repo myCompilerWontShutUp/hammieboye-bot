@@ -1,8 +1,12 @@
+import logging
 import random
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 
+import discord
 from discord.ext import tasks
+
+from db.guild_channels import get_designated_channel, get_last_channel
 
 # 한국시간(KST) 고정 오프셋. 서머타임이 없어서 UTC+9 고정으로 충분하다.
 KST = timezone(timedelta(hours=9))
@@ -62,14 +66,62 @@ def is_sleep_time_for(channel_id: int | None = None, now: datetime | None = None
     return is_sleep_time(now)
 
 
+_MORNING_GREETING_WINDOW = timedelta(minutes=30)
+
+
+def is_within_morning_greeting_window(now: datetime | None = None) -> bool:
+    """오늘 기상 시각(정상 06:30, 지연 기상이면 07:00) 기준 +30분 이내인지 — 아침 인사
+    자연어 보상(3-6) 판정용. is_sleep_time과 동일한 방식으로 오늘의 기상 시각을 정한다."""
+    current_dt = (now or datetime.now(timezone.utc)).astimezone(KST)
+    wake_boundary = DELAYED_WAKE_TIME if _late_wake_date == current_dt.date() else WAKE_TIME
+    window_start = datetime.combine(current_dt.date(), wake_boundary, tzinfo=KST)
+    window_end = window_start + _MORNING_GREETING_WINDOW
+    return window_start <= current_dt < window_end
+
+
 def resolve_broadcast_channel_id(guild_id: int, last_channel_id: int | None) -> int | None:
-    """부름 이벤트/아침 인사/취침 이벤트처럼 봇이 스스로 올리는 전역 메시지가 어느 채널로
-    갈지 결정한다. 테스트 서버는 항상 고정된 sync 채널로만 보낸다 — awake/asleep 채널은
+    """부름 이벤트/아침 인사/취침 이벤트/공지처럼 봇이 스스로 올리는 전역 메시지가 어느
+    채널로 갈지 결정한다. 테스트 서버는 항상 고정된 sync 채널로만 보낸다(자체 3채널 테스트
+    체계가 이미 있어 새 지정 채널 시스템과 별개로 항상 우선) — awake/asleep 채널은
     반응형(누군가 먼저 말을 걸었을 때만 동작)이라 자동 게시 대상에서 제외된다. 그 외
-    서버는 기존처럼 "마지막 호출된 채널"을 그대로 쓴다."""
+    서버는 관리자가 "ds here"로 지정 채널을 설정했으면 그 채널을, 아니면 기존처럼
+    "마지막 호출된 채널"을 쓴다."""
     if guild_id == TEST_GUILD_ID:
         return TEST_SYNC_CHANNEL_ID
+    designated = get_designated_channel(guild_id)
+    if designated is not None:
+        return designated
     return last_channel_id
+
+
+async def broadcast_to_guilds(
+    client: discord.Client,
+    allowed_guild_ids,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+) -> None:
+    """모든 허용 서버의 방송 채널(resolve_broadcast_channel_id)에 같은 내용을 보낸다 —
+    부름/취침/기상 3곳이 각자 반복하던 "guild 순회 -> 채널 결정 -> 전송" 패턴을 공용
+    헬퍼로 뽑은 것(현재는 관리자 콘솔의 "an update"/"an msg" 공지 전용으로 쓰인다)."""
+    kwargs: dict = {}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    for guild in client.guilds:
+        if guild.id not in allowed_guild_ids:
+            continue
+        channel_id = resolve_broadcast_channel_id(guild.id, await get_last_channel(guild.id))
+        if channel_id is None:
+            continue
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            continue
+        try:
+            await channel.send(**kwargs)
+        except discord.HTTPException:
+            logging.exception("Failed to broadcast message in guild %s", guild.id)
 
 
 def format_footer_time(now: datetime) -> str:
