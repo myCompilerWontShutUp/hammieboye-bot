@@ -35,6 +35,10 @@ async def increment_help_count(user_id: int) -> int:
     return await rpc("increment_help_count", {"p_user_id": user_id})
 
 
+async def increment_snacks_given(user_id: int) -> int:
+    return await rpc("increment_snacks_given", {"p_user_id": user_id})
+
+
 async def set_plastic_cooldown(user_id: int, until: datetime) -> dict:
     rows = await update(
         "users",
@@ -42,6 +46,22 @@ async def set_plastic_cooldown(user_id: int, until: datetime) -> dict:
         {"plastic_cooldown_until": until.isoformat()},
     )
     return rows[0]
+
+
+async def set_coin_cooldown(user_id: int, until: datetime) -> dict:
+    rows = await update(
+        "users",
+        {"user_id": f"eq.{user_id}"},
+        {"coin_cooldown_until": until.isoformat()},
+    )
+    return rows[0]
+
+
+async def claim_coin_cooldown(user_id: int, until: datetime) -> bool:
+    """쿨타임이 지금 끝나 있을 때(NULL 또는 만료)만 원자적으로 새 쿨타임을 설정한다
+    (/동전의 쿨타임 확인+설정 TOCTOU를 조건부 UPDATE로 보장). 실패(False)면 아직 쿨타임
+    중인 것 — 호출부가 최신 coin_cooldown_until을 다시 조회해 남은 시간을 계산해야 한다."""
+    return await rpc("claim_coin_cooldown", {"p_user_id": user_id, "p_until": until.isoformat()})
 
 
 async def delete_user(user_id: int) -> None:

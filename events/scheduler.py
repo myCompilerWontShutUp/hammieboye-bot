@@ -80,7 +80,7 @@ def is_within_morning_greeting_window(now: datetime | None = None) -> bool:
 
 
 def resolve_broadcast_channel_id(guild_id: int, last_channel_id: int | None) -> int | None:
-    """부름 이벤트/아침 인사/취침 이벤트/공지처럼 봇이 스스로 올리는 전역 메시지가 어느
+    """헬프 미 이벤트/아침 인사/취침 이벤트/공지처럼 봇이 스스로 올리는 전역 메시지가 어느
     채널로 갈지 결정한다. 테스트 서버는 항상 고정된 sync 채널로만 보낸다(자체 3채널 테스트
     체계가 이미 있어 새 지정 채널 시스템과 별개로 항상 우선) — awake/asleep 채널은
     반응형(누군가 먼저 말을 걸었을 때만 동작)이라 자동 게시 대상에서 제외된다. 그 외
@@ -102,7 +102,7 @@ async def broadcast_to_guilds(
     embed: discord.Embed | None = None,
 ) -> None:
     """모든 허용 서버의 방송 채널(resolve_broadcast_channel_id)에 같은 내용을 보낸다 —
-    부름/취침/기상 3곳이 각자 반복하던 "guild 순회 -> 채널 결정 -> 전송" 패턴을 공용
+    헬프 미/취침/기상 3곳이 각자 반복하던 "guild 순회 -> 채널 결정 -> 전송" 패턴을 공용
     헬퍼로 뽑은 것(현재는 관리자 콘솔의 "an update"/"an msg" 공지 전용으로 쓰인다)."""
     kwargs: dict = {}
     if content is not None:
@@ -133,7 +133,7 @@ def format_footer_time(now: datetime) -> str:
 def start_daily(hour: int, minute: int, callback: _DailyCallback) -> tasks.Loop:
     """매일 한국시간 hour:minute에 callback을 한 번 실행하는 백그라운드 태스크를 시작한다.
 
-    부름 이벤트/아침 인사(하루 06:30 기상 시각에 실행)와 취침 이벤트(00:00) 둘 다
+    헬프 미 이벤트/아침 인사(하루 06:30 기상 시각에 실행)와 취침 이벤트(00:00) 둘 다
     이 함수 위에서 등록한다.
     """
     kst_time = time(hour=hour, minute=minute, tzinfo=KST)
@@ -145,7 +145,7 @@ def start_daily(hour: int, minute: int, callback: _DailyCallback) -> tasks.Loop:
 def start_interval(seconds: float, callback: _DailyCallback) -> tasks.Loop:
     """seconds 간격으로 callback을 반복 실행하는 백그라운드 태스크를 시작한다.
 
-    부름 이벤트의 "예정 시각이 됐는지" / "만료됐는데 무응답인지" 주기 점검에 쓴다.
+    헬프 미 이벤트의 "예정 시각이 됐는지" / "만료됐는데 무응답인지" 주기 점검에 쓴다.
     """
     loop = tasks.loop(seconds=seconds)(callback)
     loop.start()

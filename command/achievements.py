@@ -60,10 +60,33 @@ _INTRO_OTHER_LINES = (
     "{name}의 업적을 소개할게!! _(설렘)_",
 )
 
-# 미획득 전설 등급은 이름을 숨겨 챌린지 성격을 유지한다.
-_HIDDEN_LEGENDARY = "**__[👑]__** ???"
+# /내업적·/니업적은 획득한 것만 보여준다 — 전체 목록은 /업적-리스트로 분리됐다(§1-7).
 _NO_EARNED_LINE = "- 아직 획득한 업적이 없어"
-_ALL_EARNED_LINE = "- 전부 다 모았어!!"
+_CATALOG_POINTER = "무슨 업적이 있는지 궁금하면 /업적-리스트를 확인해봐!!"
+
+# /업적-리스트 전용 인트로 풀 — 완전히 비개인화된 정적 카탈로그라 대상자 이름이 안 들어간다.
+_LIST_INTRO_LINES = (
+    "여기 업적 전체 목록이야!! _(자랑)_",
+    "이 세상 업적들, 싹 다 모아봤어!! _(뿌듯)_",
+    "업적 도감 공개!! _(반짝)_",
+    "이런 업적들이 있어!! _(설렘)_",
+    "업적 목록 가져왔어!! _(신남)_",
+    "짜잔, 업적 전체 목록이야!! _(당당)_",
+    "궁금했지?? 업적 도감이야!! _(장난)_",
+    "이만큼 업적이 있다구!! _(으쓱)_",
+    "업적 리스트 열어볼게!! _(호기심)_",
+    "업적 도감 펼쳐본다!! _(기대)_",
+    "여기 다 있어!! 업적 목록이야!! _(자신감)_",
+    "업적 전체 공개 타임!! _(들뜸)_",
+    "이게 지금까지의 업적들이야!! _(진지)_",
+    "업적 도감 보여줄게!! _(방긋)_",
+    "이 목록 보면 도전하고 싶어질걸?? _(웃음)_",
+    "업적들 쭉 나열해볼게!! _(정리)_",
+    "짠!! 업적 카탈로그야!! _(공개)_",
+    "이게 다 모을 수 있는 업적이야!! _(설명)_",
+    "업적 목록, 참고해봐!! _(권유)_",
+    "자, 업적 도감 여기 있어!! _(전달)_",
+)
 
 
 def _format_date(iso_str: str) -> str:
@@ -82,37 +105,18 @@ def _earned_lines(earned: list[dict]) -> list[str]:
     return lines or [_NO_EARNED_LINE]
 
 
-def _unearned_lines(earned_ids: set[str]) -> list[str]:
-    """등급 상관없이 업적이 만들어진 순서로 정렬한다. 일반은 이름 그대로, 전설은 숨긴다."""
-    lines = []
-    for module in achievements.REGISTRY.values():
-        if module.ID in earned_ids:
-            continue
-        if module.RARITY == achievements.LEGENDARY:
-            lines.append(f"- {_HIDDEN_LEGENDARY}")
-        else:
-            lines.append(f"- {module.NAME}")
-    return lines or [_ALL_EARNED_LINE]
-
-
 async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, discord.Embed]:
     """target_name이 None이면 본인(/내업적) 조회, 아니면 그 이름의 다른 사람(/니업적) 조회."""
     is_self = target_name is None
 
     earned = await get_earned(user_id)
-    earned_ids = {row["achievement_id"] for row in earned}
 
     title = "나의 업적" if is_self else f"{target_name}의 업적"
     embed = discord.Embed(title=title, description=_DESCRIPTION, color=EMBED_COLOR)
 
     embed.add_field(
         name=f"🏆 획득한 업적 ({len(earned)}/{achievements.TOTAL_COUNT})",
-        value="\n".join(_earned_lines(earned)) + "\n​",
-        inline=False,
-    )
-    embed.add_field(
-        name="🔒 아직 못 얻은 업적",
-        value="\n".join(_unearned_lines(earned_ids)),
+        value="\n".join(_earned_lines(earned)) + f"\n​\n{_CATALOG_POINTER}",
         inline=False,
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
@@ -120,3 +124,28 @@ async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, 
     if is_self:
         return random.choice(_INTRO_LINES), embed
     return random.choice(_INTRO_OTHER_LINES).format(name=target_name), embed
+
+
+async def list_handle(user_id: int) -> tuple[str, discord.Embed]:
+    """/업적-리스트 — 일반 업적은 항상 이름+획득 방법을 공개하는 정적 카탈로그지만,
+    전설 업적은 호출한 본인의 획득 여부에 따라 개인화된다: 이미 획득했으면 실명+획득
+    방법을 그대로 보여주고, 아직 못 얻었으면 "발견의 재미" 원칙대로 ???+힌트로 감춘다
+    (모든 전설을 무조건 숨기는 것도, 미획득 전설의 실명/조건을 공개하는 것도 둘 다 틀림)."""
+    earned = await get_earned(user_id)
+    earned_ids = {row["achievement_id"] for row in earned}
+
+    legendary = [m for m in achievements.REGISTRY.values() if m.RARITY == achievements.LEGENDARY]
+    normal = [m for m in achievements.REGISTRY.values() if m.RARITY != achievements.LEGENDARY]
+
+    lines = []
+    for module in legendary:
+        if module.ID in earned_ids:
+            lines.append(f"- {achievements.format_name(module)} — {module.HOW_TO_EARN}")
+        else:
+            lines.append(f"- {achievements.format_hidden_legendary(module)}")
+    lines += [f"- {module.NAME} — {module.HOW_TO_EARN}" for module in normal]
+
+    embed = discord.Embed(title="📖 업적 목록", color=EMBED_COLOR)
+    embed.add_field(name=f"전체 업적 ({achievements.TOTAL_COUNT}개)", value="\n".join(lines), inline=False)
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    return random.choice(_LIST_INTRO_LINES), embed

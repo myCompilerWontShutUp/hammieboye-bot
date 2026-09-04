@@ -113,7 +113,7 @@ def _build_task(today: date) -> str:
     if today.month == BIRTH_DATE.month and today.day == BIRTH_DATE.day:
         task += " 오늘은 당신(햄미)의 생일입니다. 축하해달라는 메시지를 추가하세요."
 
-    # 호감도 배율 안내도 판단을 모델에 맡기지 않고 직접 계산해서 주입한다(부름 이벤트
+    # 호감도 배율 안내도 판단을 모델에 맡기지 않고 직접 계산해서 주입한다(헬프 미 이벤트
     # 횟수는 언급하지 않는다 — 배율만 알리는 게 사용자 요청 사항).
     if get_day_type(today) != DAY_TYPE_NORMAL:
         task += (

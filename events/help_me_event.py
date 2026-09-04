@@ -1,7 +1,7 @@
 import json
 import logging
 import random
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import discord
 from openai import AsyncOpenAI
@@ -10,13 +10,15 @@ import achievements
 from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL, openai_service_tier_kwargs
 from core.discord_names import resolve_real_name
 from core.korean import josa
+from events import dessert_time
 from events.scheduler import KST, random_times_in_window, resolve_broadcast_channel_id
-from events.special_days import get_call_event_count
+from events.special_days import get_help_me_event_count
 from db.achievements import award as award_achievement
 from db.affection import add_affection
 from db.call_events import (
     claim,
     get_active_events,
+    get_claimed_by,
     get_due_unposted,
     get_expired_unpenalized,
     get_recently_claimed,
@@ -24,9 +26,14 @@ from db.call_events import (
     mark_posted,
     schedule,
 )
+from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.guild_channels import get_last_channel
 from db.users import increment_help_count
 
+# 사용자 대상 명칭은 "헬프 미 이벤트"로 개명됐지만(콜 이벤트/부름 이벤트에서), DB
+# 테이블(global_call_events)·RPC(claim_call_event)·업적 ID(call_event_help)는 전부
+# 사용자에게 안 보이는 내부 식별자라 그대로 둔다 — rename해봐야 체감 효과가 없고,
+# 라이브 테이블/함수 rename은 리스크만 있고 얻는 게 없다는 판단.
 _client: discord.Client | None = None
 _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -35,6 +42,10 @@ WINDOW_END = time(22, 30)
 _EVENT_WINDOW = timedelta(minutes=10)
 
 MIN_GAP_MINUTES = 30
+
+# "기쁜날 혼자 진심"(전설) — 평범한 날엔 하루 3번뿐이라 사실상 special/birthday(5번)
+# 날에만 실제로 달성 가능한, 의도된 난이도.
+_ALONE_ON_HAPPY_DAY_THRESHOLD = 5
 
 # 활성 이벤트는 하루 5번, 10분씩만 존재하는데 handle_potential_response는 자연어
 # 메시지마다 매번 조회하므로 아주 짧게 캐싱한다 — claim()/부정반응은 여전히 DB RPC로
@@ -61,25 +72,25 @@ def _invalidate_active_events_cache() -> None:
 
 
 _PROMPT_TEXTS = (
-    "배고파... 뭐 먹을 거 없나?",
     "목말라... 물이 다 떨어졌어",
     "심심해... 같이 놀아줄 사람 없어??",
-    "출출한데 간식 없나... 누가 좀 챙겨줘",
     "심심하다 심심해... 뭐라도 재밌는 거 없을까",
     "쳇바퀴 좀 돌려줄 사람 없나... 다리가 근질근질해",
-    "볼주머니가 텅 비었어... 뭐라도 넣어줄 사람?",
     "톱밥 정리 좀 도와줄 사람 없나?",
-    "해바라기씨가 다 떨어졌어... 누가 좀 채워줘",
     "쳇바퀴가 삐걱거려... 손 좀 봐줄 사람?",
-    "밀웜이 먹고 싶은데 아무도 없나?",
     "숨숨집이 좁아진 것 같아... 넓혀줄 사람?",
     "털 손질 좀 도와줄 사람 없어?",
     "물통이 비었어... 채워줄 사람?",
     "낮잠 잘 자리 좀 만들어줄 사람 없나...",
+    "모래 목욕하고 싶은데 모래가 다 뭉쳐써... 새로 갈아줄 사람?",
+    "이빨 갈이용 나무토막이 다 닳았어... 새 거 놓아줄 사람?",
+    "둥지에 깔 포근한 솜이 부족해... 좀 챙겨줄 사람?",
+    "요즘 좀 쌀쌀한데 담요 하나 덮어줄 사람 없나?",
+    "케이지에 새 터널 하나 놓아주면 좋겠는데... 없나?",
 )
 
 # 클레임된 뒤 1분 동안은 relevant 반응에 고정 +1 + 전용 감사 문구로 응답한다(경쟁에
-# 아깝게 밀린 유저에게도 성의 표시). 이 유예 기간의 irrelevant/negative는 콜 이벤트
+# 아깝게 밀린 유저에게도 성의 표시). 이 유예 기간의 irrelevant/negative는 헬프 미 이벤트
 # 관점에서는 완전히 무시하고, override_response를 None으로 반환해 자연어의 다른
 # 페널티(과호출/반복/감정)는 core/chat.py에서 평소대로 그대로 적용되게 한다.
 _GRACE_PERIOD = timedelta(minutes=1)
@@ -93,13 +104,12 @@ _recently_claimed_cache_until: datetime | None = None
 # (놀아주기/손질 등)를 나눠 어울리는 동사 템플릿을 쓴다. _PROMPT_TEXTS와 1:1 대응해야
 # 하므로 아래 assert로 검증한다.
 _ALREADY_HELPED_GIVE_ITEMS = {
-    "배고파... 뭐 먹을 거 없나?": "먹이",
     "목말라... 물이 다 떨어졌어": "물",
-    "출출한데 간식 없나... 누가 좀 챙겨줘": "간식",
-    "볼주머니가 텅 비었어... 뭐라도 넣어줄 사람?": "볼주머니에 넣을 간식",
-    "해바라기씨가 다 떨어졌어... 누가 좀 채워줘": "해바라기씨",
-    "밀웜이 먹고 싶은데 아무도 없나?": "밀웜",
     "물통이 비었어... 채워줄 사람?": "물통에 채울 물",
+    "이빨 갈이용 나무토막이 다 닳았어... 새 거 놓아줄 사람?": "이빨 갈이용 나무토막",
+    "둥지에 깔 포근한 솜이 부족해... 좀 챙겨줄 사람?": "둥지에 깔 솜",
+    "요즘 좀 쌀쌀한데 담요 하나 덮어줄 사람 없나?": "담요",
+    "케이지에 새 터널 하나 놓아주면 좋겠는데... 없나?": "새 터널",
 }
 _ALREADY_HELPED_DO_ITEMS = {
     "심심해... 같이 놀아줄 사람 없어??": "놀아주는 것",
@@ -110,6 +120,7 @@ _ALREADY_HELPED_DO_ITEMS = {
     "숨숨집이 좁아진 것 같아... 넓혀줄 사람?": "숨숨집 넓히는 것",
     "털 손질 좀 도와줄 사람 없어?": "털 손질",
     "낮잠 잘 자리 좀 만들어줄 사람 없나...": "낮잠 자리",
+    "모래 목욕하고 싶은데 모래가 다 뭉쳐써... 새로 갈아줄 사람?": "모래 갈아주는 것",
 }
 assert set(_ALREADY_HELPED_GIVE_ITEMS) | set(_ALREADY_HELPED_DO_ITEMS) == set(_PROMPT_TEXTS)
 
@@ -181,7 +192,7 @@ _RESPONSE_JUDGE_INSTRUCTIONS = """\
 너는 디스코드 챗봇 "Hammie(햄미)"가 올린 이벤트 메시지에 대한 사용자 답장을 분류하는 심사자다.
 
 Hammie가 올린 메시지와 사용자의 답장을 보고 classification을 다음 중 하나로 고른다:
-- relevant: Hammie의 상황(배고픔/목마름/심심함 등)에 맞게 챙겨주거나 도와주는 반응
+- relevant: Hammie의 상황(목마름/심심함/필요한 것 등)에 맞게 챙겨주거나 도와주는 반응
 - negative: 무시하거나, 쌀쌀맞게 거절하거나, 혼자 알아서 하라는 식으로 부정적으로 반응
 - irrelevant: 이벤트와 아예 관련 없는 그냥 일반 대화\
 """
@@ -219,7 +230,7 @@ _TIMEOUT_LINES = (
     "아무도 안 와줘서 오늘은 진짜 서운했어... _(서운)_",
 )
 
-# 부름 이벤트가 활성 상태인 동안 관련 없는(irrelevant) 잡담이면 정상 생성 대신 이
+# 헬프 미 이벤트가 활성 상태인 동안 관련 없는(irrelevant) 잡담이면 정상 생성 대신 이
 # 고정 문구로 완전히 대체하고 -1을 적용한다(negative의 -5보다 약함, 1인당 제한 없음).
 # 특정 이벤트 문구를 언급하지 않고 일반화해 15개 프롬프트 어디에나 자연스럽게 어울린다.
 _IRRELEVANT_PENALTY = -1
@@ -252,13 +263,39 @@ def init(client: discord.Client) -> None:
     _client = client
 
 
+# 스케줄 후보가 디저트 타임 3슬롯 중 하나와 겹치면 통째로 다시 뽑는다(최대 시도 횟수).
+# random_times_in_window 자체의 구간 축소 알고리즘은 안 건드리고, 바깥에서 검증+재시도만
+# 추가하는 방식 — 900분 구간에 30분짜리 금지 구간 3개뿐이라 대부분 몇 번 안에 통과한다.
+_MAX_SCHEDULE_ATTEMPTS = 20
+
+
+def _overlaps_dessert_time(t: time) -> bool:
+    event_end = (datetime.combine(date(2000, 1, 1), t) + _EVENT_WINDOW).time()
+    for slot_start in dessert_time.SLOTS.values():
+        slot_end = dessert_time.slot_end(slot_start)
+        if t < slot_end and slot_start < event_end:
+            return True
+    return False
+
+
 async def schedule_today() -> None:
     """매일 06:30(KST)에 그날 보낼 시각을 한 번에 결정한다(인접 간격 최소 30분). 개수는
-    오늘이 평범한 날/주말·기념일/생일이냐에 따라 3/5개로 달라진다(events.special_days)."""
+    오늘이 평범한 날/주말·기념일/생일이냐에 따라 3/5개로 달라진다(events.special_days).
+    후보 중 하나라도 디저트 타임(events.dessert_time)과 겹치면 배치 전체를 다시 뽑는다."""
     today_kst = datetime.now(KST).date()
-    times = random_times_in_window(
-        get_call_event_count(today_kst), WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES
-    )
+    count = get_help_me_event_count(today_kst)
+
+    times: list[time] = []
+    for attempt in range(_MAX_SCHEDULE_ATTEMPTS):
+        times = random_times_in_window(count, WINDOW_START, WINDOW_END, min_gap_minutes=MIN_GAP_MINUTES)
+        if not any(_overlaps_dessert_time(t) for t in times):
+            break
+    else:
+        logging.warning(
+            "Could not avoid dessert time overlap after %d attempts; using last draw anyway",
+            _MAX_SCHEDULE_ATTEMPTS,
+        )
+
     for t in times:
         scheduled_at = datetime.combine(today_kst, t, tzinfo=KST)
         await schedule_one(scheduled_at)
@@ -296,7 +333,7 @@ async def _post_one(event: dict) -> None:
             sent = await channel.send(event["prompt_text"])
             messages[str(guild.id)] = {"channel_id": sent.channel.id, "message_id": sent.id}
         except discord.HTTPException:
-            logging.exception("Failed to post call event in guild %s", guild.id)
+            logging.exception("Failed to post help me event in guild %s", guild.id)
 
     now = datetime.now(timezone.utc)
     await mark_posted(event["id"], now, now + _EVENT_WINDOW, messages)
@@ -329,23 +366,23 @@ async def _announce_timeout(event: dict) -> None:
             old_message = await channel.fetch_message(location["message_id"])
             await old_message.delete()
         except discord.HTTPException:
-            logging.exception("Failed to delete expired call event message in guild %s", guild_id_str)
+            logging.exception("Failed to delete expired help me event message in guild %s", guild_id_str)
         try:
             await channel.send(line)
         except discord.HTTPException:
-            logging.exception("Failed to announce call event timeout in guild %s", guild_id_str)
+            logging.exception("Failed to announce help me event timeout in guild %s", guild_id_str)
 
 
 async def handle_potential_response(
     user_id: int, guild_id: int, text: str
 ) -> tuple[int, str | None, bool, str | None]:
-    """자연어 메시지가 활성 부름 이벤트에 대한 반응인지 확인하고 보상/페널티를 적용한다.
+    """자연어 메시지가 활성 헬프 미 이벤트에 대한 반응인지 확인하고 보상/페널티를 적용한다.
     항상 호출되며(호감도 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
 
     반환값: (적용된 호감도 증감, 새 업적 안내 또는 None, 이벤트 반응이었는지, 응답을
     완전히 대체할 고정 문구 또는 None).
     - 세 번째 값은 relevant(클레임 실패 포함)/negative/irrelevant면 True, 그 외(활성
-      이벤트 없음/분류 실패)면 False — core/chat.py가 "상한 초과 상태에서도 부름 이벤트
+      이벤트 없음/분류 실패)면 False — core/chat.py가 "상한 초과 상태에서도 헬프 미 이벤트
       응답은 남용 카운트에서 제외"하는 데 쓴다.
     - 네 번째 값은 irrelevant일 때만 채워지며, core/chat.py는 이 값이 있으면 LLM 생성을
       건너뛰고 이 문구로 완전히 대체한다. 호감도<0/상한 소진/반복 페널티처럼 애초에
@@ -375,7 +412,11 @@ async def handle_potential_response(
     reward = random.randint(1, 5)
     won = await claim(event["id"], user_id, reward)
     if not won:
-        # 캐시가 살짝 낡아 활성으로 보였지만 이미 다른 사람이 클레임한 경우.
+        # 캐시가 살짝 낡아 활성으로 보였지만 이미 클레임된 경우 — 클레임한 사람이
+        # 자기 자신이면(방금 이긴 직후 5초 캐시 TTL 안에 또 relevant 메시지를 보낸 경우)
+        # 추가 보상 없이 조용히 끝낸다. 이미 자기가 다 받았으니 이중 지급이면 안 된다.
+        if await get_claimed_by(event["id"]) == user_id:
+            return 0, None, True, None
         return await _grant_already_helped(user_id, event["prompt_text"])
 
     _invalidate_active_events_cache()
@@ -391,16 +432,34 @@ async def handle_potential_response(
         extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
         achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
+    # 오늘 실제로 "이긴"(클레임 성공한) 횟수만 센다 — 유예 기간 콘솔레이션(_grant_already_helped)은
+    # 포함하지 않는다. /내정보의 "도움 횟수" 표시와 이 업적이 이 카운터 하나를 공유한다.
+    stats = await ensure_daily_stats(user_id)
+    helped_today = stats["help_me_events_helped_today"] + 1
+    await update_daily_stats(user_id, {"help_me_events_helped_today": helped_today})
+    if helped_today >= _ALONE_ON_HAPPY_DAY_THRESHOLD:
+        legendary_result = await award_achievement(user_id, achievements.alone_on_a_happy_day.ID)
+        if legendary_result["earned"]:
+            applied_amount += legendary_result["applied_amount"]
+            extra = f"🏆 업적 달성: {achievements.format_name(achievements.alone_on_a_happy_day)}!!"
+            achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
+
     return applied_amount, achievement_notice, True, None
 
 
 async def _handle_grace_period(user_id: int, text: str) -> tuple[int, str | None, bool, str | None]:
     """활성 이벤트가 없을 때 클레임된 지 1분 이내인 이벤트가 있는지 확인한다. relevant면
-    `_grant_already_helped()`로, 그 외는 이벤트 자체가 없는 것과 동일하게 처리한다."""
+    `_grant_already_helped()`로, 그 외는 이벤트 자체가 없는 것과 동일하게 처리한다.
+
+    클레임한 사람 본인이 유예 기간 중 또 relevant하게 반응해도 추가 지급하지 않는다 —
+    이미 정식 보상(1~5)을 다 받은 사람이라 여기서 +1을 더 주면 한 사람이 같은 이벤트로
+    두 번 받는 셈이 된다."""
     recently_claimed = await _get_recently_claimed_cached()
     if not recently_claimed:
         return 0, None, False, None
     event = recently_claimed[0]
+    if event.get("claimed_by") == user_id:
+        return 0, None, True, None
     classification = await _classify_response(event["prompt_text"], text)
     if classification != "relevant":
         return 0, None, False, None
@@ -435,7 +494,7 @@ async def _classify_response(prompt_text: str, reply_text: str) -> str | None:
         )
         return json.loads(result.output_text)["classification"]
     except Exception:
-        logging.exception("Call event response classification failed")
+        logging.exception("Help me event response classification failed")
         return None
 
 
@@ -462,4 +521,4 @@ async def _announce_winner(event: dict, winner_id: int, winner_guild_id: int) ->
             message = await channel.fetch_message(location["message_id"])
             await message.edit(content=message.content + note)
         except discord.HTTPException:
-            logging.exception("Failed to edit call event message in guild %s", guild_id_str)
+            logging.exception("Failed to edit help me event message in guild %s", guild_id_str)

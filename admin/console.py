@@ -21,7 +21,7 @@ from admin.version import (
 )
 from core.discord_names import resolve_real_name
 import documents.update_announcement as update_announcement
-from events.call_event import WINDOW_END, WINDOW_START
+from events.help_me_event import WINDOW_END, WINDOW_START
 from events.scheduler import (
     SLEEP_START,
     WAKE_TIME,
@@ -936,9 +936,9 @@ _COMMAND_LIST = (
     _CommandSpec("tc down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_tc_down),
     _CommandSpec("tc set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_tc_set),
     _CommandSpec("tc reset", 1, "{user_id} {boolean}", "해당 유저 오늘 대화 횟수를 0으로 리셋", _handle_tc_reset),
-    _CommandSpec("sh event all", 0, "{boolean}", "오늘 부름 이벤트 전부와 결과 표시", _handle_sh_event_all),
-    _CommandSpec("sh event next", 0, "{boolean}", "다음으로 남은 부름 이벤트 시각 표시", _handle_sh_event_next),
-    _CommandSpec("sh event last", 0, "{boolean}", "가장 최근에 지난 부름 이벤트 시각 표시", _handle_sh_event_last),
+    _CommandSpec("sh event all", 0, "{boolean}", "오늘 헬프 미 이벤트 전부와 결과 표시", _handle_sh_event_all),
+    _CommandSpec("sh event next", 0, "{boolean}", "다음으로 남은 헬프 미 이벤트 시각 표시", _handle_sh_event_next),
+    _CommandSpec("sh event last", 0, "{boolean}", "가장 최근에 지난 헬프 미 이벤트 시각 표시", _handle_sh_event_last),
     _CommandSpec("sh user stats", 1, "{user_id} {boolean}", "해당 유저의 일반 정보(=/내정보) 표시", _handle_sh_user_stats),
     _CommandSpec("sh db list", 0, "{boolean}", "등록된 테이블 이름 전부 표시", _handle_sh_db_list),
     _CommandSpec("sh db", 2, "{name} {amount|*} {boolean}", "해당 테이블 최근 amount개 행(amount가 *면 전체) 표시", _handle_sh_db),

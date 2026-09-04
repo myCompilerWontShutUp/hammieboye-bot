@@ -64,7 +64,7 @@ def _kst_day_bounds_utc() -> tuple[str, str]:
 
 
 async def get_today_events() -> list[dict]:
-    """오늘(KST) 등록된(또는 등록될) 부름 이벤트를 예정 시각 순으로 반환한다."""
+    """오늘(KST) 등록된(또는 등록될) 헬프 미 이벤트를 예정 시각 순으로 반환한다."""
     start, end = _kst_day_bounds_utc()
     return await select(
         "global_call_events",

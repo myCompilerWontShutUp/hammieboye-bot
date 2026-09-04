@@ -1,6 +1,6 @@
 import asyncio
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import discord
 
@@ -10,7 +10,7 @@ import documents.admin_commands as admin_commands_doc
 from admin import console as admin_console
 from core.base import normalize
 from core import intent
-from events import call_event
+from events import help_me_event
 from events.scheduler import KST, is_within_morning_greeting_window
 from events.special_days import DAY_TYPE_BIRTHDAY, get_day_type
 from db.achievements import award as award_achievement
@@ -152,6 +152,28 @@ _MORNING_GREETING_REWARD = 1
 _MORNING_GREETING_METHOD = "morning_greeting"
 _MORNING_GREETING_KEYWORDS = ("잘잤", "굿모닝", "좋은아침")
 
+# 생일이 아닌 날 "생일 축하해" 류 메시지를 받으면, 일반 생성(LLM)에 맡길 경우 오늘이
+# 진짜 생일인지 아닌지를 모델이 매번 다르게 판단해 고맙다고 넙죽 받거나(틀림) 아니라고
+# 정정하거나(맞음) 오락가락했다 — 날짜 판단을 모델에 안 맡기고 키워드 매칭으로 감지해
+# 항상 고정 문구로 답한다(생성 자체를 안 함, 호감도도 당연히 안 오름).
+_BIRTHDAY_FALSE_ALARM_LINES = (
+    "고마워!! 근데 오늘 햄미 생일 아닌데?? _(갸웃)_",
+    "어? 오늘 생일 아니야!! 그래도 축하해줘서 고마워!! _(웃음)_",
+    "헤헤 고마워!! 근데 오늘은 진짜 생일 아니야. _(장난)_",
+    "축하는 고마운데 오늘 햄미 생일 아니야!! _(끄덕)_",
+    "음?? 오늘 생일 아닌데 축하해줘서 고마워!! _(신기)_",
+    "그 마음은 고마운데 오늘은 생일 아니야!! _(갸웃)_",
+    "어라, 오늘 생일 아니야!! 그래도 챙겨줘서 고마워!! _(방실)_",
+    "고마워는 한데... 오늘 햄미 생일 아니야?! _(당황)_",
+    "생일은 따로 있는데!! 그래도 축하 마음은 고마워!! _(웃음)_",
+    "오늘은 생일 아니야!! 근데 축하해준 건 진짜 고마워!! _(감동)_",
+    "엥, 오늘 생일 아닌데?? 그래도 고마워!! _(궁금)_",
+    "아직 생일 아니야!! 그치만 챙겨줘서 고마워!! _(끄덕)_",
+    "그거 오늘 아니야!! 그래도 마음은 잘 받을게, 고마워!! _(방긋)_",
+    "오늘 생일 아니라구!! 그래도 고마운 맘은 진짜야!! _(찡긋)_",
+    "생일 착각한 거 같아!! 그래도 축하해줘서 고마워!! _(멋쩍)_",
+)
+
 
 async def handle_natural_language(
     user_id: int, guild_id: int, text: str, affection: int
@@ -194,12 +216,12 @@ async def handle_natural_language(
     if will_generate:
         context_turns, (event_delta, event_achievement, was_event_response, event_override) = await asyncio.gather(
             get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
-            call_event.handle_potential_response(user_id, guild_id, text),
+            help_me_event.handle_potential_response(user_id, guild_id, text),
         )
     else:
         context_turns = None
-        # 부름 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다.
-        event_delta, event_achievement, was_event_response, event_override = await call_event.handle_potential_response(
+        # 헬프 미 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다.
+        event_delta, event_achievement, was_event_response, event_override = await help_me_event.handle_potential_response(
             user_id, guild_id, text
         )
 
@@ -209,7 +231,7 @@ async def handle_natural_language(
         total_delta += event_delta
         current_affection += event_delta
 
-    # 부름 이벤트 업적 알림은 이후 어떤 분기로 빠지든 최종 응답에 붙어야 한다.
+    # 헬프 미 이벤트 업적 알림은 이후 어떤 분기로 빠지든 최종 응답에 붙어야 한다.
     achievement_notices = [event_achievement] if event_achievement else []
 
     if affection < 0:
@@ -230,16 +252,27 @@ async def handle_natural_language(
             random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
         )
 
-    # 부름 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 total_delta에 반영됨) 정상
+    # 헬프 미 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 total_delta에 반영됨) 정상
     # 생성을 하지 않고 이 고정 문구로 대체한다(API 미호출, nl_count 미증가).
     if event_override is not None:
         return _finalize(event_override, total_delta, current_affection, achievement_notices)
+
+    today = datetime.now(KST).date()
+
+    # 생일이 아닌 날의 "생일 축하해"는 날짜 판단을 LLM에 맡기면 답이 오락가락해서, 여기서
+    # 키워드로 감지해 생성 자체를 건너뛰고 고정 문구로 답한다(호감도 변화 없음).
+    if get_day_type(today) != DAY_TYPE_BIRTHDAY and all(
+        keyword in normalize(text) for keyword in _BIRTHDAY_KEYWORDS
+    ):
+        return _finalize(
+            random.choice(_BIRTHDAY_FALSE_ALARM_LINES), total_delta, current_affection, achievement_notices
+        )
 
     # 여기부터 실제 OpenAI API 호출(분류+생성) 구간. 생일/아침 인사 감지는 키워드 매칭이라
     # API 호출과 무관하게 분류와 병렬로 처리한다.
     classification, (greeting_delta, greeting_achievement) = await asyncio.gather(
         intent.classify(text),
-        _apply_greeting_bonuses(user_id, text, stats),
+        _apply_greeting_bonuses(user_id, text, stats, today),
     )
     total_delta += greeting_delta
     if greeting_delta:
@@ -308,7 +341,7 @@ async def _handle_over_cap(
     achievement_notices: list[str],
     was_event_response: bool = False,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
-    # 이 메시지가 부름 이벤트 반응이었다면(긍/부정 무관) 남용 카운터를 건드리지 않는다 —
+    # 이 메시지가 헬프 미 이벤트 반응이었다면(긍/부정 무관) 남용 카운터를 건드리지 않는다 —
     # 안 그러면 이벤트 자체의 호감도 변화 위에 남용 페널티까지 겹쳐 붙는다.
     if was_event_response:
         return _finalize(
@@ -353,14 +386,15 @@ def _finalize(
     return text
 
 
-async def _apply_greeting_bonuses(user_id: int, text: str, stats: dict) -> tuple[int, str | None]:
+async def _apply_greeting_bonuses(
+    user_id: int, text: str, stats: dict, today: date
+) -> tuple[int, str | None]:
     """생일 축하(3-2)/아침 인사(3-6) 자연어 보상. 둘 다 하루 1회, 반복 시엔 추가 지급 없이
     정상 생성 흐름만 그대로 진행한다(생일 쪽은 "이미 줬어" 같은 메타 발언도 없음)."""
     updates = {}
     delta = 0
     achievement_notice = None
     normalized = normalize(text)
-    today = datetime.now(KST).date()
 
     if (
         get_day_type(today) == DAY_TYPE_BIRTHDAY

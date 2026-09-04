@@ -10,6 +10,7 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS user_snacks CASCADE;
 DROP TABLE IF EXISTS user_emoji_tags CASCADE;
 DROP TABLE IF EXISTS admin_chat_history CASCADE;
 DROP TABLE IF EXISTS admin_sessions CASCADE;
@@ -25,6 +26,15 @@ DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
+DROP FUNCTION IF EXISTS claim_coin_cooldown(bigint, timestamptz);
+DROP FUNCTION IF EXISTS claim_dessert_slot(bigint, text, text);
+DROP FUNCTION IF EXISTS increment_snacks_given(bigint);
+DROP FUNCTION IF EXISTS consume_snack(bigint, text);
+DROP FUNCTION IF EXISTS add_snack(bigint, text, integer);
+DROP FUNCTION IF EXISTS increase_max_coins(bigint, bigint);
+DROP FUNCTION IF EXISTS deduct_coins_clamped(bigint, bigint);
+DROP FUNCTION IF EXISTS spend_coins(bigint, bigint);
+DROP FUNCTION IF EXISTS add_coins(bigint, bigint, text, boolean);
 DROP FUNCTION IF EXISTS increment_help_count(bigint);
 DROP FUNCTION IF EXISTS refresh_daily_conversation_caps();
 DROP FUNCTION IF EXISTS register_sleep_mention(bigint);
@@ -97,6 +107,19 @@ CREATE TABLE users (
   -- 여기(영구 테이블)에 둔다. 실패했을 때만 값이 채워진다.
   plastic_cooldown_until     timestamptz,
 
+  -- 동전 경제 시스템(신규). coins/max_coins가 화폐의 유일한 소스 — 보유 금액(원)은
+  -- coins*100으로 항상 파생 계산하고 별도 컬럼을 두지 않는다. max_coins는 자판기의
+  -- 용량 업그레이드 품목으로 몇 번이든 늘어날 수 있어 하드 캡이 없다.
+  -- lifetime_coins_earned는 "실제로 번" 동전만 누적(무승부/타임아웃 환불 등 원금
+  -- 반환은 제외, add_coins의 p_count_as_earned 참고). total_snacks_given은 /먹어로
+  -- 실제로 먹인 횟수 누적(자판기 구매 자체는 포함 안 함). /동전 쿨타임도
+  -- plastic_cooldown_until과 동일한 이유로 여기 둔다.
+  coins                       bigint NOT NULL DEFAULT 0,
+  max_coins                   bigint NOT NULL DEFAULT 10,
+  lifetime_coins_earned       bigint NOT NULL DEFAULT 0,
+  total_snacks_given          bigint NOT NULL DEFAULT 0,
+  coin_cooldown_until         timestamptz,
+
   -- 동의 전에도 저장되는 최소 식별 기록 (고지 불필요, CLAUDE.md 1-1 참고)
   first_seen_at              timestamptz NOT NULL DEFAULT now(),
 
@@ -153,6 +176,14 @@ CREATE TABLE daily_stats (
   -- 생일/아침 인사 자연어 보상 (신규, 1인 1일 1회)
   birthday_greeting_claimed         boolean NOT NULL DEFAULT false,
   morning_greeting_claimed          boolean NOT NULL DEFAULT false,
+
+  -- 헬프 미 이벤트(구 부름 이벤트) 오늘 도와준 횟수 — /내정보 "오늘의 기록" 표시와
+  -- "기쁜날 혼자 진심"(전설) 업적 판정 겸용.
+  help_me_events_helped_today       integer NOT NULL DEFAULT 0,
+  -- 디저트 타임 슬롯별 오늘 먹인 간식 — {"morning": "sunflower_seed", ...} 형태.
+  -- 슬롯 중복 지급 방지("이미 이 슬롯에 먹였는지" 판정) + "아침, 점심, 그리고 저녁"
+  -- (서로 다른 간식 3종) 업적 판정을 이 컬럼 하나로 겸한다.
+  dessert_fed_today                 jsonb NOT NULL DEFAULT '{}'::jsonb,
 
   -- 쿨타임 남용(4-5) 카운터 — 이벤트별로 집계 (예: {"plastic_bottle": 2})
   cooldown_abuse_counts              jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -313,6 +344,20 @@ CREATE TABLE user_achievements (
   achievement_id    text NOT NULL,
   earned_at           timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, achievement_id)
+);
+
+-- ------------------------------------------------------------
+-- 9-2-1. user_snacks — 간식 인벤토리 (신규, 동전 경제 시스템)
+--    유저 x 간식 종류 조합마다 한 행. 자판기 구매로 늘고 /먹어(디저트 타임)로
+--    줄어든다. snack_id는 achievement_id와 동일한 이유로 자유 텍스트(애플리케이션
+--    쪽 command/vending_catalog.py의 고정 문자열 ID와 대응, ENUM 아님).
+-- ------------------------------------------------------------
+
+CREATE TABLE user_snacks (
+  user_id       bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  snack_id      text NOT NULL,
+  quantity      integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, snack_id)
 );
 
 -- ------------------------------------------------------------
@@ -690,7 +735,202 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 18. RLS (Row Level Security)
+-- 18. 동전 경제 RPC 9개 (신규)
+--     금액 파라미터/반환값은 전부 bigint — max_coins가 자판기 용량 업그레이드로
+--     반복 누적 가능해 하드 캡이 없으므로, integer(약 21억 한도)로 좁힐 이유가 없다.
+-- ------------------------------------------------------------
+
+-- 동전 지급 — max_coins 클램프 자동 적용(add_affection의 +100 상한 클램프와 동일
+-- 골격). p_count_as_earned=true(기본값)일 때만 lifetime_coins_earned를 늘린다 —
+-- 무승부/타임아웃 환불처럼 "번 게 아니라 원금을 그대로 돌려주는" 경우엔 false로
+-- 호출해서 누적 통계(및 "티끌 모아 티끌" 업적)가 부풀지 않게 한다.
+CREATE OR REPLACE FUNCTION add_coins(
+  p_user_id bigint,
+  p_amount bigint,
+  p_method text DEFAULT NULL,
+  p_count_as_earned boolean DEFAULT true
+)
+RETURNS TABLE (applied_amount bigint, new_coins bigint, new_lifetime_coins_earned bigint)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_current_coins bigint;
+  v_max_coins bigint;
+  v_applied bigint;
+  v_new_coins bigint;
+  v_new_lifetime bigint;
+BEGIN
+  SELECT coins, max_coins INTO v_current_coins, v_max_coins
+  FROM users
+  WHERE user_id = p_user_id
+  FOR UPDATE;
+
+  IF p_amount > 0 THEN
+    v_applied := LEAST(p_amount, GREATEST(v_max_coins - v_current_coins, 0));
+  ELSE
+    v_applied := p_amount;
+  END IF;
+
+  UPDATE users
+  SET coins = coins + v_applied,
+      lifetime_coins_earned = lifetime_coins_earned + CASE
+        WHEN v_applied > 0 AND p_count_as_earned THEN v_applied
+        ELSE 0
+      END
+  WHERE user_id = p_user_id
+  RETURNING coins, lifetime_coins_earned INTO v_new_coins, v_new_lifetime;
+
+  RETURN QUERY SELECT v_applied, v_new_coins, v_new_lifetime;
+END;
+$$;
+
+-- 조건부 차감(잔액 부족 시 실패, boolean 반환) — claim_call_event와 동일한 원자적
+-- idiom(단일 UPDATE ... WHERE로 경합을 원천 차단). 배팅/자판기 구매 전용.
+CREATE OR REPLACE FUNCTION spend_coins(p_user_id bigint, p_amount bigint)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_rows integer;
+BEGIN
+  UPDATE users
+  SET coins = coins - p_amount
+  WHERE user_id = p_user_id AND coins >= p_amount;
+
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows > 0;
+END;
+$$;
+
+-- 0 밑으로 안 내려가는 차감 — 슬롯머신 햄스터 페널티 전용(항상 성공, 부족하면
+-- 있는 만큼만 뗌).
+CREATE OR REPLACE FUNCTION deduct_coins_clamped(p_user_id bigint, p_amount bigint)
+RETURNS TABLE (deducted bigint, new_coins bigint)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_current_coins bigint;
+  v_deducted bigint;
+  v_new_coins bigint;
+BEGIN
+  SELECT coins INTO v_current_coins
+  FROM users
+  WHERE user_id = p_user_id
+  FOR UPDATE;
+
+  v_deducted := LEAST(GREATEST(p_amount, 0), v_current_coins);
+
+  UPDATE users
+  SET coins = coins - v_deducted
+  WHERE user_id = p_user_id
+  RETURNING coins INTO v_new_coins;
+
+  RETURN QUERY SELECT v_deducted, v_new_coins;
+END;
+$$;
+
+-- 동전 최대 보유량 증가(단순 누적, increment_chat_count와 동일 골격) — 자판기의
+-- 용량 업그레이드 품목 전용, 몇 번이든 반복 가능(하드 캡 없음).
+CREATE OR REPLACE FUNCTION increase_max_coins(p_user_id bigint, p_amount bigint)
+RETURNS bigint
+LANGUAGE sql
+AS $$
+  UPDATE users
+  SET max_coins = max_coins + p_amount
+  WHERE user_id = p_user_id
+  RETURNING max_coins;
+$$;
+
+-- 간식 지급(자판기 구매 전용) — 없으면 새로 만들고, 있으면 누적.
+CREATE OR REPLACE FUNCTION add_snack(p_user_id bigint, p_snack_id text, p_quantity integer)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_new_quantity integer;
+BEGIN
+  INSERT INTO user_snacks (user_id, snack_id, quantity)
+  VALUES (p_user_id, p_snack_id, p_quantity)
+  ON CONFLICT (user_id, snack_id)
+  DO UPDATE SET quantity = user_snacks.quantity + p_quantity
+  RETURNING quantity INTO v_new_quantity;
+  RETURN v_new_quantity;
+END;
+$$;
+
+-- 간식 1개 소비(원자적 조건부 차감, spend_coins와 동일한 idiom) — /먹어 전용.
+-- 실패(false)면 그 간식을 안 가지고 있거나 0개인 것.
+CREATE OR REPLACE FUNCTION consume_snack(p_user_id bigint, p_snack_id text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_rows integer;
+BEGIN
+  UPDATE user_snacks
+  SET quantity = quantity - 1
+  WHERE user_id = p_user_id AND snack_id = p_snack_id AND quantity >= 1;
+
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows > 0;
+END;
+$$;
+
+-- 평생 간식 준 횟수 원자적 증가(increment_chat_count와 동일 골격) — /먹어로 실제로
+-- "먹였을 때"만 호출한다(자판기 구매 시점엔 안 올림 — /내정보의 "간식 준 횟수" 필드용).
+CREATE OR REPLACE FUNCTION increment_snacks_given(p_user_id bigint)
+RETURNS bigint
+LANGUAGE sql
+AS $$
+  UPDATE users
+  SET total_snacks_given = total_snacks_given + 1
+  WHERE user_id = p_user_id
+  RETURNING total_snacks_given;
+$$;
+
+-- /먹어의 "슬롯당 1회" 제한을 원자적으로 보장한다 — "그 슬롯 키가 아직 없을 때만"
+-- 원자적으로 기록해서 동시 요청으로 인한 이중 지급(TOCTOU)을 막는다. 오늘 daily_stats
+-- 행이 이미 있어야 하므로(ensure_daily_stats로 미리 보장) 조건부 UPDATE 하나로 충분.
+CREATE OR REPLACE FUNCTION claim_dessert_slot(p_user_id bigint, p_slot text, p_snack_id text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_rows integer;
+BEGIN
+  UPDATE daily_stats
+  SET dessert_fed_today = dessert_fed_today || jsonb_build_object(p_slot, p_snack_id)
+  WHERE user_id = p_user_id
+    AND stat_date = v_stat_date
+    AND NOT (dessert_fed_today ? p_slot);
+
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows > 0;
+END;
+$$;
+
+-- /동전의 쿨타임 확인+설정을 원자적으로 만든다 — "쿨타임이 지금 끝나 있을 때만"
+-- 원자적으로 새 쿨타임을 설정해 동시 요청으로 인한 이중 지급(TOCTOU)을 막는다.
+CREATE OR REPLACE FUNCTION claim_coin_cooldown(p_user_id bigint, p_until timestamptz)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_rows integer;
+BEGIN
+  UPDATE users
+  SET coin_cooldown_until = p_until
+  WHERE user_id = p_user_id
+    AND (coin_cooldown_until IS NULL OR coin_cooldown_until <= now());
+
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows > 0;
+END;
+$$;
+
+-- ------------------------------------------------------------
+-- 19. RLS (Row Level Security)
 --     봇은 service_role 키로 접속하므로 RLS를 우회하고 정상 동작한다.
 --     RLS만 켜고 별도 정책을 추가하지 않으면 anon 키로는 아무 것도
 --     조회/수정할 수 없어 안전하다 (기본 거부).
@@ -706,6 +946,7 @@ ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE withdrawn_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_achievements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_snacks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_chat_history ENABLE ROW LEVEL SECURITY;

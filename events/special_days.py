@@ -10,7 +10,7 @@ DAY_TYPE_BIRTHDAY = "birthday"
 # 23개 + 음력 기반 9개) 전부 — 엄숙한 날/한국 로컬 기념일도 가리지 않고 전부 포함한다.
 # 햄미 생일만 목록에서 빠져 birthday로 승격된다.
 _MULTIPLIER = {DAY_TYPE_NORMAL: 1, DAY_TYPE_SPECIAL: 2, DAY_TYPE_BIRTHDAY: 3}
-_CALL_EVENT_COUNT = {DAY_TYPE_NORMAL: 3, DAY_TYPE_SPECIAL: 5, DAY_TYPE_BIRTHDAY: 5}
+_HELP_ME_EVENT_COUNT = {DAY_TYPE_NORMAL: 3, DAY_TYPE_SPECIAL: 5, DAY_TYPE_BIRTHDAY: 5}
 
 _WEEKEND_LABEL = "주말"
 
@@ -108,8 +108,8 @@ def get_multiplier(today: date) -> int:
     return _MULTIPLIER[get_day_type(today)]
 
 
-def get_call_event_count(today: date) -> int:
-    return _CALL_EVENT_COUNT[get_day_type(today)]
+def get_help_me_event_count(today: date) -> int:
+    return _HELP_ME_EVENT_COUNT[get_day_type(today)]
 
 
 def get_day_type_label(today: date) -> str | None:
