@@ -38,6 +38,16 @@ async def update_daily_stats(user_id: int, data: dict) -> dict:
     return rows[0]
 
 
+async def claim_dessert_slot(user_id: int, slot: str, snack_id: str) -> bool:
+    """그 슬롯 키가 아직 없을 때만 원자적으로 기록한다(/먹어의 슬롯당 1회 제한을
+    조건부 UPDATE로 보장 — 오늘 daily_stats 행이 이미 있어야 하므로 ensure_daily_stats를
+    먼저 호출해야 한다). 실패(False)면 그 슬롯은 이미 다른 요청이 먼저 채간 것."""
+    return await rpc(
+        "claim_dessert_slot",
+        {"p_user_id": user_id, "p_slot": slot, "p_snack_id": snack_id},
+    )
+
+
 async def increment_messages_today(user_id: int) -> int:
     return await rpc("increment_messages_today", {"p_user_id": user_id})
 

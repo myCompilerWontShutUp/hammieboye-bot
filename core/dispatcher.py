@@ -13,7 +13,7 @@ from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import get_designated_channel, set_last_channel
 from db.guild_sleep_state import any_triggered_tonight
 from db.users import get_user, increment_chat_count
-from events import call_event, greeting, presence, sleep_event, wake_event
+from events import dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
 from events.scheduler import (
     TEST_GUILD_ID,
     is_late_wake_today,
@@ -39,7 +39,7 @@ async def _run_wake_sequence() -> None:
     if tired:
         await asyncio.sleep(_LATE_WAKE_DELAY_SECONDS)
     await presence.wake_up()
-    await call_event.schedule_today()
+    await help_me_event.schedule_today()
     await refresh_conversation_caps()
     await greeting.post_daily_greeting(tired=tired)
 
@@ -118,7 +118,8 @@ def setup_dispatcher(client: discord.Client) -> None:
             except discord.HTTPException:
                 logging.exception("Failed to sync slash commands to guild %s", guild_id)
 
-        call_event.init(client)
+        help_me_event.init(client)
+        dessert_time.init(client)
         sleep_event.init(client)
         greeting.init(client)
         presence.init(client)
@@ -136,12 +137,19 @@ def setup_dispatcher(client: discord.Client) -> None:
             await presence.wake_up()
 
         start_daily(0, 0, presence.enter_sleep)
-        # 기상 시퀀스(온라인 전환+부름 이벤트 산출+nl_cap 동결+아침 인사)를 한 함수로 묶는다
+        # 기상 시퀀스(온라인 전환+헬프 미 이벤트 산출+nl_cap 동결+아침 인사)를 한 함수로 묶는다
         # — 방해금지 발동 시 전부 30분 늦춰서 함께 실행해야 하기 때문.
         start_daily(6, 30, _run_wake_sequence)
         # 00:00 정각 — 내부에서 "어제" 날짜를 명시적으로 계산하므로 자정 직후에 돌아도 정확하다.
         start_daily(0, 0, sleep_event.announce_and_reward)
-        start_interval(_TICK_INTERVAL_SECONDS, call_event.tick)
+        start_interval(_TICK_INTERVAL_SECONDS, help_me_event.tick)
+
+        # 디저트 타임 하루 3슬롯 x (여는 방송 + 닫는 방송) = 6개 독립 등록. 헬프 미 이벤트
+        # 쪽이 schedule_today()에서 이 슬롯들과 안 겹치게 스스로 피해간다(§4-3).
+        for slot_start in dessert_time.SLOTS.values():
+            start_daily(slot_start.hour, slot_start.minute, dessert_time.broadcast_open)
+            slot_end = dessert_time.slot_end(slot_start)
+            start_daily(slot_end.hour, slot_end.minute, dessert_time.broadcast_close)
 
     @client.event
     async def on_message(message: discord.Message) -> None:
@@ -164,11 +172,15 @@ def setup_dispatcher(client: discord.Client) -> None:
                 if not admin.should_intercept(message):
                     return
 
-        # "ej set"으로 걸린 이모지 태그는 호출 단어/명령어/취침 시간대와 완전히 무관하게
-        # 이 유저의 모든 메시지에 적용된다 — 아래 어떤 분기로 흐르든 상관없이 먼저 처리한다.
-        # 봇/애플리케이션 계정도 이 태그 하나만은 대상이 된다(자기 자신은 _parse_user_id가
-        # ej set 등록 자체를 막아서 이 봇이 스스로에게 반응을 다는 일은 없다).
-        await admin.apply_emoji_tags(message)
+        is_sleeping = is_sleep_time_for(message.channel.id)
+
+        # "ej set"으로 걸린 이모지 태그는 호출 단어/명령어/관리자 콘솔 여부와 완전히
+        # 무관하게 이 유저의 모든 메시지에 적용된다 — 아래 어떤 분기로 흐르든 상관없이
+        # 먼저 처리한다. 단, 햄미가 자고 있는 동안에는 반응 자체를 안 단다. 봇/애플리케이션
+        # 계정도 이 태그 하나만은 대상이 된다(자기 자신은 _parse_user_id가 ej set 등록
+        # 자체를 막아서 이 봇이 스스로에게 반응을 다는 일은 없다).
+        if not is_sleeping:
+            await admin.apply_emoji_tags(message)
 
         if message.author.bot:
             return
@@ -176,7 +188,7 @@ def setup_dispatcher(client: discord.Client) -> None:
         if admin.should_intercept(message):
             await admin.handle(message)
             return
-        if is_sleep_time_for(message.channel.id):
+        if is_sleeping:
             # 취침 중엔 봇 맨션만 예외로 깨움 이벤트를 태운다.
             if client.user in message.mentions:
                 await wake_event.handle_mention(message)

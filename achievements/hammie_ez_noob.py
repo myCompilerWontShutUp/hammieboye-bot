@@ -1,0 +1,5 @@
+ID = "hammie_ez_noob"
+NAME = "HAMMIE EZ NOOB"
+HOW_TO_EARN = "내기(홀짝 또는 가위바위보)에서 승리하면 얻어."
+RARITY = "일반"
+CODE = "7pfwknyx"

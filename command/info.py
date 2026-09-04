@@ -1,16 +1,21 @@
 import asyncio
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import discord
 
 from core.base import EMBED_COLOR
 from core.korean import josa
 from events.scheduler import KST, format_footer_time
+from events.special_days import get_help_me_event_count
 from db.daily_stats import ensure_nl_cap
-from db.history import get_recent
 from db.ranking import compute_percentile, count_total, get_rank
 from db.users import get_user
+
+# add_affection() RPC(SQL.md/supabase/schema.sql)에 하드코딩된 일일 획득 상한과 반드시
+# 같은 값을 유지해야 한다 — Python 쪽엔 이 값을 직접 참조할 데가 없어(SQL 함수 안에만
+# 있음) 표시용으로 여기 따로 상수를 둔다.
+_DAILY_AFFECTION_CAP = 100
 
 # 매번 다른 인트로 한 줄을 무작위로 고른다. 내가 나를 볼 때(/내정보) 전용.
 _INTRO_LINES = (
@@ -95,18 +100,16 @@ async def handle(
     member_ids = [m.id for m in guild.members if not m.bot] if guild is not None else None
 
     if member_ids is not None:
-        stats, recent, global_rank, global_total, guild_rank, guild_total = await asyncio.gather(
+        stats, global_rank, global_total, guild_rank, guild_total = await asyncio.gather(
             ensure_nl_cap(user_id, affection),
-            get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30)),
             get_rank(user_id, affection),
             count_total(),
             get_rank(user_id, affection, member_ids),
             count_total(member_ids),
         )
     else:
-        stats, recent, global_rank, global_total = await asyncio.gather(
+        stats, global_rank, global_total = await asyncio.gather(
             ensure_nl_cap(user_id, affection),
-            get_recent(user_id, since=datetime.now(timezone.utc) - timedelta(minutes=30)),
             get_rank(user_id, affection),
             count_total(),
         )
@@ -134,24 +137,28 @@ async def handle(
     embed.add_field(
         name=record_field_name,
         value=(
+            f"- 간식 준 횟수: **{user['total_snacks_given']}**\n"
             f"- 도와준 횟수: **{user['help_count']}**\n"
             f"- 대화한 횟수: **{user['chat_count']}**\n"
+            f"- 획득한 총 금액: **{user['lifetime_coins_earned'] * 100:,}**원\n"
             f"- 처음 만난 날: {_format_date(user['first_seen_at'])}\n​"
         ),
         inline=False,
     )
 
+    today = datetime.now(KST).date()
+    dessert_fed_count = len(stats.get("dessert_fed_today") or {})
+    help_me_event_total = get_help_me_event_count(today)
     embed.add_field(
         name="📅 오늘의 기록",
         value=(
+            f"- 간식 준 횟수: **{dessert_fed_count}**/3\n"
+            f"- 도움 횟수: **{stats['help_me_events_helped_today']}**/{help_me_event_total}\n"
             f"- 대화 횟수: **{stats['nl_count']}**/{stats['nl_cap']}\n"
-            f"- 획득 호감: **{stats['daily_gain_natural']}**/20\n​"
+            f"- 획득 호감: **{stats['daily_gain_natural']}**/{_DAILY_AFFECTION_CAP}"
         ),
         inline=False,
     )
-
-    recent_texts = "\n".join(f"- {row['content']}" for row in recent[:3]) if recent else "- (최근 30분 내 대화 없음)"
-    embed.add_field(name="🕐 최근 대화 (30분 이내)", value=recent_texts, inline=False)
 
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 

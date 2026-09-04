@@ -1,15 +1,24 @@
 from achievements import (
     almond_worthy,
+    alone_on_a_happy_day,
     call_event_help,
     daily_top_talker,
+    dev_never_tested_this,
     early_bird,
     first_chat,
+    gambling_hotline_1336,
     great_owner,
+    hammie_ez_noob,
     hammie_love_you,
     nightmare_freed,
+    penny_pincher,
     plastic_dance,
     plastic_dance_god,
+    savings_start,
     speech_bubble,
+    strongest_snack_ever,
+    three_meals_a_day,
+    vending_first_purchase,
 )
 
 # ID -> 모듈. 각 모듈은 ID/NAME/HOW_TO_EARN/RARITY/CODE를 갖는다 ("업적 1개당 파일 1개").
@@ -29,6 +38,15 @@ _MODULES = (
     nightmare_freed,
     almond_worthy,
     early_bird,
+    vending_first_purchase,
+    savings_start,
+    hammie_ez_noob,
+    gambling_hotline_1336,
+    dev_never_tested_this,
+    three_meals_a_day,
+    strongest_snack_ever,
+    alone_on_a_happy_day,
+    penny_pincher,
 )
 
 REGISTRY = {module.ID: module for module in _MODULES}
@@ -47,3 +65,9 @@ def format_name(module) -> str:
     if module.RARITY == LEGENDARY:
         return f"{_LEGENDARY_PREFIX}{module.NAME}"
     return module.NAME
+
+
+def format_hidden_legendary(module) -> str:
+    """미획득 전설 업적을 이름 대신 ???+힌트로 표시한다("발견의 재미" 원칙, /업적-리스트
+    전용 — module.HINT가 필수인 전설 업적에서만 호출할 것)."""
+    return f"{_LEGENDARY_PREFIX}??? ({module.HINT})"

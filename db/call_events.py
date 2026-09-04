@@ -86,6 +86,14 @@ async def claim(event_id: int, user_id: int, reward: int) -> bool:
     )
 
 
+async def get_claimed_by(event_id: int) -> int | None:
+    """이 이벤트를 실제로 클레임한 user_id(없으면 None). claim()이 실패했을 때, 캐시가
+    낡아서 실패한 건지 자기 자신이 이미 클레임한 상태인지 구분하려고 캐시를 우회해서
+    직접 조회한다."""
+    rows = await select("global_call_events", {"id": f"eq.{event_id}", "select": "claimed_by"})
+    return rows[0]["claimed_by"] if rows else None
+
+
 async def get_nearest_before(scheduled_at: datetime) -> dict | None:
     """주어진 시각보다 앞서 예약된 이벤트 중 가장 가까운 것 (g-call-event 간격 검사용)."""
     rows = await select(

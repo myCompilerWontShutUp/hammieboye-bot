@@ -5,6 +5,7 @@ import discord
 from discord import app_commands
 
 import command.achievements as achievements_view
+import command.bag as bag_view
 from command.info import handle as info_handle
 from events import sleep_guard
 from db.users import get_user
@@ -126,5 +127,16 @@ async def handle_achievements(interaction: discord.Interaction, 이름: str) -> 
 
     await interaction.response.defer()
     text, embed = await achievements_view.handle(member.id, target_name=member.display_name)
+    content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
+    await interaction.edit_original_response(content=content, embed=embed)
+
+
+async def handle_bag(interaction: discord.Interaction, 이름: str) -> None:
+    member = await _resolve_target(interaction, 이름)
+    if member is None:
+        return
+
+    await interaction.response.defer()
+    text, embed = await bag_view.handle(member.id, target_name=member.display_name)
     content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
     await interaction.edit_original_response(content=content, embed=embed)

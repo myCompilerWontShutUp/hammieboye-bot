@@ -1,0 +1,6 @@
+ID = "alone_on_a_happy_day"
+NAME = "기쁜날 혼자 진심"
+HOW_TO_EARN = "하루에 헬프 미 이벤트를 5번 도와주면 얻어(평범한 날엔 하루 3번뿐이라 특별한 날에만 가능)."
+RARITY = "전설"
+CODE = "ryd7j6tv"
+HINT = "오늘 하루 유독 부지런해야 할 것 같다"

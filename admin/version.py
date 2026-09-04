@@ -1,11 +1,14 @@
 import os
-import re
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Railway가 배포 시 자동으로 심어주는 커밋 해시 env var를 우선 쓰고, 없으면
 # (로컬 실행 등) git 명령으로 폴백한다.
 _START_TIME = datetime.now(timezone.utc)
+
+# 저장소 루트의 VERSION 파일 — admin/version.py 기준 한 단계 위.
+_VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
 
 
 def _git(*args: str) -> str | None:
@@ -56,28 +59,20 @@ def get_recent_commits(days: int = 30) -> list[tuple[str, str, str]]:
     return result
 
 
-_MERGE_PR_PATTERN = re.compile(r"Merge pull request #(\d+)")
-
-
 def get_semantic_version() -> str | None:
-    """"0.{PR 번호}.{그 PR 안의 커밋 개수}" 형식(예: "0.25.2"). 이 저장소는 PR을 항상 병합
-    커밋으로 합치므로("Merge pull request #N from ..."), HEAD에서 가장 가까운 병합 커밋의
-    제목에서 PR 번호를 뽑고, 그 병합 커밋의 두 부모 사이(`merge^1..merge^2`, 즉 병합된
-    브랜치에만 있던 커밋들)의 개수를 센다. 병합 커밋이 없거나(얕은 클론 등) 형식이
-    안 맞으면 None — 호출부가 해시만 보여주는 쪽으로 폴백해야 한다."""
-    merge_hash = _git("log", "--merges", "-1", "--format=%H")
-    if not merge_hash:
+    """"0.{PR 번호}.{그 PR 이후 메인에 반영된 푸시 횟수}" 형식(예: "0.26.1", 그 뒤로 잔잔한
+    후속 푸시가 4번 더 있었다면 "0.26.5"). git 로그로 병합 커밋을 찾아 즉석에서 계산하지
+    않는다 — Railway 등 배포 환경이 얕은 클론이면 git 히스토리가 없어서 실패하는 게 실제로
+    확인됐다. 대신 저장소 루트의 VERSION 파일(한 줄, 예: "0.26.1")을 그대로 읽는다 — 이
+    값은 코드가 자동으로 갱신하지 않고, 커밋/푸시할 때마다 사람(또는 나, 어시스턴트)이
+    직접 관리한다: 같은 PR 흐름 위에서 이어지는 사소한 후속 푸시면 마지막 숫자만 올리고,
+    새 PR이 머지되면 "0.{새 PR 번호}.1"로 초기화한다. 파일이 없거나 비어 있으면 None —
+    호출부가 해시만 보여주는 쪽으로 폴백해야 한다."""
+    try:
+        content = _VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
         return None
-    subject = _git("log", "-1", "--format=%s", merge_hash)
-    if not subject:
-        return None
-    match = _MERGE_PR_PATTERN.search(subject)
-    if not match:
-        return None
-    count = _git("rev-list", "--count", f"{merge_hash}^1..{merge_hash}^2")
-    if not count or not count.isdigit():
-        return None
-    return f"0.{match.group(1)}.{count}"
+    return content or None
 
 
 def get_version_label() -> str:

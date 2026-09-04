@@ -1,0 +1,5 @@
+ID = "three_meals_a_day"
+NAME = "아침, 점심, 그리고 저녁"
+HOW_TO_EARN = "디저트 타임 세 번 모두 서로 다른 간식을 먹이면 얻어."
+RARITY = "일반"
+CODE = "y4xegyw7"
