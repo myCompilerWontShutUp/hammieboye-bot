@@ -12,8 +12,6 @@ import command.intro as intro
 import command.ranking as ranking
 import command.slot as slot
 import command.vending as vending
-import command.economy_common as economy_common
-from command.economy_common import MAX_BET
 from command.info import handle as info_handle
 from command.join import handle as join_handle
 from command.join_info import handle as join_info_handle
@@ -218,61 +216,49 @@ def register(tree: app_commands.CommandTree) -> None:
         text = await coin.handle(interaction.user.id)
         await interaction.edit_original_response(content=text)
 
-    @tree.command(name="내기-홀짝", description="동전을 걸고 홀짝 내기를 한다")
-    @app_commands.describe(동전개수=f"배팅할 동전 개수(최대 {MAX_BET})")
-    @app_commands.autocomplete(동전개수=economy_common.autocomplete_동전개수)
-    async def bet_odd_even_command(
-        interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
-    ) -> None:
+    @tree.command(name="내기", description="동전을 걸고 내기를 한다")
+    async def bet_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
         if not await sleep_guard.guard(interaction, silent=False):
             return
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not await _prepare(interaction):
             return
-        await bet.handle_odd_even(interaction, 동전개수)
+        await bet.handle_bet(interaction)
 
-    @tree.command(name="내기-가위바위보", description="동전을 걸고 가위바위보 내기를 한다")
-    @app_commands.describe(동전개수=f"배팅할 동전 개수(최대 {MAX_BET})")
-    @app_commands.autocomplete(동전개수=economy_common.autocomplete_동전개수)
-    async def bet_rps_command(
-        interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
-    ) -> None:
+    @tree.command(name="내기-규칙", description="내기 종류와 배당 규칙을 확인한다")
+    async def bet_rules_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        if not await sleep_guard.guard(interaction, silent=False):
-            return
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not await _prepare(interaction):
             return
-        await bet.handle_rps(interaction, 동전개수)
-
-    @tree.command(name="슬롯머신", description="동전을 걸고 슬롯머신을 돌린다")
-    @app_commands.describe(동전개수=f"배팅할 동전 개수(최대 {MAX_BET})")
-    @app_commands.autocomplete(동전개수=economy_common.autocomplete_동전개수)
-    async def slot_command(
-        interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
-    ) -> None:
-        if interaction.user.bot:
-            return
-        if not await sleep_guard.guard(interaction, silent=False):
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        await slot.handle_spin(interaction, 동전개수)
-
-    @tree.command(name="슬롯머신-규칙", description="슬롯머신 배율과 규칙을 확인한다")
-    async def slot_rules_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        text, embed = await slot.handle_rules()
+        text, embed, view = await bet.handle_rules()
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+
+    @tree.command(name="도박", description="동전을 걸고 위험한 도박을 한다")
+    async def gamble_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        if not await sleep_guard.guard(interaction, silent=False):
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not await _prepare(interaction):
+            return
+        await slot.handle_gamble(interaction)
+
+    @tree.command(name="도박-규칙", description="도박 종류와 배율 규칙을 확인한다")
+    async def gamble_rules_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not await _prepare(interaction):
+            return
+        text, embed, view = await slot.handle_rules()
+        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
 
     @tree.command(name="먹어", description="디저트 타임에 햄미에게 간식을 먹인다")
     @app_commands.describe(간식="먹일 간식(내 가방에 있는 것만 나와요)")
