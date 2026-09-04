@@ -200,16 +200,20 @@ _SPIN_PROMPT_LINES = (
 )
 
 
+_SLOT_EMBED_COLOR = 0xFFEB3B  # 밝은 노란색 — 자판기류(VENDING_EMBED_COLOR, 하늘색)와 구분되는 슬롯머신 전용 색.
+
+
 def _render_grid(grid: list[str | None]) -> str:
+    # 마크다운 헤딩(#/##/###)은 title이 아니라 description 안에서만 실제로 크기가
+    # 커진다 — 그래서 그리드를 title이 아니라 description에 두고, 줄마다 "## "를
+    # 붙여 이모지가 일반 텍스트보다 크게 보이게 한다.
     rows = (" ".join(cell or _UNSPUN_PLACEHOLDER for cell in grid[i : i + 3]) for i in range(0, 9, 3))
-    return "\n".join(f"{num} | {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
+    return "\n".join(f"## {num} | {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
 
 
 def _build_embed(grid: list[str | None]) -> discord.Embed:
-    # 그리드를 description이 아니라 title에 넣는다 — 디스코드가 title을 description보다
-    # 크게 렌더링해서 이모지도 그만큼 커 보인다. 대신 브랜딩 문구를 description으로 내림.
     embed = discord.Embed(
-        title=_render_grid(grid), description="🎰 개쩌는 슬롯머신!!", color=VENDING_EMBED_COLOR
+        title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=_SLOT_EMBED_COLOR
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed

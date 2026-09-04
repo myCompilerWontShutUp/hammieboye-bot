@@ -7,7 +7,7 @@ import discord
 from core.base import EMBED_COLOR
 from core.discord_names import resolve_real_name
 from events.scheduler import KST, format_footer_time
-from db.ranking import get_last_increase_time, get_top_candidates
+from db.ranking import get_last_increase_time, get_top_candidates, get_top_coin_candidates
 
 _TOP_N = 10
 
@@ -34,6 +34,29 @@ _INTRO_LINES = (
     "마지막으로 한 번 흔들고 공개한다!! _(통통)_",
 )
 
+_COIN_INTRO_LINES = (
+    "두근두근!! 햄미의 동전 순위 보여줄게!! _(두근)_",
+    "자, 누가 제일 부자일까?? _(궁금)_",
+    "햄미가 꼼꼼히 세어봤어!! 지금 공개할게!! _(뿌듯)_",
+    "동전 지갑 순위 열어본다아!! _(신남)_",
+    "과연 1등은 누구일까?? 떨린다!! _(긴장)_",
+    "동전 순위표 준비 완료야!! 짜잔!! _(기대)_",
+    "누가 제일 많이 모았는지 살짝 보여줄게!! _(설렘)_",
+    "이제 결과 나와!! 놀라지 마아!! _(조마)_",
+    "누가 햄미보다 부자일까?? _(호기심)_",
+    "동전 랭킹 출발이야!! 꽉 잡아!! _(활기)_",
+    "자자, 동전 순위표가 도착해써!! _(반짝)_",
+    "햄미가 세어봤어!! 바로 공개할게?? _(집중)_",
+    "동전 부자 순위표를 열어볼 시간이야!! _(진지)_",
+    "두구두구!! 결과를 보여주겠슴다!! _(흥분)_",
+    "햄미의 귀여운 동전표 나간다!! _(방긋)_",
+    "누가 위에 있을지 같이 보자!! _(재미)_",
+    "동전 순위, 살포시 공개할게!! _(살짝)_",
+    "준비됐지?? 햄미가 보여줄 거야!! _(용기)_",
+    "이건 진짜 동전 실력이야!! _(솔직)_",
+    "마지막으로 한 번 짤랑이고 공개한다!! _(통통)_",
+)
+
 
 async def _sort_key(candidate: dict) -> tuple:
     timestamp = await get_last_increase_time(candidate["user_id"], candidate["affection"])
@@ -47,7 +70,15 @@ async def _sort_key(candidate: dict) -> tuple:
     )
 
 
-async def build_embed(client: discord.Client) -> tuple[str, discord.Embed]:
+def _coin_sort_key(candidate: dict) -> tuple:
+    # affection_log 같은 "동전 획득 이력" 테이블이 없어서(coins에는 로그가 안 남음)
+    # "먼저 그 값에 도달한 사람" 타이브레이크는 재현할 수 없다 — 가입일이 이른 사람 ->
+    # user_id가 낮은 사람 두 단계만 적용한다(호감도 랭킹에서 "증가로 도달한 적 없는"
+    # 동점자가 이미 이 두 단계로 자연스럽게 밀려나는 것과 동일한 골격).
+    return (-candidate["coins"], candidate["created_at"], candidate["user_id"])
+
+
+async def build_affection_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     candidates = await get_top_candidates()
     sort_keys = await asyncio.gather(*(_sort_key(c) for c in candidates))
     keyed = list(zip(sort_keys, candidates))
@@ -66,3 +97,23 @@ async def build_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     return random.choice(_INTRO_LINES), embed
+
+
+async def build_coin_embed(client: discord.Client) -> tuple[str, discord.Embed]:
+    candidates = await get_top_coin_candidates()
+    top = sorted(candidates, key=_coin_sort_key)[:_TOP_N]
+
+    embed = discord.Embed(title="햄미의 동전 랭킹", color=EMBED_COLOR)
+    if not top:
+        embed.description = "아직 등록된 사용자가 없어."
+    else:
+        names = await asyncio.gather(*(resolve_real_name(client, c["user_id"]) for c in top))
+        lines = [
+            f"{i + 1}. {name} — {c['coins']}개 ({c['coins'] * 100:,}원)"
+            for i, (name, c) in enumerate(zip(names, top))
+        ]
+        embed.description = "\n".join(lines)
+
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+
+    return random.choice(_COIN_INTRO_LINES), embed

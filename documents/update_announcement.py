@@ -17,6 +17,12 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         changes=(
+            "/랭킹이 /랭킹-호감도로 이름이 바뀌었습니다.",
+            "/랭킹-동전이 추가되었습니다. 동전을 가장 많이 모은 순위를 확인할 수 있습니다.",
+        ),
+    ),
+    UpdateEntry(
+        changes=(
             "/슬롯머신 그림이 9종에서 7종으로 줄어 당첨 확률이 올라갔습니다.",
             "/슬롯머신 결과 화면이 더 크고 잘 보이게 개선되었습니다.",
         ),

@@ -75,7 +75,7 @@ async def announce_and_reward() -> None:
 
 async def _pick_winner(target_date_str: str) -> int | None:
     """그날 최다 대화자 1명을 고른다. 동점이면 그 횟수에 먼저 도달한 사람, 그마저 같으면
-    user_id가 낮은 사람 순 (/랭킹과 동일한 타이브레이크)."""
+    user_id가 낮은 사람 순 (/랭킹-호감도와 동일한 타이브레이크)."""
     rows = await get_top_talkers_for(target_date_str)
     if rows and rows[0]["messages_today"] > 0:
         top = rows[0]["messages_today"]

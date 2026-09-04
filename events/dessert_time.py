@@ -95,7 +95,7 @@ def close_callback_for(slot: str) -> Callable[[], Awaitable[None]]:
 async def _build_leaderboard_text(slot: str) -> str | None:
     """그 슬롯에서 오늘 간식을 먹인 사람이 하나도 없으면 None(방송문 자체에 랭킹 섹션을
     안 붙인다). 우선순위: (1) 비싼 간식일수록 (2) 같은 값이면 먼저 먹인 사람
-    (3) 그마저 같으면 가입일이 빠른 사람(/랭킹의 동점 타이브레이크와 동일한 원칙)."""
+    (3) 그마저 같으면 가입일이 빠른 사람(/랭킹-호감도의 동점 타이브레이크와 동일한 원칙)."""
     feeders = await get_dessert_feeders_for(kst_today_str(), slot)
     # 카탈로그에서 사라진 간식 id(있을 가능성은 낮지만) 등 가격을 모르는 항목은 랭킹
     # 자체에서 제외한다 — 번호가 중간에 비는 것보다 아예 안 보이는 게 낫다.

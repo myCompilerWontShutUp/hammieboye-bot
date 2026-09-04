@@ -108,14 +108,25 @@ def register(tree: app_commands.CommandTree) -> None:
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
-    @tree.command(name="랭킹", description="호감도 기준 상위 10명 순위를 확인한다")
-    async def ranking_command(interaction: discord.Interaction) -> None:
+    @tree.command(name="랭킹-호감도", description="호감도 기준 상위 10명 순위를 확인한다")
+    async def ranking_affection_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        text, embed = await ranking.build_embed(interaction.client)
+        text, embed = await ranking.build_affection_embed(interaction.client)
+        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
+        await interaction.edit_original_response(content=text, embed=embed)
+
+    @tree.command(name="랭킹-동전", description="동전 보유량 기준 상위 10명 순위를 확인한다")
+    async def ranking_coin_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer()
+        if not await _prepare(interaction):
+            return
+        text, embed = await ranking.build_coin_embed(interaction.client)
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed)
 
