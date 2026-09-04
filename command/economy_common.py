@@ -1,6 +1,9 @@
 import random
 
 import discord
+from discord import app_commands
+
+from db.users import get_user
 
 # /자판기·/자판기-리스트 전용 색(하늘색) — command/info.py 등의 EMBED_COLOR(연주황색)와
 # 구분해 자판기만의 색으로 쓴다.
@@ -58,6 +61,22 @@ async def reject_if_already_resolved(view: discord.ui.View, interaction: discord
 # 배팅액 자체에 안전 상한을 둔다. /내기-*·/슬롯머신이 전부 이 값을 공유
 # (app_commands.Range로 강제).
 MAX_BET = 1_000
+
+
+async def autocomplete_동전개수(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[int]]:
+    """배팅/스핀 금액 입력칸에 호출한 본인의 현재 보유 동전을 참고용 선택지로 띄워준다.
+    슬래시 커맨드 파라미터 설명(app_commands.describe)은 디스코드가 인터랙션 컨텍스트
+    없이(모두에게 똑같이) 보여주는 고정 텍스트라 개인화가 불가능하다 — 자동완성만
+    유일하게 "지금 이걸 치는 사람이 누구인지" 알고 응답할 수 있어서, 개인화된 잔액
+    표시는 이 경로로만 가능하다. /내기-*·/슬롯머신이 전부 공유."""
+    user = await get_user(interaction.user.id)
+    if user is None or user["coins"] < 1:
+        return []
+    balance = min(user["coins"], MAX_BET)
+    return [app_commands.Choice(name=f"현재 보유: {balance}개", value=balance)]
+
 
 # 동전 지급이 max_coins에 걸려 요청량보다 적게 들어갔을 때(/동전·/내기-*·/슬룻머신
 # 공통) 답변 끝에 덧붙이는 안내 — 용량을 늘리라고 권하되 강제하지는 않는다.

@@ -663,9 +663,15 @@ async def _handle_sh_db(args: list[str]) -> str:
     return "\n".join(str(row) for row in rows) if rows else f"{name}: 데이터 없음"
 
 
+_LAST_UPDATED_RECENCY_MAX_MINUTES = 60
+
+
 async def _handle_v(args: list[str]) -> str:
     updated_dt = datetime.fromisoformat(get_last_updated_iso()).astimezone(_KST)
     updated_label = updated_dt.strftime("%Y-%m-%d %H:%M")
+    elapsed_minutes = int((datetime.now(timezone.utc) - updated_dt).total_seconds() // 60)
+    if 0 <= elapsed_minutes <= _LAST_UPDATED_RECENCY_MAX_MINUTES:
+        updated_label += f"({elapsed_minutes}분전)"
     return f"지금 버전은 {get_version_label()}이에요!! 마지막 업데이트는 {updated_label}이에요!!"
 
 

@@ -12,6 +12,7 @@ import command.intro as intro
 import command.ranking as ranking
 import command.slot as slot
 import command.vending as vending
+import command.economy_common as economy_common
 from command.economy_common import MAX_BET
 from command.info import handle as info_handle
 from command.join import handle as join_handle
@@ -207,7 +208,8 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text)
 
     @tree.command(name="내기-홀짝", description="동전을 걸고 홀짝 내기를 한다")
-    @app_commands.describe(동전개수=f"걸 동전 개수(최대 {MAX_BET})")
+    @app_commands.describe(동전개수=f"배팅할 동전 개수(최대 {MAX_BET})")
+    @app_commands.autocomplete(동전개수=economy_common.autocomplete_동전개수)
     async def bet_odd_even_command(
         interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
     ) -> None:
@@ -221,7 +223,8 @@ def register(tree: app_commands.CommandTree) -> None:
         await bet.handle_odd_even(interaction, 동전개수)
 
     @tree.command(name="내기-가위바위보", description="동전을 걸고 가위바위보 내기를 한다")
-    @app_commands.describe(동전개수=f"걸 동전 개수(최대 {MAX_BET})")
+    @app_commands.describe(동전개수=f"배팅할 동전 개수(최대 {MAX_BET})")
+    @app_commands.autocomplete(동전개수=economy_common.autocomplete_동전개수)
     async def bet_rps_command(
         interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
     ) -> None:
@@ -235,7 +238,8 @@ def register(tree: app_commands.CommandTree) -> None:
         await bet.handle_rps(interaction, 동전개수)
 
     @tree.command(name="슬롯머신", description="동전을 걸고 슬롯머신을 돌린다")
-    @app_commands.describe(동전개수=f"걸 동전 개수(최대 {MAX_BET})")
+    @app_commands.describe(동전개수=f"배팅할 동전 개수(최대 {MAX_BET})")
+    @app_commands.autocomplete(동전개수=economy_common.autocomplete_동전개수)
     async def slot_command(
         interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
     ) -> None:

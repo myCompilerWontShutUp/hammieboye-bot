@@ -19,21 +19,22 @@ from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.wallet import add_coins, deduct_coins_clamped, spend_coins
 
-_GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _HAMSTER, _CHEESE, _DIAMOND, _STAR, _SEVEN = (
-    "🍇", "🥜", "🍓", "🌰", "🐹", "🧀", "💎", "⭐", "7️⃣",
+_GRAPE, _PEANUT, _STRAWBERRY, _HAMSTER, _DIAMOND, _STAR, _SEVEN = (
+    "🍇", "🥜", "🍓", "🐹", "💎", "⭐", "7️⃣",
 )
 SYMBOLS: tuple[str, ...] = (
-    _GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _HAMSTER, _CHEESE, _DIAMOND, _STAR, _SEVEN,
+    _GRAPE, _PEANUT, _STRAWBERRY, _HAMSTER, _DIAMOND, _STAR, _SEVEN,
 )
 
 # 햄스터(🐹)는 배율표에 없다 — 한 줄이라도 걸리면 배율 무관하게 전액 페널티로 분기.
+# 심볼이 9종에서 7종으로 줄어(밤/치즈 제거, 2026-09-04) 칸당 적중 확률이 1/9 -> 1/7로
+# 올라간다 — 확률이 너무 낮다는 피드백으로 당첨 라인이 나올 확률 자체를 높인 것.
 _MULTIPLIERS: dict[str, int] = {
-    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _CHESTNUT: 2,
-    _CHEESE: 2, _STAR: 3, _DIAMOND: 10, _SEVEN: 77,
+    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _STAR: 3, _DIAMOND: 10, _SEVEN: 77,
 }
 _SYMBOL_NAMES: dict[str, str] = {
-    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기", _CHESTNUT: "밤",
-    _CHEESE: "치즈", _DIAMOND: "다이아", _STAR: "별", _SEVEN: "세븐", _HAMSTER: "햄스터",
+    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기",
+    _DIAMOND: "다이아", _STAR: "별", _SEVEN: "세븐", _HAMSTER: "햄스터",
 }
 
 # 3x3 인덱스 0~8 기준 가로 3 + 세로 3 + 대각선 2 = 8라인.
@@ -56,8 +57,7 @@ _RULES_TEXT = (
     "배율끼리 전부 곱해져!! (배팅액 x 최종 배율을 돌려받아)\n\n"
     "그림별 배율은 이래:\n"
     "🍇 포도 x2 · 🥜 땅콩 x2 · 🍓 딸기 x2\n"
-    "🌰 밤 x2 · 🧀 치즈 x2 · ⭐ 별 x3\n"
-    "💎 다이아 x10 · 7️⃣ 세븐 x77\n\n"
+    "⭐ 별 x3 · 💎 다이아 x10 · 7️⃣ 세븐 x77\n\n"
     "그런데 🐹 햄스터가 한 줄이라도 걸리면 다른 배율은 몽땅 무시되고, 배팅액만큼 "
     "추가로 더 잃어버려!! 조심해!! _(경고)_"
 )
@@ -168,9 +168,12 @@ def evaluate(grid: list[str]) -> tuple[int, bool]:
     return multiplier, hamster_hit
 
 
-_ROW_LABELS = ("1번째 줄", "2번째 줄", "3번째 줄")
-_SPIN_BUTTON_LABELS = ("1번째 줄 돌리기", "2번째 줄 돌리기", "3번째 줄 돌리기")
-_SPIN_DONE_LABEL = "완료!!"
+_ROW_NUMBER_EMOJI = ("1️⃣", "2️⃣", "3️⃣")
+# 버튼 label에 emoji를 같이 안 섞고 discord.ui.button의 전용 emoji 슬롯을 쓴다 — 그래야
+# 숫자가 아이콘 크기로 크게 나온다(label 문자열 안에 넣으면 다른 글자와 똑같이 작게
+# 렌더링됨). "돌리기"/"완료됨"은 둘 다 3글자라 눌러도 버튼 너비가 거의 안 바뀐다.
+_SPIN_LABEL = "돌리기"
+_SPIN_DONE_LABEL = "완료됨"
 _UNSPUN_PLACEHOLDER = "❔"
 
 _SPIN_PROMPT_LINES = (
@@ -199,12 +202,14 @@ _SPIN_PROMPT_LINES = (
 
 def _render_grid(grid: list[str | None]) -> str:
     rows = (" ".join(cell or _UNSPUN_PLACEHOLDER for cell in grid[i : i + 3]) for i in range(0, 9, 3))
-    return "\n".join(f"{label} : {row}" for label, row in zip(_ROW_LABELS, rows))
+    return "\n".join(f"{num} | {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
 
 
 def _build_embed(grid: list[str | None]) -> discord.Embed:
+    # 그리드를 description이 아니라 title에 넣는다 — 디스코드가 title을 description보다
+    # 크게 렌더링해서 이모지도 그만큼 커 보인다. 대신 브랜딩 문구를 description으로 내림.
     embed = discord.Embed(
-        title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=VENDING_EMBED_COLOR
+        title=_render_grid(grid), description="🎰 개쩌는 슬롯머신!!", color=VENDING_EMBED_COLOR
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
@@ -321,15 +326,15 @@ class _SlotView(discord.ui.View):
         text, embed = await _settle(self.user_id, self.bet, self.grid)
         await interaction.response.edit_message(content=text, embed=embed, view=self)
 
-    @discord.ui.button(label=_SPIN_BUTTON_LABELS[0], style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji=_ROW_NUMBER_EMOJI[0], label=_SPIN_LABEL, style=discord.ButtonStyle.primary)
     async def spin_row_1(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._spin_row(interaction, 0, button)
 
-    @discord.ui.button(label=_SPIN_BUTTON_LABELS[1], style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji=_ROW_NUMBER_EMOJI[1], label=_SPIN_LABEL, style=discord.ButtonStyle.primary)
     async def spin_row_2(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._spin_row(interaction, 1, button)
 
-    @discord.ui.button(label=_SPIN_BUTTON_LABELS[2], style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji=_ROW_NUMBER_EMOJI[2], label=_SPIN_LABEL, style=discord.ButtonStyle.primary)
     async def spin_row_3(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._spin_row(interaction, 2, button)
 
