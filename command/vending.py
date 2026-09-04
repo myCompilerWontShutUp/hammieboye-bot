@@ -90,13 +90,13 @@ async def handle_purchase(
         f"- 차감: {total_cost * 100:,}원\n"
         f"- {effect_summary}"
     )
-    if total_delta != 0:
-        embed.description += format_affection_notice(total_delta, current_affection)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     text = random.choice(_INTRO_LINES)
     for notice in achievement_notices:
         text += f"\n{notice}"
+    if total_delta != 0:
+        text += format_affection_notice(total_delta, current_affection)
     return text, embed
 
 

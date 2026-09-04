@@ -41,11 +41,45 @@ async def update_daily_stats(user_id: int, data: dict) -> dict:
 async def claim_dessert_slot(user_id: int, slot: str, snack_id: str) -> bool:
     """그 슬롯 키가 아직 없을 때만 원자적으로 기록한다(/먹어의 슬롯당 1회 제한을
     조건부 UPDATE로 보장 — 오늘 daily_stats 행이 이미 있어야 하므로 ensure_daily_stats를
-    먼저 호출해야 한다). 실패(False)면 그 슬롯은 이미 다른 요청이 먼저 채간 것."""
+    먼저 호출해야 한다). 실패(False)면 그 슬롯은 이미 다른 요청이 먼저 채간 것.
+
+    저장 형태는 {"id": snack_id, "at": 먹인 시각(timestamptz)} — 디저트 타임 종료 방송의
+    상위 5명 랭킹(events/dessert_time.py)이 "같은 간식이면 먼저 먹인 사람 우선"을
+    가리는 데 이 시각을 그대로 쓴다."""
     return await rpc(
         "claim_dessert_slot",
         {"p_user_id": user_id, "p_slot": slot, "p_snack_id": snack_id},
     )
+
+
+def dessert_snack_id(entry) -> str:
+    """dessert_fed_today[slot] 값에서 간식 id를 뽑는다 — 정상 형태는
+    {"id": ..., "at": ...}이지만, 이 형태로 바뀌기 전(문자열만 저장하던 시절)에 이미
+    기록된 당일 데이터도 그대로 호환한다."""
+    return entry["id"] if isinstance(entry, dict) else entry
+
+
+async def get_dessert_feeders_for(date_str: str, slot: str) -> list[dict]:
+    """그 날짜(KST)에 해당 슬롯에서 간식을 먹인 사용자 전원을 {user_id, snack_id, fed_at}
+    형태로 반환한다(디저트 타임 종료 방송 상위 5명 랭킹용, events/dessert_time.py 전용).
+    fed_at은 마이그레이션 이전 데이터(문자열만 저장)면 None일 수 있다."""
+    rows = await select(
+        "daily_stats",
+        {"stat_date": f"eq.{date_str}", "select": "user_id,dessert_fed_today"},
+    )
+    feeders = []
+    for row in rows:
+        entry = (row.get("dessert_fed_today") or {}).get(slot)
+        if entry is None:
+            continue
+        feeders.append(
+            {
+                "user_id": row["user_id"],
+                "snack_id": dessert_snack_id(entry),
+                "fed_at": entry["at"] if isinstance(entry, dict) else None,
+            }
+        )
+    return feeders
 
 
 async def increment_messages_today(user_id: int) -> int:

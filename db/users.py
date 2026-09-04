@@ -64,6 +64,22 @@ async def claim_coin_cooldown(user_id: int, until: datetime) -> bool:
     return await rpc("claim_coin_cooldown", {"p_user_id": user_id, "p_until": until.isoformat()})
 
 
+async def get_created_at_map(user_ids: list[int]) -> dict[int, str]:
+    """주어진 user_id들의 가입 시각(created_at)을 일괄 조회한다 — 디저트 타임 랭킹처럼
+    여러 후보를 한 번에 타이브레이크해야 할 때 유저 수만큼 왕복하지 않기 위함
+    (db/ranking.py가 이미 쓰는 PostgREST "in.()" 필터와 동일한 idiom)."""
+    if not user_ids:
+        return {}
+    rows = await select(
+        "users",
+        {
+            "user_id": f"in.({','.join(str(uid) for uid in user_ids)})",
+            "select": "user_id,created_at",
+        },
+    )
+    return {row["user_id"]: row["created_at"] for row in rows}
+
+
 async def delete_user(user_id: int) -> None:
     """탈퇴(/탈퇴) 시 유저 행을 완전히 삭제한다. daily_stats/chat_history/affection_log는
     CASCADE로 같이 삭제된다."""

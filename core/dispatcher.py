@@ -145,11 +145,13 @@ def setup_dispatcher(client: discord.Client) -> None:
         start_interval(_TICK_INTERVAL_SECONDS, help_me_event.tick)
 
         # 디저트 타임 하루 3슬롯 x (여는 방송 + 닫는 방송) = 6개 독립 등록. 헬프 미 이벤트
-        # 쪽이 schedule_today()에서 이 슬롯들과 안 겹치게 스스로 피해간다(§4-3).
-        for slot_start in dessert_time.SLOTS.values():
+        # 쪽이 schedule_today()에서 이 슬롯들과 안 겹치게 스스로 피해간다(§4-3). 닫는
+        # 방송은 그 슬롯의 상위 5명 랭킹을 같이 보여줘야 해서 어느 슬롯인지 알아야 한다
+        # — close_callback_for가 슬롯 이름을 클로저로 가둔 인자 없는 콜백을 만들어준다.
+        for slot_name, slot_start in dessert_time.SLOTS.items():
             start_daily(slot_start.hour, slot_start.minute, dessert_time.broadcast_open)
             slot_end = dessert_time.slot_end(slot_start)
-            start_daily(slot_end.hour, slot_end.minute, dessert_time.broadcast_close)
+            start_daily(slot_end.hour, slot_end.minute, dessert_time.close_callback_for(slot_name))
 
     @client.event
     async def on_message(message: discord.Message) -> None:

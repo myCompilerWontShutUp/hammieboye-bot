@@ -1,8 +1,57 @@
 import random
 
+import discord
+
 # /자판기·/자판기-리스트 전용 색(하늘색) — command/info.py 등의 EMBED_COLOR(연주황색)와
 # 구분해 자판기만의 색으로 쓴다.
 VENDING_EMBED_COLOR = 0x87CEEB
+
+# /내기-*·/슬롯머신 버튼 게임 공통 타임아웃(초).
+TIMEOUT_SECONDS = 60
+
+# 다른 사람이 남의 버튼 게임(내기/슬롯머신)을 눌렀을 때(ephemeral 거부) — 이 코드베이스에
+# 선례 없는 패턴이라 다른 20줄 풀들과 통일된 스타일로 새로 작성.
+NOT_YOUR_GAME_LINES = (
+    "어라, 이건 너랑 하는 내기가 아니야!! _(단호)_",
+    "이 내기는 다른 사람 거야!! _(갸웃)_",
+    "네 차례 아니야!! 눌러도 소용없어!! _(웃음)_",
+    "잠깐, 이건 다른 사람 내기라구!! _(당황)_",
+    "네가 배팅한 거 아니잖아!! _(단호)_",
+    "이 버튼은 너를 위한 게 아니야!! _(장난)_",
+    "다른 사람 내기에 끼어들면 안 돼!! _(단호)_",
+    "이건 남의 승부야!! 구경만 해줘!! _(웃음)_",
+    "네 내기가 아니라서 못 눌러!! _(갸웃)_",
+    "잠깐만, 이건 다른 사람 게임이야!! _(놀람)_",
+    "이 승부엔 너 없어!! _(단호)_",
+    "남의 배팅에 손대면 안 되지!! _(장난)_",
+    "이건 다른 주인님의 내기야!! _(단호)_",
+    "네가 건 게 아니잖아?? _(의아)_",
+    "이 판은 다른 사람 차지야!! _(웃음)_",
+    "구경은 좋지만 버튼은 안 돼!! _(장난)_",
+    "이 내기 주인공은 따로 있어!! _(단호)_",
+    "네 순서가 아니야, 기다려줘!! _(갸웃)_",
+    "이건 다른 사람이 배팅한 판이야!! _(당황)_",
+    "미안하지만 이건 네 내기가 아니야!! _(미안)_",
+)
+
+
+async def reject_if_wrong_user(interaction: discord.Interaction, user_id: int) -> bool:
+    """True면 계속 진행, False면 이미 거절 응답을 보냈으니 콜백은 그대로 return해야 한다."""
+    if interaction.user.id != user_id:
+        await interaction.response.send_message(random.choice(NOT_YOUR_GAME_LINES), ephemeral=True)
+        return False
+    return True
+
+
+async def reject_if_already_resolved(view: discord.ui.View, interaction: discord.Interaction) -> bool:
+    """True면 계속 진행. 연타나 중복 이벤트로 이미 끝난(또는 이미 처리 중인) 판에 대한
+    추가 클릭이 도착했으면 조용히 defer만 하고 False를 반환한다 — 안 그러면 같은 클릭이
+    보상을 두 번 지급해버릴 수 있다."""
+    if view.is_finished():
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        return False
+    return True
 
 # 슬롯머신 최대 배율(세븐 8라인 동시 완성 = 77^8 = 1,235,736,291,547,681)을 곱해도
 # Postgres bigint 상한(9,223,372,036,854,775,807, 약 7,463배 여유)을 넘지 않도록

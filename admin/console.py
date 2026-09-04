@@ -476,7 +476,7 @@ async def _handle_co_reset(args: list[str]) -> str:
 # users.max_coins의 DEFAULT와 동일 — fl reset이 _INITIAL_AFFECTION(users.affection
 # DEFAULT)으로 되돌리는 것과 동일한 원칙("리셋 = 시작 상태로 되돌림", 0이 아님 — max_coins가
 # 0이면 이 유저는 동전을 영영 못 받는 상태가 되어버린다).
-_INITIAL_MAX_COINS = 10
+_INITIAL_MAX_COINS = 20
 
 
 async def _handle_vol_up(args: list[str]) -> str:

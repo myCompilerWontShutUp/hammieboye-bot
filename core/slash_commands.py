@@ -246,12 +246,7 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        result = await slot.handle_spin(interaction.user.id, 동전개수)
-        if isinstance(result, tuple):
-            text, embed = result
-            await interaction.edit_original_response(content=text, embed=embed)
-        else:
-            await interaction.edit_original_response(content=result)
+        await slot.handle_spin(interaction, 동전개수)
 
     @tree.command(name="슬롯머신-규칙", description="슬롯머신 배율과 규칙을 확인한다")
     async def slot_rules_command(interaction: discord.Interaction) -> None:

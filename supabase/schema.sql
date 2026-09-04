@@ -119,7 +119,7 @@ CREATE TABLE users (
   -- 실제로 먹인 횟수 누적(자판기 구매 자체는 포함 안 함). /동전 쿨타임도
   -- plastic_cooldown_until과 동일한 이유로 여기 둔다.
   coins                       bigint NOT NULL DEFAULT 0,
-  max_coins                   bigint NOT NULL DEFAULT 10,
+  max_coins                   bigint NOT NULL DEFAULT 20,
   lifetime_coins_earned       bigint NOT NULL DEFAULT 0,
   total_snacks_given          bigint NOT NULL DEFAULT 0,
   coin_cooldown_until         timestamptz,
@@ -905,6 +905,9 @@ $$;
 -- /먹어의 "슬롯당 1회" 제한을 원자적으로 보장한다 — "그 슬롯 키가 아직 없을 때만"
 -- 원자적으로 기록해서 동시 요청으로 인한 이중 지급(TOCTOU)을 막는다. 오늘 daily_stats
 -- 행이 이미 있어야 하므로(ensure_daily_stats로 미리 보장) 조건부 UPDATE 하나로 충분.
+-- 슬롯 값은 {"id": snack_id, "at": 먹인 시각} 객체 — "at"은 디저트 타임 종료 방송의
+-- 상위 5명 랭킹(events/dessert_time.py)이 "같은 간식이면 먼저 먹인 사람 우선"을
+-- 가리는 타이브레이크로 쓴다.
 CREATE OR REPLACE FUNCTION claim_dessert_slot(p_user_id bigint, p_slot text, p_snack_id text)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -914,7 +917,9 @@ DECLARE
   v_rows integer;
 BEGIN
   UPDATE daily_stats
-  SET dessert_fed_today = dessert_fed_today || jsonb_build_object(p_slot, p_snack_id)
+  SET dessert_fed_today = dessert_fed_today || jsonb_build_object(
+    p_slot, jsonb_build_object('id', p_snack_id, 'at', now())
+  )
   WHERE user_id = p_user_id
     AND stat_date = v_stat_date
     AND NOT (dessert_fed_today ? p_slot);

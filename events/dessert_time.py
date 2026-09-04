@@ -1,9 +1,15 @@
+import asyncio
 import random
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Awaitable, Callable
 
 import discord
 
+from command.vending_catalog import BY_ID
 from config import ALLOWED_GUILD_IDS
+from core.discord_names import resolve_real_name
+from db.daily_stats import get_dessert_feeders_for, kst_today_str
+from db.users import get_created_at_map
 from events.scheduler import KST, broadcast_to_guilds
 
 _client: discord.Client | None = None
@@ -63,9 +69,57 @@ _CLOSE_LINES = (
 )
 
 
+# 디저트 타임 종료 방송에 붙는 "이번 타임 최고 후원자" 랭킹 — 상위 몇 명까지 보여줄지.
+_LEADERBOARD_SIZE = 5
+_LEADERBOARD_TITLE = "🏆 이번 디저트 타임 최고 후원자!!"
+# fed_at이 없는(마이그레이션 이전) 데이터는 항상 맨 뒤로 밀리게 아주 먼 미래 값을 쓴다.
+_NO_TIMESTAMP_FALLBACK = "9999-12-31T23:59:59+00:00"
+
+
 def init(client: discord.Client) -> None:
     global _client
     _client = client
+
+
+def close_callback_for(slot: str) -> Callable[[], Awaitable[None]]:
+    """start_daily(events/scheduler.py)는 인자 없는 콜백만 받으므로, 슬롯 이름을 클로저로
+    가둔 래퍼를 슬롯마다 하나씩 만들어준다(functools.partial은 discord.py의
+    inspect.iscoroutinefunction 검사를 못 통과해서 못 씀)."""
+
+    async def _closer() -> None:
+        await broadcast_close(slot)
+
+    return _closer
+
+
+async def _build_leaderboard_text(slot: str) -> str | None:
+    """그 슬롯에서 오늘 간식을 먹인 사람이 하나도 없으면 None(방송문 자체에 랭킹 섹션을
+    안 붙인다). 우선순위: (1) 비싼 간식일수록 (2) 같은 값이면 먼저 먹인 사람
+    (3) 그마저 같으면 가입일이 빠른 사람(/랭킹의 동점 타이브레이크와 동일한 원칙)."""
+    feeders = await get_dessert_feeders_for(kst_today_str(), slot)
+    # 카탈로그에서 사라진 간식 id(있을 가능성은 낮지만) 등 가격을 모르는 항목은 랭킹
+    # 자체에서 제외한다 — 번호가 중간에 비는 것보다 아예 안 보이는 게 낫다.
+    feeders = [f for f in feeders if f["snack_id"] in BY_ID]
+    if not feeders:
+        return None
+
+    created_at_map = await get_created_at_map([f["user_id"] for f in feeders])
+
+    def sort_key(feeder: dict) -> tuple:
+        price = BY_ID[feeder["snack_id"]].price
+        fed_at = feeder["fed_at"] or _NO_TIMESTAMP_FALLBACK
+        created_at = created_at_map.get(feeder["user_id"], _NO_TIMESTAMP_FALLBACK)
+        return (-price, fed_at, created_at)
+
+    feeders.sort(key=sort_key)
+    top = feeders[:_LEADERBOARD_SIZE]
+
+    names = await asyncio.gather(*(resolve_real_name(_client, f["user_id"]) for f in top))
+    lines = [
+        f"{i + 1}. {name} — {BY_ID[f['snack_id']].name}"
+        for i, (name, f) in enumerate(zip(names, top))
+    ]
+    return _LEADERBOARD_TITLE + "\n" + "\n".join(lines)
 
 
 def slot_end(start: time) -> time:
@@ -90,7 +144,11 @@ async def broadcast_open() -> None:
     await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=random.choice(_OPEN_LINES))
 
 
-async def broadcast_close() -> None:
+async def broadcast_close(slot: str) -> None:
     if _client is None:
         return
-    await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=random.choice(_CLOSE_LINES))
+    text = random.choice(_CLOSE_LINES)
+    leaderboard = await _build_leaderboard_text(slot)
+    if leaderboard is not None:
+        text += f"\n\n{leaderboard}"
+    await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=text)

@@ -6,41 +6,18 @@ import discord
 import achievements
 from command.economy_common import (
     INSUFFICIENT_FUNDS_LINES,
+    TIMEOUT_SECONDS,
     format_coin_notice,
     maybe_append_capacity_advice,
+    reject_if_already_resolved,
+    reject_if_wrong_user,
 )
 from db.achievements import award as award_achievement
 from db.affection import format_affection_notice
+from db.users import get_user
 from db.wallet import add_coins, spend_coins
 
-_TIMEOUT_SECONDS = 60
-
 _INVALID_BET_RESPONSE = "배팅 금액은 동전 1개 이상이어야지!! _(갸웃)_"
-
-# 다른 사람이 남의 내기 버튼을 눌렀을 때(ephemeral 거부) — 이 코드베이스에 선례 없는
-# 새 패턴이라 다른 20줄 풀들과 통일된 스타일로 새로 작성.
-_NOT_YOUR_GAME_LINES = (
-    "어라, 이건 너랑 하는 내기가 아니야!! _(단호)_",
-    "이 내기는 다른 사람 거야!! _(갸웃)_",
-    "네 차례 아니야!! 눌러도 소용없어!! _(웃음)_",
-    "잠깐, 이건 다른 사람 내기라구!! _(당황)_",
-    "네가 배팅한 거 아니잖아!! _(단호)_",
-    "이 버튼은 너를 위한 게 아니야!! _(장난)_",
-    "다른 사람 내기에 끼어들면 안 돼!! _(단호)_",
-    "이건 남의 승부야!! 구경만 해줘!! _(웃음)_",
-    "네 내기가 아니라서 못 눌러!! _(갸웃)_",
-    "잠깐만, 이건 다른 사람 게임이야!! _(놀람)_",
-    "이 승부엔 너 없어!! _(단호)_",
-    "남의 배팅에 손대면 안 되지!! _(장난)_",
-    "이건 다른 주인님의 내기야!! _(단호)_",
-    "네가 건 게 아니잖아?? _(의아)_",
-    "이 판은 다른 사람 차지야!! _(웃음)_",
-    "구경은 좋지만 버튼은 안 돼!! _(장난)_",
-    "이 내기 주인공은 따로 있어!! _(단호)_",
-    "네 순서가 아니야, 기다려줘!! _(갸웃)_",
-    "이건 다른 사람이 배팅한 판이야!! _(당황)_",
-    "미안하지만 이건 네 내기가 아니야!! _(미안)_",
-)
 
 _BET_TIMEOUT_LINES = (
     "너무 오래 기다려서 그냥 취소했어!! 배팅금은 돌려줄게!! _(안도)_",
@@ -178,27 +155,6 @@ _RPS_DRAW_LINES = (
 )
 
 
-async def _reject_if_wrong_user(interaction: discord.Interaction, user_id: int) -> bool:
-    """True면 계속 진행, False면 이미 거절 응답을 보냈으니 콜백은 그대로 return해야 한다."""
-    if interaction.user.id != user_id:
-        await interaction.response.send_message(random.choice(_NOT_YOUR_GAME_LINES), ephemeral=True)
-        return False
-    return True
-
-
-async def _reject_if_already_resolved(view: discord.ui.View, interaction: discord.Interaction) -> bool:
-    """True면 계속 진행. 연타나 중복 이벤트로 같은 판에 대한 두 번째 클릭이 도착했으면
-    (view.stop()이 이미 호출된 뒤) 조용히 defer만 하고 False를 반환한다 — 그렇지 않으면
-    첫 클릭 처리 결과가 이미 나온 뒤에도 두 번째 클릭이 또 보상을 지급해버릴 수 있다.
-    self.stop()부터 add_coins 호출 전까지는 실제로 await가 걸리는 지점이 없어서(코드
-    구조상 전부 동기적으로 이어짐) 이 체크 하나로 안전하다."""
-    if view.is_finished():
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-        return False
-    return True
-
-
 async def _refund_timeout(view: discord.ui.View, user_id: int, bet: int) -> None:
     """60초 동안 아무도 안 누르면 이미 선차감된 배팅액을 그대로 돌려준다 — 원금
     반환일 뿐이라 count_as_earned=False(무승부 환불과 동일한 이유)."""
@@ -225,7 +181,7 @@ async def _maybe_award_win_achievement(user_id: int) -> str:
 
 class _OddEvenView(discord.ui.View):
     def __init__(self, user_id: int, bet: int) -> None:
-        super().__init__(timeout=_TIMEOUT_SECONDS)
+        super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.interaction: discord.Interaction | None = None
@@ -234,9 +190,9 @@ class _OddEvenView(discord.ui.View):
         await _refund_timeout(self, self.user_id, self.bet)
 
     async def _resolve(self, interaction: discord.Interaction, guess: str) -> None:
-        if not await _reject_if_already_resolved(self, interaction):
+        if not await reject_if_already_resolved(self, interaction):
             return
-        if not await _reject_if_wrong_user(interaction, self.user_id):
+        if not await reject_if_wrong_user(interaction, self.user_id):
             return
         self.stop()
         for child in self.children:
@@ -252,7 +208,9 @@ class _OddEvenView(discord.ui.View):
                 text += f"\n{result['achievement_notice']}"
             text += await _maybe_award_win_achievement(self.user_id)
         else:
+            user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
+            text += format_coin_notice(-self.bet, user["coins"])
 
         await interaction.response.edit_message(content=text, view=self)
 
@@ -270,7 +228,7 @@ class _RPSView(discord.ui.View):
     _BEATS = {"가위": "보", "바위": "가위", "보": "바위"}
 
     def __init__(self, user_id: int, bet: int) -> None:
-        super().__init__(timeout=_TIMEOUT_SECONDS)
+        super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.interaction: discord.Interaction | None = None
@@ -279,29 +237,32 @@ class _RPSView(discord.ui.View):
         await _refund_timeout(self, self.user_id, self.bet)
 
     async def _resolve(self, interaction: discord.Interaction, choice: str) -> None:
-        if not await _reject_if_already_resolved(self, interaction):
+        if not await reject_if_already_resolved(self, interaction):
             return
-        if not await _reject_if_wrong_user(interaction, self.user_id):
+        if not await reject_if_wrong_user(interaction, self.user_id):
             return
         self.stop()
         for child in self.children:
             child.disabled = True
 
         actual = random.choice(("가위", "바위", "보"))
+        actual_bold = f"**{actual}**"
         if choice == actual:
             result = await add_coins(self.user_id, self.bet, method="bet_rps_draw", count_as_earned=False)
-            text = random.choice(_RPS_DRAW_LINES).format(actual=actual)
+            text = random.choice(_RPS_DRAW_LINES).format(actual=actual_bold)
             text += format_coin_notice(result["applied_amount"], result["new_coins"])
         elif self._BEATS[choice] == actual:
             result = await add_coins(self.user_id, self.bet * 2, method="bet_rps_win")
-            text = random.choice(_RPS_WIN_LINES).format(actual=actual)
+            text = random.choice(_RPS_WIN_LINES).format(actual=actual_bold)
             text += format_coin_notice(result["applied_amount"], result["new_coins"])
             text = maybe_append_capacity_advice(text, self.bet * 2, result)
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             text += await _maybe_award_win_achievement(self.user_id)
         else:
-            text = random.choice(_RPS_LOSE_LINES).format(actual=actual)
+            user = await get_user(self.user_id)
+            text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
+            text += format_coin_notice(-self.bet, user["coins"])
 
         await interaction.response.edit_message(content=text, view=self)
 

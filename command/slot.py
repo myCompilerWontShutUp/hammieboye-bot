@@ -1,3 +1,4 @@
+import logging
 import random
 from datetime import datetime
 
@@ -6,9 +7,12 @@ import discord
 import achievements
 from command.economy_common import (
     INSUFFICIENT_FUNDS_LINES,
+    TIMEOUT_SECONDS,
     VENDING_EMBED_COLOR,
     format_coin_notice,
     maybe_append_capacity_advice,
+    reject_if_already_resolved,
+    reject_if_wrong_user,
 )
 from events.scheduler import KST, format_footer_time
 from db.achievements import award as award_achievement
@@ -165,26 +169,52 @@ def evaluate(grid: list[str]) -> tuple[int, bool]:
 
 
 _ROW_LABELS = ("1번째 줄", "2번째 줄", "3번째 줄")
+_SPIN_BUTTON_LABELS = ("1번째 줄 돌리기", "2번째 줄 돌리기", "3번째 줄 돌리기")
+_SPIN_DONE_LABEL = "완료!!"
+_UNSPUN_PLACEHOLDER = "❔"
+
+_SPIN_PROMPT_LINES = (
+    "슬롯머신 준비됐어!! 줄을 하나씩 돌려봐!! _(두근)_",
+    "자, 버튼을 눌러서 한 줄씩 돌려줘!! _(기대)_",
+    "슬롯머신 스탠바이!! 순서대로 돌려봐!! _(설렘)_",
+    "줄마다 버튼이 있어!! 하나씩 눌러줘!! _(신남)_",
+    "준비 완료!! 이제 돌려볼까?? _(두근)_",
+    "슬롯머신이 기다리고 있어!! 줄을 돌려줘!! _(기대)_",
+    "버튼 눌러서 한 줄씩 확인해볼래?? _(설렘)_",
+    "자, 슬롯머신 시작이야!! 줄부터 돌려봐!! _(신남)_",
+    "세 줄 다 돌려야 결과가 나와!! 시작해볼까?? _(긴장)_",
+    "슬롯머신 가동 준비 끝!! 돌려줘!! _(두근)_",
+    "한 줄씩 천천히 돌려보자!! _(설렘)_",
+    "버튼이 세 개야!! 순서는 자유, 다 눌러줘!! _(안내)_",
+    "슬롯머신 워밍업 완료!! 이제 돌려봐!! _(기대)_",
+    "줄을 다 돌리면 결과를 알려줄게!! _(신남)_",
+    "자, 어떤 줄부터 돌려볼래?? _(궁금)_",
+    "슬롯머신 대기 중!! 버튼을 눌러줘!! _(두근)_",
+    "이번엔 어떤 그림이 나올까?? 돌려봐!! _(설렘)_",
+    "세 줄 다 돌리면 정산할게!! 시작!! _(기대)_",
+    "슬롯머신 준비 끝!! 어서 돌려줘!! _(신남)_",
+    "자, 각 줄을 눌러서 돌려볼래?? _(안내)_",
+)
 
 
-def _render_grid(grid: list[str]) -> str:
-    rows = (" ".join(grid[i : i + 3]) for i in range(0, 9, 3))
+def _render_grid(grid: list[str | None]) -> str:
+    rows = (" ".join(cell or _UNSPUN_PLACEHOLDER for cell in grid[i : i + 3]) for i in range(0, 9, 3))
     return "\n".join(f"{label} : {row}" for label, row in zip(_ROW_LABELS, rows))
 
 
-async def handle_spin(user_id: int, bet: int) -> str | tuple[str, discord.Embed]:
-    if bet < 1:
-        return _INVALID_BET_RESPONSE
-    if not await spend_coins(user_id, bet):
-        return random.choice(INSUFFICIENT_FUNDS_LINES)
-
-    grid = random.choices(SYMBOLS, k=9)
-    multiplier, hamster_hit = evaluate(grid)
-
+def _build_embed(grid: list[str | None]) -> discord.Embed:
     embed = discord.Embed(
         title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=VENDING_EMBED_COLOR
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    return embed
+
+
+async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord.Embed]:
+    """세 줄이 모두 채워진 뒤 정산 — 기존 handle_spin이 즉시 스핀 직후 하던 일과 동일
+    (버튼으로 한 줄씩 돌리는 방식으로 바뀌었을 뿐 배율/보상 로직 자체는 그대로)."""
+    multiplier, hamster_hit = evaluate(grid)
+    embed = _build_embed(grid)
 
     if hamster_hit:
         penalty = await deduct_coins_clamped(user_id, bet)
@@ -236,6 +266,86 @@ async def handle_spin(user_id: int, bet: int) -> str | tuple[str, discord.Embed]
     if total_affection_delta != 0:
         text += format_affection_notice(total_affection_delta, current_affection)
     return text, embed
+
+
+class _SlotView(discord.ui.View):
+    """가위바위보/홀짝과 동일한 결의 버튼 게임 — 다만 승부를 "고르는" 게 아니라 세 줄을
+    각자 돌려서 "채우는" 방식이라 버튼이 3개 다 눌려야 결과가 나온다(순서는 자유)."""
+
+    def __init__(self, user_id: int, bet: int) -> None:
+        super().__init__(timeout=TIMEOUT_SECONDS)
+        self.user_id = user_id
+        self.bet = bet
+        self.grid: list[str | None] = [None] * 9
+        self._spun: set[int] = set()
+        self.interaction: discord.Interaction | None = None
+
+    async def on_timeout(self) -> None:
+        """60초 동안 세 줄을 다 못 돌렸으면, 안 돌린 줄을 전부 자동으로 돌리고 그대로
+        정산한다 — 내기(bet.py)와 달리 여기선 "선택"이 아니라 "공개"라서 환불이 아니라
+        마저 진행하는 쪽이 자연스럽다."""
+        if self.interaction is None or self.is_finished():
+            return
+        for row in range(3):
+            if row not in self._spun:
+                self._spun.add(row)
+                self.grid[row * 3 : row * 3 + 3] = random.choices(SYMBOLS, k=3)
+        text, embed = await _settle(self.user_id, self.bet, self.grid)
+        try:
+            await self.interaction.edit_original_response(content=text, embed=embed, view=None)
+        except discord.HTTPException:
+            logging.exception("Failed to edit slot prompt on timeout")
+
+    async def _spin_row(
+        self, interaction: discord.Interaction, row: int, button: discord.ui.Button
+    ) -> None:
+        if not await reject_if_already_resolved(self, interaction):
+            return
+        if not await reject_if_wrong_user(interaction, self.user_id):
+            return
+        if row in self._spun:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            return
+
+        self._spun.add(row)
+        self.grid[row * 3 : row * 3 + 3] = random.choices(SYMBOLS, k=3)
+        button.disabled = True
+        button.label = _SPIN_DONE_LABEL
+
+        if len(self._spun) < 3:
+            await interaction.response.edit_message(embed=_build_embed(self.grid), view=self)
+            return
+
+        self.stop()
+        text, embed = await _settle(self.user_id, self.bet, self.grid)
+        await interaction.response.edit_message(content=text, embed=embed, view=self)
+
+    @discord.ui.button(label=_SPIN_BUTTON_LABELS[0], style=discord.ButtonStyle.primary)
+    async def spin_row_1(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._spin_row(interaction, 0, button)
+
+    @discord.ui.button(label=_SPIN_BUTTON_LABELS[1], style=discord.ButtonStyle.primary)
+    async def spin_row_2(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._spin_row(interaction, 1, button)
+
+    @discord.ui.button(label=_SPIN_BUTTON_LABELS[2], style=discord.ButtonStyle.primary)
+    async def spin_row_3(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._spin_row(interaction, 2, button)
+
+
+async def handle_spin(interaction: discord.Interaction, bet: int) -> None:
+    if bet < 1:
+        await interaction.edit_original_response(content=_INVALID_BET_RESPONSE)
+        return
+    if not await spend_coins(interaction.user.id, bet):
+        await interaction.edit_original_response(content=random.choice(INSUFFICIENT_FUNDS_LINES))
+        return
+    view = _SlotView(interaction.user.id, bet)
+    await interaction.edit_original_response(
+        content=random.choice(_SPIN_PROMPT_LINES), embed=_build_embed(view.grid), view=view
+    )
+    view.interaction = interaction
 
 
 async def handle_rules() -> tuple[str, discord.Embed]:

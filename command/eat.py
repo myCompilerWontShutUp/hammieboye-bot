@@ -8,7 +8,7 @@ from command.vending_catalog import BY_ID, BY_NAME
 from events.dessert_time import current_slot
 from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
-from db.daily_stats import claim_dessert_slot, ensure_daily_stats
+from db.daily_stats import claim_dessert_slot, dessert_snack_id, ensure_daily_stats
 from db.snacks import add_snack, consume_snack, get_inventory
 from db.users import increment_snacks_given
 
@@ -159,7 +159,7 @@ async def handle(user_id: int, snack_name: str) -> str:
     if result["achievement_notice"]:
         achievement_notices.append(result["achievement_notice"])
 
-    if len(set(fed_today.values())) == 3:
+    if len({dessert_snack_id(v) for v in fed_today.values()}) == 3:
         three_meals = await award_achievement(user_id, achievements.three_meals_a_day.ID)
         if three_meals["earned"]:
             total_delta += three_meals["applied_amount"]
