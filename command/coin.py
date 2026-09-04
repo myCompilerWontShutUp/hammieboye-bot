@@ -88,6 +88,32 @@ _COOLDOWN_WARNING_MESSAGES = (
     "햄미 화나기 직전이야!! 제발 좀 기다려줘!! _(짜증)_",
     "마지막으로 경고할게!! 더 누르면 화낼 거야!! _(화남)_",
 )
+# 지갑이 이미 꽉 찬 상태(add_coins의 applied_amount == 0)에서 쓰면, "동전 벌었다"는
+# 성공 플레이버 + 용량 부족 안내를 조합하는 대신 이 전용 문구를 쓴다 — 실제로는 한
+# 푼도 못 받았는데 성공한 것처럼 보이는 게 헷갈린다는 피드백으로 분리됨.
+_WALLET_FULL_LINES = (
+    "어라, 지갑이 이미 꽉 찼어!! 쳇바퀴 굴려봤자 소용없겠다!! _(갸웃)_",
+    "잠깐, 동전 넣을 자리가 없잖아!! 자판기에서 지갑부터 키우고 와!! _(당황)_",
+    "지갑이 빵빵해서 한 푼도 더 안 들어가!! _(끄덕)_",
+    "어?? 이미 가득 찼는데?? 쳇바퀴 굴린 보람이 없네!! _(허탈)_",
+    "동전 자리가 하나도 없어!! 용량부터 늘리고 다시 와줄래?? _(안내)_",
+    "지갑이 터지기 직전이야!! 지금은 더 못 벌어!! _(당황)_",
+    "이미 꽉 차서 쳇바퀴 굴려도 소용없어!! _(멋쩍)_",
+    "동전 넣을 데가 없어!! 자판기에서 용량 업그레이드 어때?? _(권유)_",
+    "지갑이 이미 가득이야!! 헛수고했네!! _(웃음)_",
+    "더 담을 자리가 없어!! 저금통이라도 하나 장만해봐!! _(추천)_",
+    "쳇바퀴는 굴렸는데 지갑이 꽉 차서 못 받았어!! _(아쉬움)_",
+    "지갑 용량 초과야!! 지금은 벌어도 의미가 없어!! _(설명)_",
+    "동전이 넘칠 지경이라 안 줬어!! 용량부터 늘려줘!! _(단호)_",
+    "이미 최대치야!! 자판기 들러서 지갑 키우고 오자!! _(제안)_",
+    "지갑에 자리가 없어서 못 벌었어!! _(속상)_",
+    "가득 찬 지갑에 동전을 더 넣을 순 없지!! _(끄덕)_",
+    "용량이 꽉 차서 이번엔 헛걸음이었어!! _(허탈)_",
+    "동전 자리가 없다구!! 자판기에서 확인해봐!! _(안내)_",
+    "지갑이 터질 것 같아!! 지금은 더 못 담아!! _(당황)_",
+    "이미 가득 차 있어서 벌어도 다 흘러넘쳐!! 용량부터 늘리자!! _(권유)_",
+)
+
 _COOLDOWN_PENALTY_MESSAGES = (
     "몇 번을 말해야 알아들어!! 이제 진짜 화났어!! _(화남)_",
     "결국 화나버려써!! 쿨타임 좀 지켜달랬잖아!! _(짜증)_",
@@ -177,9 +203,16 @@ async def handle(user_id: int) -> str:
     amount = random.randint(1, max_grant)
     result = await add_coins(user_id, amount, method=_METHOD)
 
-    text = random.choice(_GRANT_MESSAGES)
-    text += format_coin_notice(result["applied_amount"], result["new_coins"])
-    text = maybe_append_capacity_advice(text, amount, result)
+    if result["applied_amount"] == 0:
+        # amount는 항상 1 이상이라, applied_amount가 정확히 0이면 지갑이 이미
+        # max_coins에 도달해 있었다는 뜻이다 — "동전 벌었다"는 성공 문구 대신
+        # 전용 문구 하나로 상황을 명확히 알려준다(용량 부족 안내도 이 문구 안에
+        # 이미 포함돼 있어 maybe_append_capacity_advice를 따로 안 붙인다).
+        text = random.choice(_WALLET_FULL_LINES)
+    else:
+        text = random.choice(_GRANT_MESSAGES)
+        text += format_coin_notice(result["applied_amount"], result["new_coins"])
+        text = maybe_append_capacity_advice(text, amount, result)
     if result["achievement_notice"]:
         text += f"\n{result['achievement_notice']}"
     return text

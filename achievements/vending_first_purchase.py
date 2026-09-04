@@ -1,5 +1,5 @@
 ID = "vending_first_purchase"
 NAME = "이 자판기는 누가 관리하나"
-HOW_TO_EARN = "자판기에서 아무거나 한 번 사면 얻어."
+HOW_TO_EARN = "자판기에서 아무거나 한 번 사면 얻어"
 RARITY = "일반"
 CODE = "abetv2pb"

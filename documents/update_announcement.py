@@ -6,7 +6,7 @@ class UpdateEntry:
     changes: tuple[str, ...]  # 실제 서비스에 체감되는 변경만 — 관리자 명령어/내부 도구
     # 변경은 여기 넣지 않는다.
     #
-    # 날짜/버전은 여기에 안 담는다 — "an update"가 실제로 방송되는 시점의 날짜/버전
+    # 날짜/버전은 여기에 안 담는다 — "ann update"가 실제로 방송되는 시점의 날짜/버전
     # (admin/version.py::get_version_label())을 그때그때 그대로 보여준다(admin/console.py
     # ::_build_update_embed). 이 항목은 "무엇이 바뀌었는지"만 기록한다.
 
@@ -54,7 +54,7 @@ ENTRIES: tuple[UpdateEntry, ...] = (
 
 
 def latest() -> UpdateEntry | None:
-    """admin/console.py의 "an update" 명령어가 그대로 읽어 보내는 최신 항목(LLM 미개입)."""
+    """admin/console.py의 "ann update" 명령어가 그대로 읽어 보내는 최신 항목(LLM 미개입)."""
     return ENTRIES[0] if ENTRIES else None
 
 

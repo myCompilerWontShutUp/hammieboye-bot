@@ -1,5 +1,5 @@
 ID = "gambling_hotline_1336"
 NAME = "도박 상담은 1336"
-HOW_TO_EARN = "슬롯머신에서 처음으로 배율에 성공하면 얻어."
+HOW_TO_EARN = "슬롯머신에서 처음으로 배율에 성공하면 얻어"
 RARITY = "일반"
 CODE = "oc3izgkv"

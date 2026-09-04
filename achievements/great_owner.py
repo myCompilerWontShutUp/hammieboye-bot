@@ -1,5 +1,5 @@
 ID = "great_owner"
 NAME = "최고의 햄미 주인"
-HOW_TO_EARN = "호감도가 25 이상이 되면 얻어."
+HOW_TO_EARN = "호감도가 25 이상이 되면 얻어"
 RARITY = "일반"
 CODE = "r7q3ksk0"

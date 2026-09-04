@@ -207,9 +207,9 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text)
 
     @tree.command(name="내기-홀짝", description="동전을 걸고 홀짝 내기를 한다")
-    @app_commands.describe(배팅금액=f"걸 동전 개수(최대 {MAX_BET})")
+    @app_commands.describe(동전개수=f"걸 동전 개수(최대 {MAX_BET})")
     async def bet_odd_even_command(
-        interaction: discord.Interaction, 배팅금액: app_commands.Range[int, 1, MAX_BET]
+        interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
     ) -> None:
         if interaction.user.bot:
             return
@@ -218,12 +218,12 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        await bet.handle_odd_even(interaction, 배팅금액)
+        await bet.handle_odd_even(interaction, 동전개수)
 
     @tree.command(name="내기-가위바위보", description="동전을 걸고 가위바위보 내기를 한다")
-    @app_commands.describe(배팅금액=f"걸 동전 개수(최대 {MAX_BET})")
+    @app_commands.describe(동전개수=f"걸 동전 개수(최대 {MAX_BET})")
     async def bet_rps_command(
-        interaction: discord.Interaction, 배팅금액: app_commands.Range[int, 1, MAX_BET]
+        interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
     ) -> None:
         if interaction.user.bot:
             return
@@ -232,12 +232,12 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        await bet.handle_rps(interaction, 배팅금액)
+        await bet.handle_rps(interaction, 동전개수)
 
     @tree.command(name="슬롯머신", description="동전을 걸고 슬롯머신을 돌린다")
-    @app_commands.describe(배팅금액=f"걸 동전 개수(최대 {MAX_BET})")
+    @app_commands.describe(동전개수=f"걸 동전 개수(최대 {MAX_BET})")
     async def slot_command(
-        interaction: discord.Interaction, 배팅금액: app_commands.Range[int, 1, MAX_BET]
+        interaction: discord.Interaction, 동전개수: app_commands.Range[int, 1, MAX_BET]
     ) -> None:
         if interaction.user.bot:
             return
@@ -246,7 +246,7 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        result = await slot.handle_spin(interaction.user.id, 배팅금액)
+        result = await slot.handle_spin(interaction.user.id, 동전개수)
         if isinstance(result, tuple):
             text, embed = result
             await interaction.edit_original_response(content=text, embed=embed)

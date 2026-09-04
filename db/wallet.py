@@ -69,3 +69,10 @@ async def deduct_coins_clamped(user_id: int, amount: int) -> dict:
 async def increase_max_coins(user_id: int, amount: int) -> int:
     """동전 최대 보유량을 늘린다 (자판기 용량 업그레이드 품목 전용, 반복 가능)."""
     return await rpc("increase_max_coins", {"p_user_id": user_id, "p_amount": amount})
+
+
+async def decrease_max_coins(user_id: int, amount: int) -> dict:
+    """0 밑으로 안 내려가는 최대 동전 보유량 차감 — 관리자 콘솔 vol down 전용
+    (deduct_coins_clamped와 동일한 idiom). 반환값은 {deducted, new_max_coins}."""
+    rows = await rpc("decrease_max_coins", {"p_user_id": user_id, "p_amount": amount})
+    return rows[0]

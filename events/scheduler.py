@@ -6,7 +6,7 @@ from typing import Awaitable, Callable
 import discord
 from discord.ext import tasks
 
-from db.guild_channels import get_designated_channel, get_last_channel
+from db.guild_channels import get_last_channel, get_main_channel
 
 # 한국시간(KST) 고정 오프셋. 서머타임이 없어서 UTC+9 고정으로 충분하다.
 KST = timezone(timedelta(hours=9))
@@ -84,13 +84,13 @@ def resolve_broadcast_channel_id(guild_id: int, last_channel_id: int | None) -> 
     채널로 갈지 결정한다. 테스트 서버는 항상 고정된 sync 채널로만 보낸다(자체 3채널 테스트
     체계가 이미 있어 새 지정 채널 시스템과 별개로 항상 우선) — awake/asleep 채널은
     반응형(누군가 먼저 말을 걸었을 때만 동작)이라 자동 게시 대상에서 제외된다. 그 외
-    서버는 관리자가 "ds here"로 지정 채널을 설정했으면 그 채널을, 아니면 기존처럼
-    "마지막 호출된 채널"을 쓴다."""
+    서버는 메인 채널로만 보낸다(서브 채널은 명령어 전용이라 방송 대상이 아니다) — 메인이
+    아직 없으면 기존처럼 "마지막 호출된 채널"을 쓴다."""
     if guild_id == TEST_GUILD_ID:
         return TEST_SYNC_CHANNEL_ID
-    designated = get_designated_channel(guild_id)
-    if designated is not None:
-        return designated
+    main = get_main_channel(guild_id)
+    if main is not None:
+        return main
     return last_channel_id
 
 
@@ -103,7 +103,7 @@ async def broadcast_to_guilds(
 ) -> None:
     """모든 허용 서버의 방송 채널(resolve_broadcast_channel_id)에 같은 내용을 보낸다 —
     헬프 미/취침/기상 3곳이 각자 반복하던 "guild 순회 -> 채널 결정 -> 전송" 패턴을 공용
-    헬퍼로 뽑은 것(현재는 관리자 콘솔의 "an update"/"an msg" 공지 전용으로 쓰인다)."""
+    헬퍼로 뽑은 것(현재는 관리자 콘솔의 "ann update"/"ann msg" 공지 전용으로 쓰인다)."""
     kwargs: dict = {}
     if content is not None:
         kwargs["content"] = content

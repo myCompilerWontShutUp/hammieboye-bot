@@ -19,6 +19,7 @@ KNOWN_TABLES = (
     "admin_sessions",
     "admin_chat_history",
     "user_emoji_tags",
+    "guild_sub_channels",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -37,12 +38,25 @@ _ORDER_COLUMN = {
     "admin_sessions": "updated_at",
     "admin_chat_history": "created_at",
     "user_emoji_tags": "updated_at",
+    "guild_sub_channels": "created_at",
 }
 
 
 async def set_affection(user_id: int, value: int) -> int:
     """la set/la reset 전용: daily_stats/affection_log를 건드리지 않고 절대값으로 SET."""
     return await rpc("set_affection", {"p_user_id": user_id, "p_value": value})
+
+
+async def set_coins(user_id: int, value: int) -> int:
+    """co set/co reset 전용: 0~max_coins로 클램프해 절대값으로 SET (lifetime_coins_earned는
+    안 건드림 — set_affection이 daily_stats를 안 건드리는 것과 동일한 원칙)."""
+    return await rpc("set_coins", {"p_user_id": user_id, "p_amount": value})
+
+
+async def set_max_coins(user_id: int, value: int) -> int:
+    """vol set/vol reset 전용: 0 밑으로만 클램프(상한 없음)해 최대 동전 보유량을
+    절대값으로 SET."""
+    return await rpc("set_max_coins", {"p_user_id": user_id, "p_amount": value})
 
 
 async def log_command(command: str, args: str, before: str | None, after: str | None) -> None:

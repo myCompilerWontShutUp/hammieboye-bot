@@ -1,5 +1,5 @@
 ID = "early_bird"
 NAME = "일찍 일어난 새가 먹이를 옴뇸뇸"
-HOW_TO_EARN = "햄미가 일어난 지 30분 안에 아침 인사를 하면 얻어."
+HOW_TO_EARN = "햄미가 일어난 지 30분 안에 아침 인사를 하면 얻어"
 RARITY = "일반"
 CODE = "nnnxax62"

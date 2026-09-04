@@ -1,6 +1,6 @@
 ID = "nightmare_freed"
 NAME = "악몽 해방"
-HOW_TO_EARN = "취침 중인 햄미를 깨워서 악몽에서 구해주면 얻어."
+HOW_TO_EARN = "취침 중인 햄미를 깨워서 악몽에서 구해주면 얻어"
 RARITY = "전설"
 CODE = "ym5fzd3l"
 HINT = "햄미를 깨워줘야 할 듯 싶다"

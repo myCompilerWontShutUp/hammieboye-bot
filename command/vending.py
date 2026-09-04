@@ -4,7 +4,7 @@ from datetime import datetime
 import discord
 
 import achievements
-from command.economy_common import INSUFFICIENT_FUNDS_LINES, VENDING_EMBED_COLOR
+from command.economy_common import INSUFFICIENT_FUNDS_LINES, VENDING_EMBED_COLOR, format_table
 from command.vending_catalog import BY_NAME, ITEMS
 from events.scheduler import KST, format_footer_time
 from db.achievements import award as award_achievement
@@ -102,7 +102,7 @@ async def handle_purchase(
 
 async def handle_list() -> tuple[str, discord.Embed]:
     embed = discord.Embed(title="🛒 자판기 판매 목록", color=VENDING_EMBED_COLOR)
-    lines = []
+    rows = []
     for item in ITEMS:
         note = f" ({item.note})" if item.note else ""
         if item.kind == "snack":
@@ -111,7 +111,7 @@ async def handle_list() -> tuple[str, discord.Embed]:
             detail = f"최대 동전 개수 +{item.effect}"
         else:
             detail = "???"
-        lines.append(f"- **{item.name}** — {item.price:,}원 — {detail}")
-    embed.description = "\n".join(lines)
+        rows.append((item.name, f"{item.price:,}원", detail))
+    embed.description = format_table(("품목", "가격", "효과"), rows, right_align=(1,))
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return random.choice(_INTRO_LINES), embed

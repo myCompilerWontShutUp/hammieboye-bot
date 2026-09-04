@@ -1,6 +1,6 @@
 ID = "strongest_snack_ever"
 NAME = "세계최강울트라킹왕짱간식"
-HOW_TO_EARN = "프리미엄 건조 밀웜을 먹이면 얻어."
+HOW_TO_EARN = "프리미엄 건조 밀웜을 먹이면 얻어"
 RARITY = "전설"
 CODE = "frxu87gh"
 HINT = "햄미가 배가 많이 고픈 것 같다"

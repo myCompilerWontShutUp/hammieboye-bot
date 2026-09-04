@@ -40,6 +40,8 @@ from db.admin import (
     get_today_events,
     log_command,
     set_affection,
+    set_coins,
+    set_max_coins,
 )
 from db.admin_history import get_recent_turns as get_recent_admin_turns
 from db.admin_history import log as log_admin_turn
@@ -56,12 +58,16 @@ from db.emoji_tags import clear_tags as clear_emoji_tags_row
 from db.emoji_tags import get_all as get_all_emoji_tags
 from db.emoji_tags import set_tags as set_emoji_tags_row
 from db.guild_channels import (
-    clear_designated_channel,
-    get_designated_channel,
-    load_designated_channels_cache,
-    set_designated_channel,
+    add_sub_channel,
+    clear_main_channel,
+    get_main_channel,
+    get_sub_channel_ids,
+    load_channel_caches,
+    remove_sub_channel,
+    set_main_channel,
 )
 from db.users import ensure_user, get_user
+from db.wallet import add_coins, decrease_max_coins, deduct_coins_clamped, increase_max_coins
 from responses.engine import get_admin_command_response
 from core.base import EMBED_COLOR
 
@@ -110,7 +116,7 @@ _current_guild: "contextvars.ContextVar[discord.Guild | None]" = contextvars.Con
     "_current_guild", default=None
 )
 
-# "ds here"/"ds reset"이 "지금 이 채널"을 알아야 하는데, 명령어 핸들러 시그니처가
+# "des main"/"des sub"/"des void"가 "지금 이 채널"을 알아야 하는데, 명령어 핸들러 시그니처가
 # (args: list[str]) -> str라 메시지 객체 자체를 안 받는다 — _current_guild와 동일한
 # 패턴으로 _dispatch()가 핸들러 호출 범위 동안만 채워준다.
 _current_channel: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
@@ -123,8 +129,8 @@ _current_channel: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
 # (op 관리 권한 자체를 캐시 신선도에 의존시키지 않기 위함).
 _authorized_ids: set[int] = set()
 
-# user_id -> 순서 있는 이모지 문자 리스트("ej set"으로 등록). on_message마다 조회하므로
-# _authorized_ids와 동일하게 DB 왕복 없이 O(1) 캐시로 유지하고, ej set/stop 시 write-through.
+# user_id -> 순서 있는 이모지 문자 리스트("emj set"으로 등록). on_message마다 조회하므로
+# _authorized_ids와 동일하게 DB 왕복 없이 O(1) 캐시로 유지하고, emj set/stop 시 write-through.
 _emoji_tags: dict[int, list[str]] = {}
 
 
@@ -141,13 +147,14 @@ async def bootstrap() -> None:
     global _emoji_tags
     _emoji_tags = await get_all_emoji_tags()
     try:
-        # designated_channel_id 컬럼이 아직 SQL.md 마이그레이션 적용 전이면 여기서
-        # 실패할 수 있다 — 그렇다고 부팅 시퀀스 전체(슬래시 커맨드 동기화/스케줄러 등,
-        # bootstrap() 뒤에 이어지는 on_ready() 나머지 부분)를 막으면 안 되므로, 지정
-        # 채널 기능만 "설정된 곳 없음"으로 조용히 비활성화하고 계속 진행한다.
-        await load_designated_channels_cache()
+        # main_channel_id 컬럼/guild_sub_channels 테이블이 아직 SQL.md 마이그레이션
+        # 적용 전이면 여기서 실패할 수 있다 — 그렇다고 부팅 시퀀스 전체(슬래시 커맨드
+        # 동기화/스케줄러 등, bootstrap() 뒤에 이어지는 on_ready() 나머지 부분)를 막으면
+        # 안 되므로, 메인/서브 채널 기능만 "설정된 곳 없음"으로 조용히 비활성화하고
+        # 계속 진행한다.
+        await load_channel_caches()
     except Exception:
-        logging.exception("Failed to load designated channels cache (migration not applied?)")
+        logging.exception("Failed to load main/sub channel caches (migration not applied?)")
 
 
 def _is_authorized(user_id: int) -> bool:
@@ -294,13 +301,13 @@ def should_intercept(message: discord.Message) -> bool:
 
 
 async def apply_emoji_tags(message: discord.Message) -> None:
-    """"ej set"으로 등록된 유저가 말한 메시지엔 무조건 반응을 단다 — 호출 단어/명령어
+    """"emj set"으로 등록된 유저가 말한 메시지엔 무조건 반응을 단다 — 호출 단어/명령어
     처리와 완전히 독립적이라, 다른 어떤 처리보다도 먼저(그리고 그 결과와 무관하게)
     호출돼야 한다. 순서를 보장하려고 순차적으로(gather 아님) 하나씩 반응을 단다."""
     emojis = _emoji_tags.get(message.author.id)
     if not emojis:
         return
-    # ej set이 저장 시점에 이미 중복을 제거하지만, 예전에 저장된 데이터 등 만약을 대비해
+    # emj set이 저장 시점에 이미 중복을 제거하지만, 예전에 저장된 데이터 등 만약을 대비해
     # 여기서도 한 번 더 걸러 같은 이모지로 add_reaction을 두 번 호출하지 않게 한다.
     for character in dict.fromkeys(emojis):
         try:
@@ -396,9 +403,147 @@ async def _handle_fl_reset(args: list[str]) -> str:
     return f"네!! {name}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
 
 
-async def _handle_tc_up(args: list[str]) -> str:
+_INITIAL_COINS = 0
+
+
+async def _handle_co_up(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: tc up : {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: co up : {user_id} {amount} {boolean}")
+    user_id = _parse_user_id(args[0])
+    amount = _parse_int(args[1], "amount")
+    if amount <= 0:
+        raise _AdminError("amount는 1 이상이어야 해!!")
+    user = await _require_registered(user_id)
+    # 관리자 지급은 "번 것"이 아니므로 count_as_earned=False — lifetime_coins_earned를
+    # 안 늘려서 "티끌 모아 티끌" 업적이 관리자 조작으로 달성되지 않게 막는다(fl up/down이
+    # check_achievements=False로 막는 것과 동일한 원칙). add_coins RPC 자체가 이미
+    # max_coins 클램프를 하므로 "최대 수치를 뚫을 수 없다"는 별도 처리 없이 보장된다.
+    result = await add_coins(user_id, amount, method="admin_co_up", count_as_earned=False)
+    new_coins = result["new_coins"]
+    await log_command("co up", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
+    name = await _resolve_name(user_id)
+    if result["applied_amount"] < amount:
+        return (
+            f"네!! {name}님의 동전을 +{result['applied_amount']} 드렸어요!! "
+            f"({user['coins']} → {new_coins}) (최대 보유량이라 {amount}만큼 다 못 드렸어요!!)"
+        )
+    return f"네!! {name}님의 동전을 +{amount} 드렸어요!! ({user['coins']} → {new_coins})"
+
+
+async def _handle_co_down(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: co down : {user_id} {amount} {boolean}")
+    user_id = _parse_user_id(args[0])
+    amount = _parse_int(args[1], "amount")
+    if amount <= 0:
+        raise _AdminError("amount는 1 이상이어야 해!!")
+    user = await _require_registered(user_id)
+    result = await deduct_coins_clamped(user_id, amount)
+    new_coins = result["new_coins"]
+    await log_command("co down", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
+    name = await _resolve_name(user_id)
+    if result["deducted"] < amount:
+        return (
+            f"네!! {name}님의 동전을 -{result['deducted']} 내렸어요!! "
+            f"({user['coins']} → {new_coins}) (원래 {amount}만큼 없어서 있는 만큼만 뗐어요!!)"
+        )
+    return f"네!! {name}님의 동전을 -{amount} 내렸어요!! ({user['coins']} → {new_coins})"
+
+
+async def _handle_co_set(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: co set : {user_id} {amount} {boolean}")
+    user_id = _parse_user_id(args[0])
+    amount = _parse_int(args[1], "amount")
+    user = await _require_registered(user_id)
+    new_coins = await set_coins(user_id, amount)
+    await log_command("co set", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 동전을 {amount}로 맞춰드렸어요!! ({user['coins']} → {new_coins})"
+
+
+async def _handle_co_reset(args: list[str]) -> str:
+    if len(args) != 1:
+        raise _AdminError("사용법: co reset : {user_id} {boolean}")
+    user_id = _parse_user_id(args[0])
+    user = await _require_registered(user_id)
+    new_coins = await set_coins(user_id, _INITIAL_COINS)
+    await log_command("co reset", str(user_id), str(user["coins"]), str(_INITIAL_COINS))
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 동전을 0으로 리셋했어요!! ({user['coins']} → {_INITIAL_COINS})"
+
+
+# users.max_coins의 DEFAULT와 동일 — fl reset이 _INITIAL_AFFECTION(users.affection
+# DEFAULT)으로 되돌리는 것과 동일한 원칙("리셋 = 시작 상태로 되돌림", 0이 아님 — max_coins가
+# 0이면 이 유저는 동전을 영영 못 받는 상태가 되어버린다).
+_INITIAL_MAX_COINS = 10
+
+
+async def _handle_vol_up(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: vol up : {user_id} {amount} {boolean}")
+    user_id = _parse_user_id(args[0])
+    amount = _parse_int(args[1], "amount")
+    if amount <= 0:
+        raise _AdminError("amount는 1 이상이어야 해!!")
+    user = await _require_registered(user_id)
+    # max_coins는 자판기 용량 업그레이드로 반복 누적 가능해 하드 캡이 없다 — 기존
+    # increase_max_coins(단순 누적)를 그대로 재사용.
+    new_max = await increase_max_coins(user_id, amount)
+    await log_command("vol up", f"{user_id} {amount}", str(user["max_coins"]), str(new_max))
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 최대 동전 보유량을 +{amount} 늘려드렸어요!! ({user['max_coins']} → {new_max})"
+
+
+async def _handle_vol_down(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: vol down : {user_id} {amount} {boolean}")
+    user_id = _parse_user_id(args[0])
+    amount = _parse_int(args[1], "amount")
+    if amount <= 0:
+        raise _AdminError("amount는 1 이상이어야 해!!")
+    user = await _require_registered(user_id)
+    result = await decrease_max_coins(user_id, amount)
+    new_max = result["new_max_coins"]
+    await log_command("vol down", f"{user_id} {amount}", str(user["max_coins"]), str(new_max))
+    name = await _resolve_name(user_id)
+    if result["deducted"] < amount:
+        return (
+            f"네!! {name}님의 최대 동전 보유량을 -{result['deducted']} 줄였어요!! "
+            f"({user['max_coins']} → {new_max}) (원래 {amount}만큼 없어서 있는 만큼만 뗐어요!!)"
+        )
+    return f"네!! {name}님의 최대 동전 보유량을 -{amount} 줄였어요!! ({user['max_coins']} → {new_max})"
+
+
+async def _handle_vol_set(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: vol set : {user_id} {amount} {boolean}")
+    user_id = _parse_user_id(args[0])
+    amount = _parse_int(args[1], "amount")
+    user = await _require_registered(user_id)
+    new_max = await set_max_coins(user_id, amount)
+    await log_command("vol set", f"{user_id} {amount}", str(user["max_coins"]), str(new_max))
+    name = await _resolve_name(user_id)
+    return f"네!! {name}님의 최대 동전 보유량을 {amount}로 맞춰드렸어요!! ({user['max_coins']} → {new_max})"
+
+
+async def _handle_vol_reset(args: list[str]) -> str:
+    if len(args) != 1:
+        raise _AdminError("사용법: vol reset : {user_id} {boolean}")
+    user_id = _parse_user_id(args[0])
+    user = await _require_registered(user_id)
+    new_max = await set_max_coins(user_id, _INITIAL_MAX_COINS)
+    await log_command("vol reset", str(user_id), str(user["max_coins"]), str(_INITIAL_MAX_COINS))
+    name = await _resolve_name(user_id)
+    return (
+        f"네!! {name}님의 최대 동전 보유량을 초기값으로 되돌렸어요!! "
+        f"({user['max_coins']} → {_INITIAL_MAX_COINS})"
+    )
+
+
+async def _handle_cnt_up(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: cnt up : {user_id} {amount} {boolean}")
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
@@ -406,14 +551,14 @@ async def _handle_tc_up(args: list[str]) -> str:
     before = stats["nl_count"]
     new_count = min(max(before + amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
-    await log_command("tc up", f"{user_id} {amount}", str(before), str(new_count))
+    await log_command("cnt up", f"{user_id} {amount}", str(before), str(new_count))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 오늘 대화 횟수를 +{amount} 올려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
-async def _handle_tc_down(args: list[str]) -> str:
+async def _handle_cnt_down(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: tc down : {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: cnt down : {user_id} {amount} {boolean}")
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
@@ -421,14 +566,14 @@ async def _handle_tc_down(args: list[str]) -> str:
     before = stats["nl_count"]
     new_count = max(before - amount, 0)
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
-    await log_command("tc down", f"{user_id} {amount}", str(before), str(new_count))
+    await log_command("cnt down", f"{user_id} {amount}", str(before), str(new_count))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 오늘 대화 횟수를 -{amount} 내려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
-async def _handle_tc_set(args: list[str]) -> str:
+async def _handle_cnt_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: tc set : {user_id} {amount} {boolean}")
+        raise _AdminError("사용법: cnt set : {user_id} {amount} {boolean}")
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
@@ -436,20 +581,20 @@ async def _handle_tc_set(args: list[str]) -> str:
     before = stats["nl_count"]
     new_count = min(max(amount, 0), stats["nl_cap"])
     await _update_nl_count(user_id, new_count, stats["nl_cap"])
-    await log_command("tc set", f"{user_id} {amount}", str(before), str(new_count))
+    await log_command("cnt set", f"{user_id} {amount}", str(before), str(new_count))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 오늘 대화 횟수를 {amount}로 맞춰드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
 
 
-async def _handle_tc_reset(args: list[str]) -> str:
+async def _handle_cnt_reset(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: tc reset : {user_id} {boolean}")
+        raise _AdminError("사용법: cnt reset : {user_id} {boolean}")
     user_id = _parse_user_id(args[0])
     user = await _require_registered(user_id)
     stats = await ensure_nl_cap(user_id, user["affection"])
     before = stats["nl_count"]
     await _update_nl_count(user_id, 0, stats["nl_cap"])
-    await log_command("tc reset", str(user_id), str(before), "0")
+    await log_command("cnt reset", str(user_id), str(before), "0")
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 오늘 대화 횟수를 0으로 되돌려드렸어요!! ({before} → 0/{stats['nl_cap']})"
 
@@ -554,58 +699,58 @@ async def _handle_sh_hammie_runtime(args: list[str]) -> str:
     )
 
 
-async def _handle_ac_list(args: list[str]) -> str:
+async def _handle_ach_list(args: list[str]) -> str:
     return "\n".join(achievements.format_name(module) for module in achievements.REGISTRY.values())
 
 
-async def _handle_ac_help(args: list[str]) -> str:
+async def _handle_ach_help(args: list[str]) -> str:
     return "\n".join(
         f"{achievements.format_name(module)} - {module.HOW_TO_EARN}"
         for module in achievements.REGISTRY.values()
     )
 
 
-async def _handle_ac_code(args: list[str]) -> str:
+async def _handle_ach_code(args: list[str]) -> str:
     return "\n".join(
         f"{achievements.format_name(module)} - {module.CODE}"
         for module in achievements.REGISTRY.values()
     )
 
 
-async def _handle_ac_grant(args: list[str]) -> str:
+async def _handle_ach_grant(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: ac grant : {user_id} {code} {boolean}")
+        raise _AdminError("사용법: ach grant : {user_id} {code} {boolean}")
     user_id = _parse_user_id(args[0])
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
     if module is None:
-        return f"그런 업적 코드는 없어요!!\n{await _handle_ac_code([])}"
+        return f"그런 업적 코드는 없어요!!\n{await _handle_ach_code([])}"
     await _require_registered(user_id)
     result = await award_achievement(user_id, module.ID)
     name = await _resolve_name(user_id)
     if not result["earned"]:
         return f"{name}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
-    await log_command("ac grant", f"{user_id} {code}", "미보유", module.ID)
+    await log_command("ach grant", f"{user_id} {code}", "미보유", module.ID)
     return (
         f"네!! {name}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!! "
         f"(호감도 +{result['applied_amount']}, 현재 {result['new_affection']})"
     )
 
 
-async def _handle_ac_revoke(args: list[str]) -> str:
+async def _handle_ach_revoke(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: ac revoke : {user_id} {code} {boolean}")
+        raise _AdminError("사용법: ach revoke : {user_id} {code} {boolean}")
     user_id = _parse_user_id(args[0])
     code = args[1]
     module = achievements.CODE_REGISTRY.get(code)
     if module is None:
-        return f"그런 업적 코드는 없어요!!\n{await _handle_ac_code([])}"
+        return f"그런 업적 코드는 없어요!!\n{await _handle_ach_code([])}"
     await _require_registered(user_id)
     revoked = await revoke_achievement(user_id, module.ID)
     name = await _resolve_name(user_id)
     if not revoked:
         return f"{name}님은 원래 '{achievements.format_name(module)}' 업적이 없었어요!!"
-    await log_command("ac revoke", f"{user_id} {code}", module.ID, "미보유")
+    await log_command("ach revoke", f"{user_id} {code}", module.ID, "미보유")
     return f"네!! {name}님의 '{achievements.format_name(module)}' 업적을 제거했어요!!"
 
 
@@ -747,9 +892,9 @@ def _resolve_emoji(token: str) -> str | None:
     return _EXTRA_EMOJI_ALIASES.get(token)
 
 
-async def _handle_ej_set(args: list[str]) -> str:
+async def _handle_emj_set(args: list[str]) -> str:
     if len(args) != 2:
-        raise _AdminError("사용법: ej set : {user_id} {emojis} {boolean}")
+        raise _AdminError("사용법: emj set : {user_id} {emojis} {boolean}")
     user_id = _parse_user_id(args[0])
     tokens = _parse_emoji_tokens(args[1])
     if not tokens:
@@ -776,44 +921,115 @@ async def _handle_ej_set(args: list[str]) -> str:
     # 완전 리셋 — 기존에 걸려 있던 이모지 목록은 유지하지 않고 통째로 대체한다.
     await set_emoji_tags_row(user_id, resolved)
     _emoji_tags[user_id] = resolved
-    await log_command("ej set", f"{user_id} {args[1]}", "-", " ".join(resolved))
+    await log_command("emj set", f"{user_id} {args[1]}", "-", " ".join(resolved))
     name = await _resolve_name(user_id)
     return f"네!! {name}님한테 이모지 태그를 걸었어요!! ({' '.join(resolved)})"
 
 
-async def _handle_ej_stop(args: list[str]) -> str:
+async def _handle_emj_stop(args: list[str]) -> str:
     if len(args) != 1:
-        raise _AdminError("사용법: ej stop : {user_id} {boolean}")
+        raise _AdminError("사용법: emj stop : {user_id} {boolean}")
     user_id = _parse_user_id(args[0])
     had = await clear_emoji_tags_row(user_id)
     _emoji_tags.pop(user_id, None)
-    await log_command("ej stop", str(user_id), "있음" if had else "없음", "-")
+    await log_command("emj stop", str(user_id), "있음" if had else "없음", "-")
     name = await _resolve_name(user_id)
     if not had:
         return f"{name}님한테는 원래 이모지 태그가 없었어요!!"
     return f"네!! {name}님의 이모지 태그를 전부 제거했어요!!"
 
 
-async def _handle_ds_here(args: list[str]) -> str:
-    guild = _current_guild.get()
+def _parse_channel_id(token: str) -> int:
+    """디스코드 채널 멘션(<#1234567890>) 또는 순수 숫자 채널 ID를 정수로 변환한다."""
+    stripped = token.strip()
+    if stripped.startswith("<#") and stripped.endswith(">"):
+        stripped = stripped[2:-1]
+    try:
+        return int(stripped)
+    except ValueError:
+        raise _AdminError(f"채널을 못 찾겠어요!! (#채널로 멘션해줘: {token})") from None
+
+
+def _resolve_location(args: list[str]) -> int:
+    """{location} 생략 시 지금 이 채널을 기본값으로 쓴다("des main"/"des sub"/"des void"
+    공통)."""
+    if args:
+        return _parse_channel_id(args[0])
     channel_id = _current_channel.get()
-    if guild is None or channel_id is None:
+    if channel_id is None:
         raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
-    before = get_designated_channel(guild.id)
-    await set_designated_channel(guild.id, channel_id)
-    await log_command("ds here", str(guild.id), str(before) if before else "없음", str(channel_id))
-    return f"네!! 이 채널을 이 서버의 지정 채널로 설정했어요!! (<#{channel_id}>)"
+    return channel_id
 
 
-async def _handle_ds_reset(args: list[str]) -> str:
+async def _handle_des_main(args: list[str]) -> str:
+    if len(args) > 1:
+        raise _AdminError("사용법: des main : {location} {boolean}")
     guild = _current_guild.get()
     if guild is None:
         raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
-    had = await clear_designated_channel(guild.id)
-    await log_command("ds reset", str(guild.id), "있음" if had else "없음", "없음")
-    if not had:
-        return "이 서버는 원래 지정 채널이 없었어요!!"
-    return "네!! 지정 채널을 해제했어요!! 이제 마지막으로 부른 채널에 표시돼요."
+    channel_id = _resolve_location(args)
+    before = get_main_channel(guild.id)
+    was_sub = channel_id in get_sub_channel_ids(guild.id)
+    await set_main_channel(guild.id, channel_id)
+    await log_command("des main", str(guild.id), str(before) if before else "없음", str(channel_id))
+    note = " (서브 채널이었어서 서브 목록에서도 뺐어요!!)" if was_sub else ""
+    return f"네!! <#{channel_id}>을(를) 이 서버의 메인 채널로 설정했어요!!{note}"
+
+
+async def _handle_des_sub(args: list[str]) -> str:
+    if len(args) > 1:
+        raise _AdminError("사용법: des sub : {location} {boolean}")
+    guild = _current_guild.get()
+    if guild is None:
+        raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
+    main = get_main_channel(guild.id)
+    if main is None:
+        raise _AdminError("메인을 먼저 지정하세요!!")
+    channel_id = _resolve_location(args)
+    if channel_id == main:
+        return "그 채널은 이미 메인 채널이에요!!"
+    added = await add_sub_channel(guild.id, channel_id)
+    if not added:
+        return f"<#{channel_id}>은(는) 이미 서브 채널이에요!!"
+    await log_command("des sub", str(guild.id), "-", str(channel_id))
+    return f"네!! <#{channel_id}>에서 명령어를 쓸 수 있게 했어요!!"
+
+
+async def _handle_des_list(args: list[str]) -> str:
+    guild = _current_guild.get()
+    if guild is None:
+        raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
+    main = get_main_channel(guild.id)
+    subs = get_sub_channel_ids(guild.id)
+    lines = [f"메인: {f'<#{main}>' if main else '지정 안 됨'}"]
+    if subs:
+        lines.append("서브:")
+        lines.extend(f"- <#{channel_id}>" for channel_id in sorted(subs))
+    else:
+        lines.append("서브: 없음")
+    return "\n".join(lines)
+
+
+async def _handle_des_void(args: list[str]) -> str:
+    if len(args) > 1:
+        raise _AdminError("사용법: des void : {location} {boolean}")
+    guild = _current_guild.get()
+    if guild is None:
+        raise _AdminError("서버 채널에서만 쓸 수 있어요!!")
+    channel_id = _resolve_location(args)
+    main = get_main_channel(guild.id)
+    subs = get_sub_channel_ids(guild.id)
+    if channel_id == main:
+        if subs:
+            raise _AdminError("서브 채널이 존재해요! 메인을 옮기고 다시 진행해주세요!!")
+        await clear_main_channel(guild.id)
+        await log_command("des void", str(guild.id), str(channel_id), "없음")
+        return f"네!! <#{channel_id}>의 메인 지정을 해제했어요!!"
+    if channel_id in subs:
+        await remove_sub_channel(guild.id, channel_id)
+        await log_command("des void", str(guild.id), str(channel_id), "없음")
+        return f"네!! <#{channel_id}>의 서브 지정을 해제했어요!!"
+    return f"<#{channel_id}>은(는) 원래 지정 안 된 채널이에요!!"
 
 
 _UPDATE_ANNOUNCE_LINES = (
@@ -841,7 +1057,7 @@ _UPDATE_ANNOUNCE_LINES = (
 
 
 def _build_update_embed(entry: update_announcement.UpdateEntry) -> discord.Embed:
-    # 날짜/버전은 entry에 박아둔 값이 아니라 "an update"를 실제로 실행하는 지금 시점의
+    # 날짜/버전은 entry에 박아둔 값이 아니라 "ann update"를 실제로 실행하는 지금 시점의
     # 것을 그대로 보여준다 — v 명령어가 보여주는 것과 항상 같은 소스(get_version_label).
     date_label = datetime.now(_KST).strftime("%Y.%m.%d.")
     description = (
@@ -854,7 +1070,7 @@ def _build_update_embed(entry: update_announcement.UpdateEntry) -> discord.Embed
 
 
 def _parse_trailing_boolean(raw: str) -> bool:
-    """raw_args 명령어 중 자유 텍스트 없이 {boolean}만 받는 것들(현재 "an update")이
+    """raw_args 명령어 중 자유 텍스트 없이 {boolean}만 받는 것들(현재 "ann update")이
     쓰는 파서 — _extract_boolean과 동일한 규칙(true/false만, 대소문자 무관, 생략 시 false)."""
     token = raw.strip().lower()
     if token in ("", "false"):
@@ -869,7 +1085,7 @@ def _parse_an_msg(raw: str) -> tuple[str, bool]:
     치환한다 — 다른 이스케이프 시퀀스는 지원하지 않는다."""
     raw = raw.strip()
     if not raw.startswith('"'):
-        raise _AdminError('사용법: an msg : "text" {boolean} (text는 큰따옴표로 감싸야 해요)')
+        raise _AdminError('사용법: ann msg : "text" {boolean} (text는 큰따옴표로 감싸야 해요)')
     end = raw.find('"', 1)
     if end == -1:
         raise _AdminError('큰따옴표가 안 닫혔어요!! "text" 형태로 써주세요.')
@@ -879,7 +1095,7 @@ def _parse_an_msg(raw: str) -> tuple[str, bool]:
     return text, _parse_trailing_boolean(raw[end + 1 :])
 
 
-async def _handle_an_msg(raw: str) -> tuple[str, bool]:
+async def _handle_ann_msg(raw: str) -> tuple[str, bool]:
     text, dm = _parse_an_msg(raw)
     if dm:
         return text, True
@@ -888,7 +1104,7 @@ async def _handle_an_msg(raw: str) -> tuple[str, bool]:
     return "네!! 모든 서버에 공지했어요!!", False
 
 
-async def _handle_an_update(raw: str) -> tuple[str | tuple[str, discord.Embed], bool]:
+async def _handle_ann_update(raw: str) -> tuple[str | tuple[str, discord.Embed], bool]:
     dm = _parse_trailing_boolean(raw)
     entry = update_announcement.latest()
     if entry is None:
@@ -921,8 +1137,8 @@ class _CommandSpec:
     handler: _Handler
     requires_prime: bool = False  # True면 최초 주인(ADMIN_USER_ID)만 실행 가능
     # True면 handler가 list[str] 대신 (raw: str)을 받고 str 대신 (응답, dm: bool)을
-    # 반환하는 raw 전용 핸들러다(현재 "an msg"/"an update") — _extract_boolean의 arity
-    # 기반 토큰 분리를 건너뛴다. "an msg"는 자유 텍스트 파싱이 필요해서, "an update"는
+    # 반환하는 raw 전용 핸들러다(현재 "ann msg"/"ann update") — _extract_boolean의 arity
+    # 기반 토큰 분리를 건너뛴다. "ann msg"는 자유 텍스트 파싱이 필요해서, "ann update"는
     # boolean의 의미가 반대(§14-9)라 핸들러가 직접 dm을 결정해야 해서 필요하다.
     raw_args: bool = False
 
@@ -932,10 +1148,18 @@ _COMMAND_LIST = (
     _CommandSpec("fl down", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 -amount", _handle_fl_down),
     _CommandSpec("fl set", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도를 amount로 절대값 설정", _handle_fl_set),
     _CommandSpec("fl reset", 1, "{user_id} {boolean}", "해당 유저 호감도를 초기값(10)으로 리셋", _handle_fl_reset),
-    _CommandSpec("tc up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_tc_up),
-    _CommandSpec("tc down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_tc_down),
-    _CommandSpec("tc set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_tc_set),
-    _CommandSpec("tc reset", 1, "{user_id} {boolean}", "해당 유저 오늘 대화 횟수를 0으로 리셋", _handle_tc_reset),
+    _CommandSpec("co up", 2, "{user_id} {amount} {boolean}", "해당 유저 동전 +amount (최대 보유량 클램프, lifetime_coins_earned 미반영)", _handle_co_up),
+    _CommandSpec("co down", 2, "{user_id} {amount} {boolean}", "해당 유저 동전 -amount (0 미만 방지)", _handle_co_down),
+    _CommandSpec("co set", 2, "{user_id} {amount} {boolean}", "해당 유저 동전을 amount로 절대값 설정 (0~최대 보유량 클램프)", _handle_co_set),
+    _CommandSpec("co reset", 1, "{user_id} {boolean}", "해당 유저 동전을 0으로 리셋", _handle_co_reset),
+    _CommandSpec("vol up", 2, "{user_id} {amount} {boolean}", "해당 유저 최대 동전 보유량 +amount (상한 없음)", _handle_vol_up),
+    _CommandSpec("vol down", 2, "{user_id} {amount} {boolean}", "해당 유저 최대 동전 보유량 -amount (0 미만 방지)", _handle_vol_down),
+    _CommandSpec("vol set", 2, "{user_id} {amount} {boolean}", "해당 유저 최대 동전 보유량을 amount로 절대값 설정 (0 미만 방지, 상한 없음)", _handle_vol_set),
+    _CommandSpec("vol reset", 1, "{user_id} {boolean}", "해당 유저 최대 동전 보유량을 초기값(10)으로 리셋", _handle_vol_reset),
+    _CommandSpec("cnt up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_cnt_up),
+    _CommandSpec("cnt down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_cnt_down),
+    _CommandSpec("cnt set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_cnt_set),
+    _CommandSpec("cnt reset", 1, "{user_id} {boolean}", "해당 유저 오늘 대화 횟수를 0으로 리셋", _handle_cnt_reset),
     _CommandSpec("sh event all", 0, "{boolean}", "오늘 헬프 미 이벤트 전부와 결과 표시", _handle_sh_event_all),
     _CommandSpec("sh event next", 0, "{boolean}", "다음으로 남은 헬프 미 이벤트 시각 표시", _handle_sh_event_next),
     _CommandSpec("sh event last", 0, "{boolean}", "가장 최근에 지난 헬프 미 이벤트 시각 표시", _handle_sh_event_last),
@@ -946,20 +1170,22 @@ _COMMAND_LIST = (
     _CommandSpec("v", 0, "{boolean}", "현재 버전(커밋)과 마지막 업데이트 일시 표시", _handle_v),
     _CommandSpec("v last", 0, "{boolean}", "바로 이전 커밋과 그 일시 표시", _handle_v_last),
     _CommandSpec("v list", 0, "{boolean}", "최근 30일간의 커밋을 일시와 함께 나열", _handle_v_list),
-    _CommandSpec("ac list", 0, "{boolean}", "업적 이름(희귀도 포함) 목록 표시", _handle_ac_list),
-    _CommandSpec("ac help", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ac_help),
-    _CommandSpec("ac code", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ac_code),
-    _CommandSpec("ac grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ac_grant),
-    _CommandSpec("ac revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ac_revoke),
+    _CommandSpec("ach list", 0, "{boolean}", "업적 이름(희귀도 포함) 목록 표시", _handle_ach_list),
+    _CommandSpec("ach help", 0, "{boolean}", "업적 이름 + 획득 방법 표시", _handle_ach_help),
+    _CommandSpec("ach code", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ach_code),
+    _CommandSpec("ach grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ach_grant),
+    _CommandSpec("ach revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ach_revoke),
     _CommandSpec("op grant", 1, "{user_id} {boolean}", "해당 유저에게 관리자 권한을 부여 (최초 주인 전용)", _handle_op_grant, requires_prime=True),
     _CommandSpec("op revoke", 1, "{user_id} {boolean}", "해당 유저의 관리자 권한을 제거 (최초 주인 전용)", _handle_op_revoke, requires_prime=True),
     _CommandSpec("op list", 0, "{boolean}", "권한을 가진 사용자 전부 표시 (최초 주인 전용)", _handle_op_list, requires_prime=True),
-    _CommandSpec("ej set", 2, "{user_id} {emojis} {boolean}", "해당 유저가 말할 때마다 emojis(콤마 구분, 이모지 문자 또는 영문 별칭 둘 다 가능 — 예: 👍,👎 또는 thumbsup,thumbsdown)를 순서대로 반응으로 건다 — 완전 리셋", _handle_ej_set),
-    _CommandSpec("ej stop", 1, "{user_id} {boolean}", "해당 유저에게 걸린 이모지 태그를 전부 제거", _handle_ej_stop),
-    _CommandSpec("ds here", 0, "{boolean}", "이 채널을 이 서버의 지정 채널로 설정 (기존 지정 채널이 있으면 덮어씀, 이후 이 서버는 지정 채널 밖에서 자연어/슬래시 명령어가 동작하지 않음)", _handle_ds_here),
-    _CommandSpec("ds reset", 0, "{boolean}", "지정 채널을 해제하고 '마지막 사용 채널' 방식으로 되돌림", _handle_ds_reset),
-    _CommandSpec("an msg", 0, '"{text}" {boolean}', 'text를 그대로 공지 — {boolean}이 다른 명령어와 반대: false(기본)면 모든 서버의 지정/마지막 채널에 방송, true면 관리자 DM으로만 미리보기(방송 안 함). text는 큰따옴표로 감싸고, 안의 "\\"(백슬래시) 한 글자는 줄바꿈으로 바뀜', _handle_an_msg, raw_args=True),
-    _CommandSpec("an update", 0, "{boolean}", "최신 업데이트 기록을 공지 — {boolean} 의미는 an msg와 동일(false=방송, true=DM 미리보기). LLM을 쓰지 않고 기록을 그대로 읽어 보냄", _handle_an_update, raw_args=True),
+    _CommandSpec("emj set", 2, "{user_id} {emojis} {boolean}", "해당 유저가 말할 때마다 emojis(콤마 구분, 이모지 문자 또는 영문 별칭 둘 다 가능 — 예: 👍,👎 또는 thumbsup,thumbsdown)를 순서대로 반응으로 건다 — 완전 리셋", _handle_emj_set),
+    _CommandSpec("emj stop", 1, "{user_id} {boolean}", "해당 유저에게 걸린 이모지 태그를 전부 제거", _handle_emj_stop),
+    _CommandSpec("des main", 1, "{location} {boolean}", "location(생략 시 현재 채널)을 이 서버의 메인 채널로 지정 — 기존 메인은 교체되고, 서브였다면 서브 목록에서도 자동으로 빠짐. 메인 채널에선 명령어는 물론 이벤트/공지 등 시스템 메시지도 뜸", _handle_des_main),
+    _CommandSpec("des sub", 1, "{location} {boolean}", "location(생략 시 현재 채널)에서 명령어(호출 단어/슬래시)만 허용 — 이벤트/공지 등 시스템 메시지는 안 뜸. 메인이 먼저 지정돼 있어야 함", _handle_des_sub),
+    _CommandSpec("des list", 0, "{boolean}", "이 서버의 메인/서브 채널 목록 표시 (메인이 맨 위)", _handle_des_list),
+    _CommandSpec("des void", 1, "{location} {boolean}", "location(생략 시 현재 채널)의 메인/서브 지정 해제 — 서브가 남아있는데 메인을 해제하려 하면 거부됨", _handle_des_void),
+    _CommandSpec("ann msg", 0, '"{text}" {boolean}', 'text를 그대로 공지 — {boolean}이 다른 명령어와 반대: false(기본)면 모든 서버의 메인/마지막 채널에 방송, true면 관리자 DM으로만 미리보기(방송 안 함). text는 큰따옴표로 감싸고, 안의 "\\"(백슬래시) 한 글자는 줄바꿈으로 바뀜', _handle_ann_msg, raw_args=True),
+    _CommandSpec("ann update", 0, "{boolean}", "최신 업데이트 기록을 공지 — {boolean} 의미는 ann msg와 동일(false=방송, true=DM 미리보기). LLM을 쓰지 않고 기록을 그대로 읽어 보냄", _handle_ann_update, raw_args=True),
     _CommandSpec("c", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 매개변수 포함해서 나열 (string 생략 시 전체, \"*\"와 동일)", _handle_c),
     _CommandSpec("c help", 1, "{string} {boolean}", "이름에 string 단어가 있는 명령어만 설명과 함께 나열 (string 생략 시 전체)", _handle_c_help),
     _CommandSpec(_REST_COMMAND_NAME, 0, "{boolean}", "세션을 즉시 종료", _handle_done),
@@ -977,7 +1203,7 @@ _COMMANDS_DOC_PREAMBLE = (
     "대부분 명령어의 마지막 파라미터인 {boolean}은 공통 옵션이다 — true면 결과를 DM으로 "
     "보내고, false거나 생략하면 지금 이 채널에 그대로 보여준다. true/false만 인정하고 "
     "1/0은 인정하지 않는다.\n\n"
-    "단, \"an msg\"/\"an update\"(공지 관련 명령어) 두 개는 {boolean}의 의미가 반대다 — "
+    "단, \"ann msg\"/\"ann update\"(공지 관련 명령어) 두 개는 {boolean}의 의미가 반대다 — "
     "false(기본)면 햄미가 있는 모든 서버에 실제로 공지를 방송하고, true면 방송하지 않고 "
     "관리자 DM으로만 미리보기를 보낸다. 이 두 명령어를 설명할 때는 반드시 이 예외를 "
     "언급해야 한다.\n\n"
@@ -1054,7 +1280,7 @@ async def _dispatch(message: discord.Message, spec: _CommandSpec, tokens: list[s
         await _send(message, False, "그건 사용하실 수 없어요!!")
         return
 
-    # raw_args 명령어("an msg"/"an update")는 arity 기반 _extract_boolean을 안 거치고,
+    # raw_args 명령어("ann msg"/"ann update")는 arity 기반 _extract_boolean을 안 거치고,
     # 원문을 그대로 넘긴 뒤 핸들러가 직접 (응답, dm) 튜플로 boolean까지 함께 반환한다 —
     # 나머지 전부는 기존처럼 arity로 boolean을 분리한다.
     dm = False

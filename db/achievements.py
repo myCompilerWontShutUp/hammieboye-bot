@@ -87,7 +87,7 @@ async def maybe_award_affection_milestones(
     개별 호출부마다 챙기지 않도록 중앙화했다.
 
     la set/la reset(set_affection RPC)은 daily_stats/affection_log를 안 건드리는 별도
-    경로라 이 훅을 거치지 않는다 — 그 경로로 마일스톤을 넘긴 경우는 ac grant가 우회로다.
+    경로라 이 훅을 거치지 않는다 — 그 경로로 마일스톤을 넘긴 경우는 ach grant가 우회로다.
     """
     notices: list[str] = []
 

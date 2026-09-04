@@ -1,6 +1,6 @@
 ID = "dev_never_tested_this"
 NAME = "제작자는 이 업적이 가능한지 테스트하지 않았습니다"
-HOW_TO_EARN = "슬롯머신에서 배율 16배를 초과하면 얻어."
+HOW_TO_EARN = "슬롯머신에서 배율 16배를 초과하면 얻어"
 RARITY = "전설"
 CODE = "agr1s8nn"
 HINT = "운이 정말 억청 좋아야 할 것 같다"

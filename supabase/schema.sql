@@ -10,6 +10,7 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS guild_sub_channels CASCADE;
 DROP TABLE IF EXISTS user_snacks CASCADE;
 DROP TABLE IF EXISTS user_emoji_tags CASCADE;
 DROP TABLE IF EXISTS admin_chat_history CASCADE;
@@ -26,6 +27,9 @@ DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
+DROP FUNCTION IF EXISTS set_max_coins(bigint, bigint);
+DROP FUNCTION IF EXISTS decrease_max_coins(bigint, bigint);
+DROP FUNCTION IF EXISTS set_coins(bigint, bigint);
 DROP FUNCTION IF EXISTS claim_coin_cooldown(bigint, timestamptz);
 DROP FUNCTION IF EXISTS claim_dessert_slot(bigint, text, text);
 DROP FUNCTION IF EXISTS increment_snacks_given(bigint);
@@ -283,23 +287,33 @@ CREATE TABLE global_call_events (
 CREATE INDEX idx_global_call_events_active ON global_call_events (expires_at) WHERE claimed_by IS NULL;
 
 -- ------------------------------------------------------------
--- 8. guild_channels — 서버별 "마지막 활동 채널" / "지정 채널"
+-- 8. guild_channels — 서버별 "마지막 활동 채널" / "메인 채널"
 --    부름/취침 이벤트처럼 봇이 먼저 말을 거는 기능이 어느 채널에
 --    올릴지 결정할 때 쓴다. 매 메시지마다 최신값으로 덮어쓴다.
---    designated_channel_id는 관리자 "ds here"/"ds reset" 명령어로 설정하는 서버별
---    지정 채널 — NULL이면 지정 채널 없음(기존처럼 last_channel_id 사용), 값이 있으면
---    항상 우선한다.
+--    main_channel_id는 관리자 "des main"/"des void" 명령어로 설정하는 서버별 메인
+--    채널(방송+명령어 허용, 서버당 1개) — NULL이면 메인 없음(기존처럼 last_channel_id
+--    사용), 값이 있으면 방송 채널 결정에서 항상 우선한다. 서브 채널(명령어만 허용,
+--    여러 개 가능)은 별도 테이블 guild_sub_channels(아래)에 둔다.
 -- ------------------------------------------------------------
 
 CREATE TABLE guild_channels (
   guild_id                 bigint PRIMARY KEY,
-  -- nullable로 완화된 이유: "ds here"가 그 서버의 첫 상호작용일 수 있어(자연어로
-  -- last_channel_id가 아직 한 번도 안 채워진 서버) designated_channel_id만 있는 새 행이
+  -- nullable로 완화된 이유: "des main"이 그 서버의 첫 상호작용일 수 있어(자연어로
+  -- last_channel_id가 아직 한 번도 안 채워진 서버) main_channel_id만 있는 새 행이
   -- 생길 수 있다 — db/guild_channels.py::get_last_channel()도 이미 int | None을 반환해서
   -- 호출부 전부 None을 처리하고 있었다.
   last_channel_id          bigint,
-  designated_channel_id    bigint,
+  main_channel_id          bigint,
   updated_at               timestamptz NOT NULL DEFAULT now()
+);
+
+-- 서버별 서브 채널 목록 — 1서버 : N서브. 명령어(호출 단어/슬래시)는 허용하지만
+-- 방송(공지/이벤트/인사 등 시스템 메시지)은 메인에만 간다.
+CREATE TABLE guild_sub_channels (
+  guild_id    bigint NOT NULL,
+  channel_id  bigint NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (guild_id, channel_id)
 );
 
 -- ------------------------------------------------------------
@@ -735,7 +749,7 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 18. 동전 경제 RPC 9개 (신규)
+-- 18. 동전 경제 RPC 12개 (신규)
 --     금액 파라미터/반환값은 전부 bigint — max_coins가 자판기 용량 업그레이드로
 --     반복 누적 가능해 하드 캡이 없으므로, integer(약 21억 한도)로 좁힐 이유가 없다.
 -- ------------------------------------------------------------
@@ -929,6 +943,59 @@ BEGIN
 END;
 $$;
 
+-- 관리자 콘솔 co set/co reset 전용 — fl set/fl reset(set_affection)과 동일한 원칙으로
+-- lifetime_coins_earned 등 부수 상태는 안 건드리고 coins만 0~max_coins로 클램프해
+-- 절대값 SET.
+CREATE OR REPLACE FUNCTION set_coins(p_user_id bigint, p_amount bigint)
+RETURNS bigint
+LANGUAGE sql
+AS $$
+  UPDATE users
+  SET coins = LEAST(GREATEST(p_amount, 0), max_coins)
+  WHERE user_id = p_user_id
+  RETURNING coins;
+$$;
+
+-- 관리자 콘솔 vol down 전용 — 0 밑으로 안 내려가는 최대 동전 보유량 차감
+-- (deduct_coins_clamped와 동일한 idiom). max_coins는 하드 캡이 없으므로(자판기 용량
+-- 업그레이드로 반복 누적 가능, vol up도 기존 increase_max_coins를 그대로 재사용) 위쪽
+-- 클램프는 없다.
+CREATE OR REPLACE FUNCTION decrease_max_coins(p_user_id bigint, p_amount bigint)
+RETURNS TABLE (deducted bigint, new_max_coins bigint)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_current_max bigint;
+  v_deducted bigint;
+  v_new_max bigint;
+BEGIN
+  SELECT max_coins INTO v_current_max
+  FROM users
+  WHERE user_id = p_user_id
+  FOR UPDATE;
+
+  v_deducted := LEAST(GREATEST(p_amount, 0), v_current_max);
+
+  UPDATE users
+  SET max_coins = max_coins - v_deducted
+  WHERE user_id = p_user_id
+  RETURNING max_coins INTO v_new_max;
+
+  RETURN QUERY SELECT v_deducted, v_new_max;
+END;
+$$;
+
+-- 관리자 콘솔 vol set/vol reset 전용 — 0 밑으로만 클램프(상한 없음).
+CREATE OR REPLACE FUNCTION set_max_coins(p_user_id bigint, p_amount bigint)
+RETURNS bigint
+LANGUAGE sql
+AS $$
+  UPDATE users
+  SET max_coins = GREATEST(p_amount, 0)
+  WHERE user_id = p_user_id
+  RETURNING max_coins;
+$$;
+
 -- ------------------------------------------------------------
 -- 19. RLS (Row Level Security)
 --     봇은 service_role 키로 접속하므로 RLS를 우회하고 정상 동작한다.
@@ -943,6 +1010,7 @@ ALTER TABLE affection_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_command_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE global_call_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guild_sub_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_sleep_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE withdrawn_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_achievements ENABLE ROW LEVEL SECURITY;

@@ -1,5 +1,5 @@
 ID = "daily_top_talker"
 NAME = "너가 짱!!"
-HOW_TO_EARN = "햄미가 잠들기 전, 그날 가장 많이 대화한 사람으로 뽑히면 얻어."
+HOW_TO_EARN = "햄미가 잠들기 전, 그날 가장 많이 대화한 사람으로 뽑히면 얻어"
 RARITY = "일반"
 CODE = "xu2ijn6d"

@@ -1,5 +1,5 @@
 ID = "plastic_dance_god"
 NAME = "페트병 댄스의 신"
-HOW_TO_EARN = "페트병 던지기를 3번 연속 성공하면 얻어."
+HOW_TO_EARN = "페트병 던지기를 3번 연속 성공하면 얻어"
 RARITY = "일반"
 CODE = "5s3zk7dq"

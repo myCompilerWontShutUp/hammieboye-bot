@@ -10,7 +10,7 @@ from core import onboarding, slash_commands
 from core.chat import handle_natural_language
 from core.client import create_tree
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
-from db.guild_channels import get_designated_channel, set_last_channel
+from db.guild_channels import is_allowed_channel, touch
 from db.guild_sleep_state import any_triggered_tonight
 from db.users import get_user, increment_chat_count
 from events import dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
@@ -162,22 +162,22 @@ def setup_dispatcher(client: discord.Client) -> None:
         if message.guild is None or message.guild.id not in ALLOWED_GUILD_IDS:
             return
 
-        # "ds here"로 지정 채널이 설정된 서버에서는 그 채널 밖 메시지를 아예 처리하지
-        # 않는다(이모지 태그 포함, 읽기 자체를 최적화) — 관리자 콘솔(세션/oneshot/명령어
-        # 전용 방/트리거 오탐 포함)만 예외라 "ds reset"으로 스스로 갇힐 위험이 없다.
-        # 테스트 서버는 자체 3채널 테스트 체계가 이미 있어 이 게이트 대상에서 제외한다.
+        # "des main"/"des sub"로 메인/서브 채널이 설정된 서버에서는 그 밖의 메시지를
+        # 아예 처리하지 않는다(이모지 태그 포함, 읽기 자체를 최적화) — 관리자 콘솔(세션/
+        # oneshot/명령어 전용 방/트리거 오탐 포함)만 예외라 "des void"로 스스로 갇힐
+        # 위험이 없다. 테스트 서버는 자체 3채널 테스트 체계가 이미 있어 이 게이트
+        # 대상에서 제외한다.
         if message.guild.id != TEST_GUILD_ID:
-            designated = get_designated_channel(message.guild.id)
-            if designated is not None and message.channel.id != designated:
+            if not is_allowed_channel(message.guild.id, message.channel.id):
                 if not admin.should_intercept(message):
                     return
 
         is_sleeping = is_sleep_time_for(message.channel.id)
 
-        # "ej set"으로 걸린 이모지 태그는 호출 단어/명령어/관리자 콘솔 여부와 완전히
+        # "emj set"으로 걸린 이모지 태그는 호출 단어/명령어/관리자 콘솔 여부와 완전히
         # 무관하게 이 유저의 모든 메시지에 적용된다 — 아래 어떤 분기로 흐르든 상관없이
         # 먼저 처리한다. 단, 햄미가 자고 있는 동안에는 반응 자체를 안 단다. 봇/애플리케이션
-        # 계정도 이 태그 하나만은 대상이 된다(자기 자신은 _parse_user_id가 ej set 등록
+        # 계정도 이 태그 하나만은 대상이 된다(자기 자신은 _parse_user_id가 emj set 등록
         # 자체를 막아서 이 봇이 스스로에게 반응을 다는 일은 없다).
         if not is_sleeping:
             await admin.apply_emoji_tags(message)
@@ -203,7 +203,7 @@ def setup_dispatcher(client: discord.Client) -> None:
             # get_user는 읽기 전용 — ensure_user(쓰기)를 쓰면 미동의 사용자가 말만 걸어도
             # 행이 생겨버린다. 행 생성은 오직 실제 /가입 성공 시에만 일어나야 한다.
             _, user = await asyncio.gather(
-                set_last_channel(message.guild.id, message.channel.id),
+                touch(message.guild.id, message.channel.id),
                 get_user(message.author.id),
             )
             if user is None or not user["consent_given"]:

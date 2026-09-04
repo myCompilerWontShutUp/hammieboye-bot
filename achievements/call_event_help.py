@@ -1,5 +1,5 @@
 ID = "call_event_help"
 NAME = "햄미의 요청"
-HOW_TO_EARN = "햄미가 필요할 때 처음으로 도와주면 얻어."
+HOW_TO_EARN = "햄미가 필요할 때 처음으로 도와주면 얻어"
 RARITY = "일반"
 CODE = "h4zwf2nh"

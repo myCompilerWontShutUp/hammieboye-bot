@@ -164,8 +164,12 @@ def evaluate(grid: list[str]) -> tuple[int, bool]:
     return multiplier, hamster_hit
 
 
+_ROW_LABELS = ("1번째 줄", "2번째 줄", "3번째 줄")
+
+
 def _render_grid(grid: list[str]) -> str:
-    return "\n".join(" ".join(grid[i : i + 3]) for i in range(0, 9, 3))
+    rows = (" ".join(grid[i : i + 3]) for i in range(0, 9, 3))
+    return "\n".join(f"{label} : {row}" for label, row in zip(_ROW_LABELS, rows))
 
 
 async def handle_spin(user_id: int, bet: int) -> str | tuple[str, discord.Embed]:
@@ -177,7 +181,9 @@ async def handle_spin(user_id: int, bet: int) -> str | tuple[str, discord.Embed]
     grid = random.choices(SYMBOLS, k=9)
     multiplier, hamster_hit = evaluate(grid)
 
-    embed = discord.Embed(title="🎰 슬롯머신", description=_render_grid(grid), color=VENDING_EMBED_COLOR)
+    embed = discord.Embed(
+        title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=VENDING_EMBED_COLOR
+    )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     if hamster_hit:

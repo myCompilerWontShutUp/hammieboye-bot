@@ -55,6 +55,47 @@ def maybe_append_capacity_advice(text: str, requested: int, result: dict) -> str
     return text
 
 
+def _display_width(text: str) -> int:
+    """코드블록(모노스페이스) 기준 표시 폭 — 한글/전각 문자는 Discord 코드블록 폰트에서
+    영문/숫자의 2배 폭으로 렌더링되므로 2, 그 외는 1로 계산해 표 정렬에 쓴다."""
+    width = 0
+    for ch in text:
+        code = ord(ch)
+        if (
+            0x1100 <= code <= 0x115F  # 한글 자모
+            or 0x2E80 <= code <= 0xA4CF  # CJK 부수~
+            or 0xAC00 <= code <= 0xD7A3  # 한글 음절
+            or 0xF900 <= code <= 0xFAFF  # CJK 호환 한자
+            or 0xFF00 <= code <= 0xFF60  # 전각 형태
+            or 0xFFE0 <= code <= 0xFFE6
+        ):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def format_table(
+    header: tuple[str, ...], rows: list[tuple[str, ...]], *, right_align: tuple[int, ...] = ()
+) -> str:
+    """헤더+행을 코드블록 표로 렌더링 — `/자판기-리스트`처럼 여러 줄을 표 형태로 보여줘야
+    하는 곳에서 공유한다. `_display_width`로 한글 폭을 보정해 열을 맞추고,
+    `right_align`(열 인덱스)에 지정된 열만 오른쪽 정렬(가격처럼 자릿수가 다른 숫자용)."""
+    all_rows = [header, *rows]
+    widths = [max(_display_width(row[i]) for row in all_rows) for i in range(len(header))]
+
+    def pad(cell: str, width: int, align_right: bool) -> str:
+        filler = " " * max(0, width - _display_width(cell))
+        return filler + cell if align_right else cell + filler
+
+    def render(row: tuple[str, ...]) -> str:
+        return "  ".join(pad(cell, widths[i], i in right_align) for i, cell in enumerate(row))
+
+    lines = [render(header), "-" * (sum(widths) + 2 * (len(widths) - 1))]
+    lines.extend(render(row) for row in rows)
+    return "```\n" + "\n".join(lines) + "\n```"
+
+
 def format_coin_notice(delta: int, new_coins: int) -> str:
     """동전 변화량 알림 — format_affection_notice(db/affection.py)와 동일한 원칙(델타+
     현재 잔액)을 동전에 적용한 버전. /동전·/내기-*·/슬롯머신이 공유. delta==0이면

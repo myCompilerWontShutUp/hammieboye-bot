@@ -76,7 +76,7 @@ def get_semantic_version() -> str | None:
 
 
 def get_version_label() -> str:
-    """`v` 명령어와 `an update` 임베드가 공유하는 버전 표시 — "aaaaaa (0.25.2)" 형태.
+    """`v` 명령어와 `ann update` 임베드가 공유하는 버전 표시 — "aaaaaa (0.25.2)" 형태.
     get_semantic_version()이 None이면(병합 커밋을 못 찾음 등) 해시만 반환한다."""
     commit = get_commit_hash()
     semantic = get_semantic_version()

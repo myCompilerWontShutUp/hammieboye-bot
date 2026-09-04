@@ -1,5 +1,5 @@
 ID = "speech_bubble"
 NAME = "말풍선 한가득"
-HOW_TO_EARN = "하루에 햄미랑 20번 넘게 대화하면 얻어."
+HOW_TO_EARN = "하루에 햄미랑 20번 넘게 대화하면 얻어"
 RARITY = "일반"
 CODE = "uc8hkoiy"
