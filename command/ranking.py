@@ -109,7 +109,7 @@ async def build_coin_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     else:
         names = await asyncio.gather(*(resolve_real_name(client, c["user_id"]) for c in top))
         lines = [
-            f"{i + 1}. {name} — {c['coins']}개 ({c['coins'] * 100:,}원)"
+            f"{i + 1}. {name} — {c['coins']}개"
             for i, (name, c) in enumerate(zip(names, top))
         ]
         embed.description = "\n".join(lines)

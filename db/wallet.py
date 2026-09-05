@@ -2,7 +2,8 @@ import achievements
 from db.achievements import award as award_achievement
 from db.client import rpc
 
-# 100,000원 = 1,000코인("티끌 모아 티끌" 업적 기준).
+# 1,000코인("티끌 모아 티끌" 업적 기준 — 2026-09-05부터 "원" 단위 개념을 없애면서
+# 문구도 "100,000원"에서 "1,000코인"으로 바뀌었지만, 코인 기준 수치 자체는 그대로다).
 _PENNY_PINCHER_THRESHOLD = 1_000
 
 
@@ -13,12 +14,13 @@ async def add_coins(
     *,
     count_as_earned: bool = True,
 ) -> dict:
-    """동전을 원자적으로 지급한다 (max_coins 상한은 DB 함수가 알아서 클램프).
+    """동전을 원자적으로 지급한다. 2026-09-05부로 보유 상한 개념이 폐지돼 클램프 없이
+    그대로 더한다.
 
     amount는 항상 양수(획득)로 호출한다 — 차감은 spend_coins/deduct_coins_clamped를
     쓴다. 반환값은 {applied_amount, new_coins, new_lifetime_coins_earned,
-    achievement_notice} — 용량이 부족하면 applied_amount가 amount보다 작을 수 있다
-    (그 차이를 호출부가 "동전지갑이라도 사와" 안내에 쓴다). achievement_notice는
+    achievement_notice} — applied_amount는 이제 항상 amount와 같지만(과거 용량 클램프
+    때의 반환 형태를 그대로 유지 — 호출부 다수가 이미 이 계약에 의존). achievement_notice는
     이번 호출로 "티끌 모아 티끌"을 새로 얻었으면 그 안내 문구(순수 🏆 텍스트만, 호감도
     델타는 안 섞임 — db/affection.py::maybe_award_affection_milestones과 동일한 계약),
     아니면 None. 모든 코인 획득 경로가 add_coins를 거치므로 이 함수 한곳에서만 체크하면
@@ -66,13 +68,7 @@ async def deduct_coins_clamped(user_id: int, amount: int) -> dict:
     return rows[0]
 
 
-async def increase_max_coins(user_id: int, amount: int) -> int:
-    """동전 최대 보유량을 늘린다 (자판기 용량 업그레이드 품목 전용, 반복 가능)."""
-    return await rpc("increase_max_coins", {"p_user_id": user_id, "p_amount": amount})
-
-
-async def decrease_max_coins(user_id: int, amount: int) -> dict:
-    """0 밑으로 안 내려가는 최대 동전 보유량 차감 — 관리자 콘솔 vol down 전용
-    (deduct_coins_clamped와 동일한 idiom). 반환값은 {deducted, new_max_coins}."""
-    rows = await rpc("decrease_max_coins", {"p_user_id": user_id, "p_amount": amount})
-    return rows[0]
+async def increase_coin_grant_bonus(user_id: int, amount: int) -> int:
+    """/동전 기본 지급량(1개)에 더해지는 보너스를 늘린다 (자판기 그랜트 부스터 품목
+    전용, 반복 가능)."""
+    return await rpc("increase_coin_grant_bonus", {"p_user_id": user_id, "p_amount": amount})

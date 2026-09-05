@@ -1,17 +1,19 @@
+import logging
 import random
 from datetime import datetime
 
 import discord
 
 import achievements
-from command.economy_common import INSUFFICIENT_FUNDS_LINES, VENDING_EMBED_COLOR, format_table
+from core.base import reject_if_wrong_invoker
+from command.economy_common import INSUFFICIENT_FUNDS_LINES, VENDING_EMBED_COLOR
 from command.vending_catalog import BY_NAME, ITEMS
 from events.scheduler import KST, format_footer_time
 from db.achievements import award as award_achievement
 from db.affection import format_affection_notice
 from db.snacks import add_snack
 from db.users import get_user
-from db.wallet import increase_max_coins, spend_coins
+from db.wallet import increase_coin_grant_bonus, spend_coins
 
 # "자판기에 머가 있을까??" 류 — 자판기 응답은 항상 이 한 줄로 먼저 시작한다.
 _INTRO_LINES = (
@@ -51,17 +53,21 @@ async def handle_purchase(
     if item.kind == "joke":
         return _JOKE_RESPONSE
 
-    total_cost = (item.price // 100) * count
+    # 2026-09-05부로 "원" 단위 개념 자체를 없앴다 — price는 이제 코인 그대로다(구
+    # //100 환산 불필요).
+    total_cost = item.price * count
     if not await spend_coins(user_id, total_cost):
         return random.choice(INSUFFICIENT_FUNDS_LINES)
 
     if item.kind == "snack":
         new_qty = await add_snack(user_id, item.id, count)
         effect_summary = f"{item.name} x{count}개를 받았어!! (보유: {new_qty}개)"
-    else:  # "capacity"
+    else:  # "coin" — /동전 그랜트 보너스 증가
         gained = item.effect * count
-        new_max = await increase_max_coins(user_id, gained)
-        effect_summary = f"동전 최대 보유량이 {gained}만큼 늘어서 이제 {new_max}개까지 담을 수 있어!!"
+        new_bonus = await increase_coin_grant_bonus(user_id, gained)
+        effect_summary = (
+            f"/동전 획득량이 {gained}만큼 늘어서 이제 한 번에 {1 + new_bonus}개씩 벌 수 있어!!"
+        )
 
     user = await get_user(user_id)
     total_delta = 0
@@ -87,7 +93,7 @@ async def handle_purchase(
     embed = discord.Embed(title="🛒 구매 완료!!", color=VENDING_EMBED_COLOR)
     embed.description = (
         f"- 품목: {item.name} x {count}\n"
-        f"- 차감: {total_cost * 100:,}원\n"
+        f"- 차감: {total_cost:,}코인\n"
         f"- {effect_summary}"
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
@@ -96,22 +102,86 @@ async def handle_purchase(
     for notice in achievement_notices:
         text += f"\n{notice}"
     if total_delta != 0:
-        text += format_affection_notice(total_delta, current_affection)
+        # total_delta는 여기서 항상 업적 보너스(vending_first_purchase/savings_start,
+        # apply_day_multiplier=False)로만 구성된다 — 배율 분해 대상이 아니다.
+        text += format_affection_notice(total_delta, current_affection, multiplier_eligible=False)
     return text, embed
 
 
-async def handle_list() -> tuple[str, discord.Embed]:
-    embed = discord.Embed(title="🛒 자판기 판매 목록", color=VENDING_EMBED_COLOR)
-    rows = []
+# /자판기-리스트 카테고리(2026-09-05 신규) — 모바일에서 표(코드블록) 형태가 깨져
+# 보인다는 피드백으로 표를 없애고 카테고리 버튼으로 나눴다. 기본값은 "간식".
+_CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "coin": "동전", "joke": "기타"}
+_CATEGORY_ORDER: tuple[str, ...] = ("snack", "coin", "joke")
+_DEFAULT_CATEGORY = "snack"
+
+
+def _category_lines(kind: str) -> list[str]:
+    lines = []
     for item in ITEMS:
+        if item.kind != kind:
+            continue
         note = f" ({item.note})" if item.note else ""
-        if item.kind == "snack":
+        if kind == "snack":
             detail = f"먹일 시 호감도 +{item.effect}{note}"
-        elif item.kind == "capacity":
-            detail = f"최대 동전 개수 +{item.effect}"
+        elif kind == "coin":
+            detail = f"/동전 획득량 +{item.effect}"
         else:
             detail = "???"
-        rows.append((item.name, f"{item.price:,}원", detail))
-    embed.description = format_table(("품목", "가격", "효과"), rows, right_align=(1,))
+        lines.append(f"- **{item.name}** — {item.price:,}코인 ({detail})")
+    return lines
+
+
+# 카테고리를 바꿔도 임베드 세로 길이가 들쭉날쭉하지 않게, 가장 긴 카테고리(간식) 줄
+# 수에 맞춰 짧은 카테고리는 빈 줄로 채운다.
+_MAX_CATEGORY_LINES = max(len(_category_lines(kind)) for kind in _CATEGORY_ORDER)
+
+
+def _build_list_embed(kind: str) -> discord.Embed:
+    embed = discord.Embed(title="🛒 자판기 판매 목록", color=VENDING_EMBED_COLOR)
+    lines = _category_lines(kind)
+    lines += [""] * (_MAX_CATEGORY_LINES - len(lines))
+    embed.description = f"**[{_CATEGORY_LABELS[kind]}]**\n" + "\n".join(lines)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    return random.choice(_INTRO_LINES), embed
+    return embed
+
+
+class _CategoryButton(discord.ui.Button):
+    def __init__(self, kind: str, *, active: bool) -> None:
+        style = discord.ButtonStyle.success if active else discord.ButtonStyle.primary
+        super().__init__(label=_CATEGORY_LABELS[kind], style=style)
+        self._kind = kind
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: _VendingListView = self.view
+        if not await reject_if_wrong_invoker(interaction, view.user_id):
+            return
+        for child in view.children:
+            if isinstance(child, _CategoryButton):
+                child.style = (
+                    discord.ButtonStyle.success if child is self else discord.ButtonStyle.primary
+                )
+        await interaction.response.edit_message(embed=_build_list_embed(self._kind), view=view)
+
+
+class _VendingListView(discord.ui.View):
+    """1분간 상호작용이 없으면 버튼만 지운다(내용은 그대로 둠) — 명령어 실행자
+    (user_id) 외에는 카테고리 버튼을 못 누른다(2026-09-06, 이전엔 검증이 없었음)."""
+
+    def __init__(self, user_id: int) -> None:
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.message: discord.Message | None = None
+        for kind in _CATEGORY_ORDER:
+            self.add_item(_CategoryButton(kind, active=(kind == _DEFAULT_CATEGORY)))
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            logging.exception("Failed to clear vending list buttons on timeout")
+
+
+async def handle_list(user_id: int) -> tuple[str, discord.Embed, discord.ui.View]:
+    return random.choice(_INTRO_LINES), _build_list_embed(_DEFAULT_CATEGORY), _VendingListView(user_id)

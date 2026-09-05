@@ -1,9 +1,8 @@
-import logging
 import random
 
 import discord
 
-from core.base import touch_channel
+from core.base import EphemeralAutoDeleteView, touch_channel
 from db.users import delete_user, get_user
 from db.withdrawals import record_withdrawal
 
@@ -34,24 +33,19 @@ _LEAVE_CONFIRM_PROMPT = (
     "정말 탈퇴할 거야?? 탈퇴하면 호감도·채팅 기록 등 모든 데이터가 즉시 삭제되고, "
     "24시간 동안은 다시 가입할 수 없어. 아래 버튼을 누르면 탈퇴가 진행돼... _(훌쩍)_"
 )
-_LEAVE_TIMEOUT_MESSAGE = "시간 초과됐어!! 탈퇴가 취소됐어. _(안도)_"
 _NOT_JOINED_LEAVE_MESSAGE = "어라, 아직 가입도 안 했잖아!! 탈퇴할 게 없어~ _(갸웃)_"
 _WRONG_USER_MESSAGE = "이건 다른 사람의 탈퇴 확인이에요!! _(단호)_"
 
 
-class _WithdrawView(discord.ui.View):
+class _WithdrawView(EphemeralAutoDeleteView):
+    """30초라는 별도 쿨타임이 이미 명시된 ephemeral 뷰 — 타임아웃 시 기존엔 "취소됨"
+    문구로 편집했지만, 2026-09-06부터는 ephemeral 메시지 공통 규칙(효능을 다하면
+    완전히 삭제)에 맞춰 EphemeralAutoDeleteView의 기본 on_timeout(메시지 삭제)을
+    그대로 쓴다. 버튼이 하나뿐이고 눌리면 바로 종결되므로 bump() 호출 지점은 없다."""
+
     def __init__(self, user_id: int) -> None:
         super().__init__(timeout=30)
         self.user_id = user_id
-        self.interaction: discord.Interaction | None = None
-
-    async def on_timeout(self) -> None:
-        if self.interaction is None:
-            return
-        try:
-            await self.interaction.edit_original_response(content=_LEAVE_TIMEOUT_MESSAGE, view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to edit withdraw prompt on timeout")
 
     @discord.ui.button(label="탈퇴하기", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

@@ -11,7 +11,7 @@ import discord
 import emoji as emoji_lib
 
 import achievements
-from command.info import handle as info_handle
+from command.info import render_admin_summary
 from config import ADMIN_USER_ID, ALLOWED_GUILD_IDS, CALL_PREFIXES
 from admin.version import (
     get_last_updated_iso,
@@ -41,7 +41,6 @@ from db.admin import (
     log_command,
     set_affection,
     set_coins,
-    set_max_coins,
 )
 from db.admin_history import get_recent_turns as get_recent_admin_turns
 from db.admin_history import log as log_admin_turn
@@ -67,7 +66,7 @@ from db.guild_channels import (
     set_main_channel,
 )
 from db.users import ensure_user, get_user
-from db.wallet import add_coins, decrease_max_coins, deduct_coins_clamped, increase_max_coins
+from db.wallet import add_coins, deduct_coins_clamped
 from responses.engine import get_admin_command_response
 from core.base import EMBED_COLOR
 
@@ -416,17 +415,12 @@ async def _handle_co_up(args: list[str]) -> str:
     user = await _require_registered(user_id)
     # 관리자 지급은 "번 것"이 아니므로 count_as_earned=False — lifetime_coins_earned를
     # 안 늘려서 "티끌 모아 티끌" 업적이 관리자 조작으로 달성되지 않게 막는다(fl up/down이
-    # check_achievements=False로 막는 것과 동일한 원칙). add_coins RPC 자체가 이미
-    # max_coins 클램프를 하므로 "최대 수치를 뚫을 수 없다"는 별도 처리 없이 보장된다.
+    # check_achievements=False로 막는 것과 동일한 원칙). 2026-09-05부로 보유 상한
+    # 자체가 폐지돼 늘 요청한 만큼 그대로 들어간다.
     result = await add_coins(user_id, amount, method="admin_co_up", count_as_earned=False)
     new_coins = result["new_coins"]
     await log_command("co up", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
     name = await _resolve_name(user_id)
-    if result["applied_amount"] < amount:
-        return (
-            f"네!! {name}님의 동전을 +{result['applied_amount']} 드렸어요!! "
-            f"({user['coins']} → {new_coins}) (최대 보유량이라 {amount}만큼 다 못 드렸어요!!)"
-        )
     return f"네!! {name}님의 동전을 +{amount} 드렸어요!! ({user['coins']} → {new_coins})"
 
 
@@ -471,74 +465,6 @@ async def _handle_co_reset(args: list[str]) -> str:
     await log_command("co reset", str(user_id), str(user["coins"]), str(_INITIAL_COINS))
     name = await _resolve_name(user_id)
     return f"네!! {name}님의 동전을 0으로 리셋했어요!! ({user['coins']} → {_INITIAL_COINS})"
-
-
-# users.max_coins의 DEFAULT와 동일 — fl reset이 _INITIAL_AFFECTION(users.affection
-# DEFAULT)으로 되돌리는 것과 동일한 원칙("리셋 = 시작 상태로 되돌림", 0이 아님 — max_coins가
-# 0이면 이 유저는 동전을 영영 못 받는 상태가 되어버린다).
-_INITIAL_MAX_COINS = 20
-
-
-async def _handle_vol_up(args: list[str]) -> str:
-    if len(args) != 2:
-        raise _AdminError("사용법: vol up : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
-    amount = _parse_int(args[1], "amount")
-    if amount <= 0:
-        raise _AdminError("amount는 1 이상이어야 해!!")
-    user = await _require_registered(user_id)
-    # max_coins는 자판기 용량 업그레이드로 반복 누적 가능해 하드 캡이 없다 — 기존
-    # increase_max_coins(단순 누적)를 그대로 재사용.
-    new_max = await increase_max_coins(user_id, amount)
-    await log_command("vol up", f"{user_id} {amount}", str(user["max_coins"]), str(new_max))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 최대 동전 보유량을 +{amount} 늘려드렸어요!! ({user['max_coins']} → {new_max})"
-
-
-async def _handle_vol_down(args: list[str]) -> str:
-    if len(args) != 2:
-        raise _AdminError("사용법: vol down : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
-    amount = _parse_int(args[1], "amount")
-    if amount <= 0:
-        raise _AdminError("amount는 1 이상이어야 해!!")
-    user = await _require_registered(user_id)
-    result = await decrease_max_coins(user_id, amount)
-    new_max = result["new_max_coins"]
-    await log_command("vol down", f"{user_id} {amount}", str(user["max_coins"]), str(new_max))
-    name = await _resolve_name(user_id)
-    if result["deducted"] < amount:
-        return (
-            f"네!! {name}님의 최대 동전 보유량을 -{result['deducted']} 줄였어요!! "
-            f"({user['max_coins']} → {new_max}) (원래 {amount}만큼 없어서 있는 만큼만 뗐어요!!)"
-        )
-    return f"네!! {name}님의 최대 동전 보유량을 -{amount} 줄였어요!! ({user['max_coins']} → {new_max})"
-
-
-async def _handle_vol_set(args: list[str]) -> str:
-    if len(args) != 2:
-        raise _AdminError("사용법: vol set : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
-    amount = _parse_int(args[1], "amount")
-    user = await _require_registered(user_id)
-    new_max = await set_max_coins(user_id, amount)
-    await log_command("vol set", f"{user_id} {amount}", str(user["max_coins"]), str(new_max))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 최대 동전 보유량을 {amount}로 맞춰드렸어요!! ({user['max_coins']} → {new_max})"
-
-
-async def _handle_vol_reset(args: list[str]) -> str:
-    if len(args) != 1:
-        raise _AdminError("사용법: vol reset : {user_id} {boolean}")
-    user_id = _parse_user_id(args[0])
-    user = await _require_registered(user_id)
-    new_max = await set_max_coins(user_id, _INITIAL_MAX_COINS)
-    await log_command("vol reset", str(user_id), str(user["max_coins"]), str(_INITIAL_MAX_COINS))
-    name = await _resolve_name(user_id)
-    return (
-        f"네!! {name}님의 최대 동전 보유량을 초기값으로 되돌렸어요!! "
-        f"({user['max_coins']} → {_INITIAL_MAX_COINS})"
-    )
 
 
 async def _handle_cnt_up(args: list[str]) -> str:
@@ -644,7 +570,7 @@ async def _handle_sh_user_stats(args: list[str]) -> tuple[str, discord.Embed]:
         raise _AdminError("사용법: sh user stats : {user_id} {boolean}")
     user_id = _parse_user_id(args[0])
     await _require_registered(user_id)
-    return await info_handle(user_id)
+    return await render_admin_summary(user_id)
 
 
 async def _handle_sh_db_list(args: list[str]) -> str:
@@ -1154,14 +1080,10 @@ _COMMAND_LIST = (
     _CommandSpec("fl down", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도 -amount", _handle_fl_down),
     _CommandSpec("fl set", 2, "{user_id} {amount} {boolean}", "해당 유저 호감도를 amount로 절대값 설정", _handle_fl_set),
     _CommandSpec("fl reset", 1, "{user_id} {boolean}", "해당 유저 호감도를 초기값(10)으로 리셋", _handle_fl_reset),
-    _CommandSpec("co up", 2, "{user_id} {amount} {boolean}", "해당 유저 동전 +amount (최대 보유량 클램프, lifetime_coins_earned 미반영)", _handle_co_up),
+    _CommandSpec("co up", 2, "{user_id} {amount} {boolean}", "해당 유저 동전 +amount (상한 없음, lifetime_coins_earned 미반영)", _handle_co_up),
     _CommandSpec("co down", 2, "{user_id} {amount} {boolean}", "해당 유저 동전 -amount (0 미만 방지)", _handle_co_down),
-    _CommandSpec("co set", 2, "{user_id} {amount} {boolean}", "해당 유저 동전을 amount로 절대값 설정 (0~최대 보유량 클램프)", _handle_co_set),
+    _CommandSpec("co set", 2, "{user_id} {amount} {boolean}", "해당 유저 동전을 amount로 절대값 설정 (0 미만 방지, 상한 없음)", _handle_co_set),
     _CommandSpec("co reset", 1, "{user_id} {boolean}", "해당 유저 동전을 0으로 리셋", _handle_co_reset),
-    _CommandSpec("vol up", 2, "{user_id} {amount} {boolean}", "해당 유저 최대 동전 보유량 +amount (상한 없음)", _handle_vol_up),
-    _CommandSpec("vol down", 2, "{user_id} {amount} {boolean}", "해당 유저 최대 동전 보유량 -amount (0 미만 방지)", _handle_vol_down),
-    _CommandSpec("vol set", 2, "{user_id} {amount} {boolean}", "해당 유저 최대 동전 보유량을 amount로 절대값 설정 (0 미만 방지, 상한 없음)", _handle_vol_set),
-    _CommandSpec("vol reset", 1, "{user_id} {boolean}", "해당 유저 최대 동전 보유량을 초기값(10)으로 리셋", _handle_vol_reset),
     _CommandSpec("cnt up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_cnt_up),
     _CommandSpec("cnt down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_cnt_down),
     _CommandSpec("cnt set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_cnt_set),

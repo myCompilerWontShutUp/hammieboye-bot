@@ -87,14 +87,18 @@ async def handle_mention(message: discord.Message) -> None:
         current_affection = result["new_affection"]
         achievement_notice = result["achievement_notice"]
 
+        multiplier_eligible = True
         achievement_result = await award_achievement(user_id, achievements.nightmare_freed.ID)
         if achievement_result["earned"]:
             applied_amount += achievement_result["applied_amount"]
             current_affection = achievement_result["new_affection"]
+            multiplier_eligible = False
             extra = f"🏆 업적 달성: {achievements.format_name(achievements.nightmare_freed)}!!"
             achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
-        notice = format_affection_notice(applied_amount, current_affection)
+        notice = format_affection_notice(
+            applied_amount, current_affection, multiplier_eligible=multiplier_eligible
+        )
 
     reply_text = f"{line1}\n{line2}{notice}"
     if achievement_notice:

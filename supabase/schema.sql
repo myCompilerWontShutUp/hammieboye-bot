@@ -27,15 +27,14 @@ DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
-DROP FUNCTION IF EXISTS set_max_coins(bigint, bigint);
-DROP FUNCTION IF EXISTS decrease_max_coins(bigint, bigint);
+DROP FUNCTION IF EXISTS claim_coin_daily_use(bigint);
 DROP FUNCTION IF EXISTS set_coins(bigint, bigint);
 DROP FUNCTION IF EXISTS claim_coin_cooldown(bigint, timestamptz);
 DROP FUNCTION IF EXISTS claim_dessert_slot(bigint, text, text);
 DROP FUNCTION IF EXISTS increment_snacks_given(bigint);
 DROP FUNCTION IF EXISTS consume_snack(bigint, text);
 DROP FUNCTION IF EXISTS add_snack(bigint, text, integer);
-DROP FUNCTION IF EXISTS increase_max_coins(bigint, bigint);
+DROP FUNCTION IF EXISTS increase_coin_grant_bonus(bigint, bigint);
 DROP FUNCTION IF EXISTS deduct_coins_clamped(bigint, bigint);
 DROP FUNCTION IF EXISTS spend_coins(bigint, bigint);
 DROP FUNCTION IF EXISTS add_coins(bigint, bigint, text, boolean);
@@ -111,15 +110,16 @@ CREATE TABLE users (
   -- 여기(영구 테이블)에 둔다. 실패했을 때만 값이 채워진다.
   plastic_cooldown_until     timestamptz,
 
-  -- 동전 경제 시스템(신규). coins/max_coins가 화폐의 유일한 소스 — 보유 금액(원)은
-  -- coins*100으로 항상 파생 계산하고 별도 컬럼을 두지 않는다. max_coins는 자판기의
-  -- 용량 업그레이드 품목으로 몇 번이든 늘어날 수 있어 하드 캡이 없다.
-  -- lifetime_coins_earned는 "실제로 번" 동전만 누적(무승부/타임아웃 환불 등 원금
-  -- 반환은 제외, add_coins의 p_count_as_earned 참고). total_snacks_given은 /먹어로
-  -- 실제로 먹인 횟수 누적(자판기 구매 자체는 포함 안 함). /동전 쿨타임도
-  -- plastic_cooldown_until과 동일한 이유로 여기 둔다.
+  -- 동전 경제 시스템(신규). coins가 화폐의 유일한 소스(2026-09-05부터 "원" 단위 개념
+  -- 자체를 없앰 — 동전 개수가 곧 가격/보유량). coin_grant_bonus(구 max_coins, 보유
+  -- 상한 개념 폐지와 함께 용도 전환)는 /동전 기본 지급량(1개)에 더해지는 보너스 —
+  -- 자판기의 그랜트 부스터 품목(동전 지갑/돼지 저금통/계좌 개설)으로 몇 번이든
+  -- 늘어날 수 있어 하드 캡이 없다. lifetime_coins_earned는 "실제로 번" 동전만
+  -- 누적(무승부/타임아웃 환불 등 원금 반환은 제외, add_coins의 p_count_as_earned
+  -- 참고). total_snacks_given은 /먹어로 실제로 먹인 횟수 누적(자판기 구매 자체는
+  -- 포함 안 함). /동전 쿨타임도 plastic_cooldown_until과 동일한 이유로 여기 둔다.
   coins                       bigint NOT NULL DEFAULT 0,
-  max_coins                   bigint NOT NULL DEFAULT 20,
+  coin_grant_bonus            bigint NOT NULL DEFAULT 0,
   lifetime_coins_earned       bigint NOT NULL DEFAULT 0,
   total_snacks_given          bigint NOT NULL DEFAULT 0,
   coin_cooldown_until         timestamptz,
@@ -188,6 +188,9 @@ CREATE TABLE daily_stats (
   -- 슬롯 중복 지급 방지("이미 이 슬롯에 먹였는지" 판정) + "아침, 점심, 그리고 저녁"
   -- (서로 다른 간식 3종) 업적 판정을 이 컬럼 하나로 겸한다.
   dessert_fed_today                 jsonb NOT NULL DEFAULT '{}'::jsonb,
+
+  -- /동전 하루 사용 횟수(신규, 하루 최대 3회) — claim_coin_daily_use()로 원자적 증가.
+  coin_claims_today                 integer NOT NULL DEFAULT 0,
 
   -- 쿨타임 남용(4-5) 카운터 — 이벤트별로 집계 (예: {"plastic_bottle": 2})
   cooldown_abuse_counts              jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -749,15 +752,18 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 18. 동전 경제 RPC 12개 (신규)
---     금액 파라미터/반환값은 전부 bigint — max_coins가 자판기 용량 업그레이드로
---     반복 누적 가능해 하드 캡이 없으므로, integer(약 21억 한도)로 좁힐 이유가 없다.
+-- 18. 동전 경제 RPC (신규)
+--     금액 파라미터/반환값은 전부 bigint — coin_grant_bonus가 자판기 그랜트 부스터
+--     품목으로 반복 누적 가능해 하드 캡이 없으므로, integer(약 21억 한도)로 좁힐
+--     이유가 없다.
 -- ------------------------------------------------------------
 
--- 동전 지급 — max_coins 클램프 자동 적용(add_affection의 +100 상한 클램프와 동일
--- 골격). p_count_as_earned=true(기본값)일 때만 lifetime_coins_earned를 늘린다 —
--- 무승부/타임아웃 환불처럼 "번 게 아니라 원금을 그대로 돌려주는" 경우엔 false로
--- 호출해서 누적 통계(및 "티끌 모아 티끌" 업적)가 부풀지 않게 한다.
+-- 동전 지급 — 2026-09-05부로 보유 상한(구 max_coins) 개념 자체가 폐지돼 클램프 없이
+-- 그대로 더한다(applied_amount는 이제 항상 p_amount와 같다 — 그래도 호출부 다수가
+-- 이 반환 형태에 이미 의존하고 있어 필드는 유지). p_count_as_earned=true(기본값)일
+-- 때만 lifetime_coins_earned를 늘린다 — 무승부/타임아웃 환불처럼 "번 게 아니라
+-- 원금을 그대로 돌려주는" 경우엔 false로 호출해서 누적 통계(및 "티끌 모아 티끌"
+-- 업적)가 부풀지 않게 한다.
 CREATE OR REPLACE FUNCTION add_coins(
   p_user_id bigint,
   p_amount bigint,
@@ -768,33 +774,19 @@ RETURNS TABLE (applied_amount bigint, new_coins bigint, new_lifetime_coins_earne
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  v_current_coins bigint;
-  v_max_coins bigint;
-  v_applied bigint;
   v_new_coins bigint;
   v_new_lifetime bigint;
 BEGIN
-  SELECT coins, max_coins INTO v_current_coins, v_max_coins
-  FROM users
-  WHERE user_id = p_user_id
-  FOR UPDATE;
-
-  IF p_amount > 0 THEN
-    v_applied := LEAST(p_amount, GREATEST(v_max_coins - v_current_coins, 0));
-  ELSE
-    v_applied := p_amount;
-  END IF;
-
   UPDATE users
-  SET coins = coins + v_applied,
+  SET coins = coins + p_amount,
       lifetime_coins_earned = lifetime_coins_earned + CASE
-        WHEN v_applied > 0 AND p_count_as_earned THEN v_applied
+        WHEN p_amount > 0 AND p_count_as_earned THEN p_amount
         ELSE 0
       END
   WHERE user_id = p_user_id
   RETURNING coins, lifetime_coins_earned INTO v_new_coins, v_new_lifetime;
 
-  RETURN QUERY SELECT v_applied, v_new_coins, v_new_lifetime;
+  RETURN QUERY SELECT p_amount, v_new_coins, v_new_lifetime;
 END;
 $$;
 
@@ -843,16 +835,17 @@ BEGIN
 END;
 $$;
 
--- 동전 최대 보유량 증가(단순 누적, increment_chat_count와 동일 골격) — 자판기의
--- 용량 업그레이드 품목 전용, 몇 번이든 반복 가능(하드 캡 없음).
-CREATE OR REPLACE FUNCTION increase_max_coins(p_user_id bigint, p_amount bigint)
+-- /동전 그랜트 보너스 증가(단순 누적, increment_chat_count와 동일 골격) — 자판기의
+-- 그랜트 부스터 품목(동전 지갑/돼지 저금통/계좌 개설) 전용, 몇 번이든 반복 가능
+-- (하드 캡 없음).
+CREATE OR REPLACE FUNCTION increase_coin_grant_bonus(p_user_id bigint, p_amount bigint)
 RETURNS bigint
 LANGUAGE sql
 AS $$
   UPDATE users
-  SET max_coins = max_coins + p_amount
+  SET coin_grant_bonus = coin_grant_bonus + p_amount
   WHERE user_id = p_user_id
-  RETURNING max_coins;
+  RETURNING coin_grant_bonus;
 $$;
 
 -- 간식 지급(자판기 구매 전용) — 없으면 새로 만들고, 있으면 누적.
@@ -949,56 +942,38 @@ END;
 $$;
 
 -- 관리자 콘솔 co set/co reset 전용 — fl set/fl reset(set_affection)과 동일한 원칙으로
--- lifetime_coins_earned 등 부수 상태는 안 건드리고 coins만 0~max_coins로 클램프해
--- 절대값 SET.
+-- lifetime_coins_earned 등 부수 상태는 안 건드리고 coins만 절대값 SET한다. 2026-09-05
+-- 보유 상한(구 max_coins) 폐지로 위쪽 클램프는 없고 0 밑으로만 막는다.
 CREATE OR REPLACE FUNCTION set_coins(p_user_id bigint, p_amount bigint)
 RETURNS bigint
 LANGUAGE sql
 AS $$
   UPDATE users
-  SET coins = LEAST(GREATEST(p_amount, 0), max_coins)
+  SET coins = GREATEST(p_amount, 0)
   WHERE user_id = p_user_id
   RETURNING coins;
 $$;
 
--- 관리자 콘솔 vol down 전용 — 0 밑으로 안 내려가는 최대 동전 보유량 차감
--- (deduct_coins_clamped와 동일한 idiom). max_coins는 하드 캡이 없으므로(자판기 용량
--- 업그레이드로 반복 누적 가능, vol up도 기존 increase_max_coins를 그대로 재사용) 위쪽
--- 클램프는 없다.
-CREATE OR REPLACE FUNCTION decrease_max_coins(p_user_id bigint, p_amount bigint)
-RETURNS TABLE (deducted bigint, new_max_coins bigint)
+-- /동전의 하루 사용 횟수를 원자적으로 제한한다(하루 최대 3회) — "오늘 아직 3회
+-- 미만일 때만" 원자적으로 +1 해서 동시 요청으로 인한 초과 지급(TOCTOU)을 막는다.
+-- 오늘 daily_stats 행이 이미 있어야 하므로(ensure_daily_stats로 미리 보장) 조건부
+-- UPDATE 하나로 충분(claim_dessert_slot과 동일한 idiom).
+CREATE OR REPLACE FUNCTION claim_coin_daily_use(p_user_id bigint)
+RETURNS boolean
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  v_current_max bigint;
-  v_deducted bigint;
-  v_new_max bigint;
+  v_rows integer;
 BEGIN
-  SELECT max_coins INTO v_current_max
-  FROM users
+  UPDATE daily_stats
+  SET coin_claims_today = coin_claims_today + 1
   WHERE user_id = p_user_id
-  FOR UPDATE;
+    AND stat_date = kst_today()
+    AND coin_claims_today < 3;
 
-  v_deducted := LEAST(GREATEST(p_amount, 0), v_current_max);
-
-  UPDATE users
-  SET max_coins = max_coins - v_deducted
-  WHERE user_id = p_user_id
-  RETURNING max_coins INTO v_new_max;
-
-  RETURN QUERY SELECT v_deducted, v_new_max;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows > 0;
 END;
-$$;
-
--- 관리자 콘솔 vol set/vol reset 전용 — 0 밑으로만 클램프(상한 없음).
-CREATE OR REPLACE FUNCTION set_max_coins(p_user_id bigint, p_amount bigint)
-RETURNS bigint
-LANGUAGE sql
-AS $$
-  UPDATE users
-  SET max_coins = GREATEST(p_amount, 0)
-  WHERE user_id = p_user_id
-  RETURNING max_coins;
 $$;
 
 -- ------------------------------------------------------------

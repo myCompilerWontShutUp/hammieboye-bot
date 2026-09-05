@@ -82,6 +82,14 @@ async def get_dessert_feeders_for(date_str: str, slot: str) -> list[dict]:
     return feeders
 
 
+async def claim_coin_daily_use(user_id: int) -> bool:
+    """/동전의 하루 사용 횟수를 원자적으로 제한한다(하루 최대 3회) — "오늘 아직 3회
+    미만일 때만" 원자적으로 +1 한다(claim_dessert_slot과 동일한 idiom). 오늘
+    daily_stats 행이 이미 있어야 하므로(ensure_daily_stats로 미리 보장) 실패(False)면
+    오늘은 이미 3번 다 썼다는 뜻."""
+    return await rpc("claim_coin_daily_use", {"p_user_id": user_id})
+
+
 async def increment_messages_today(user_id: int) -> int:
     return await rpc("increment_messages_today", {"p_user_id": user_id})
 

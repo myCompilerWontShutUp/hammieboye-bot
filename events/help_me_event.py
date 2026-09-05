@@ -7,11 +7,18 @@ import discord
 from openai import AsyncOpenAI
 
 import achievements
-from config import ALLOWED_GUILD_IDS, OPENAI_API_KEY, OPENAI_JUDGE_MODEL, openai_service_tier_kwargs
+from config import (
+    ALLOWED_GUILD_IDS,
+    CALL_PREFIXES,
+    OPENAI_API_KEY,
+    OPENAI_JUDGE_MODEL,
+    openai_service_tier_kwargs,
+)
+from core.base import EMBED_COLOR
 from core.discord_names import resolve_real_name
 from core.korean import josa
 from events import dessert_time
-from events.scheduler import KST, random_times_in_window, resolve_broadcast_channel_id
+from events.scheduler import KST, format_footer_time, random_times_in_window, resolve_broadcast_channel_id
 from events.special_days import get_help_me_event_count
 from db.achievements import award as award_achievement
 from db.affection import add_affection
@@ -178,14 +185,20 @@ async def _get_recently_claimed_cached() -> list[dict]:
     return _recently_claimed_cache
 
 
-async def _grant_already_helped(user_id: int, prompt_text: str) -> tuple[int, str | None, bool, str | None]:
+async def _grant_already_helped(
+    user_id: int, prompt_text: str
+) -> tuple[int, bool, str | None, bool, str | None, str | None]:
     """이미 클레임된 이벤트에 "진짜 도와주려던" relevant 반응이 왔을 때 쓴다 — 클레임
     경쟁에서 근소하게 진 경우와 클레임 후 유예 기간(1분 이내) 둘 다 동일 취급. 도와준
     횟수는 증가시키지만, "햄미의 요청" 업적은 진짜 첫 클레임 성공자만 유지한다."""
     result = await add_affection(user_id, _ALREADY_HELPED_REWARD, _ALREADY_HELPED_METHOD)
     await _try_increment_help_count(user_id)
     lines = _ALREADY_HELPED_LINES_BY_PROMPT.get(prompt_text, _ALREADY_HELPED_LINES_BY_PROMPT[_PROMPT_TEXTS[0]])
-    return result["applied_amount"], result["achievement_notice"], True, random.choice(lines)
+    # 여기서 나가는 delta는 항상 add_affection(배율 적용) 단일 성분이라 배율 분해
+    # 대상이다(업적 보너스가 섞이지 않음). 이 경로는 이미 끝난(다른 사람이 클레임한)
+    # 이벤트에 대한 위로 보상이라 "지금 진행 중인 활성 이벤트"로 취급하지 않는다 —
+    # active_prompt_text는 항상 None(생성 컨텍스트 주입은 진짜 활성 이벤트에만 적용).
+    return result["applied_amount"], True, result["achievement_notice"], True, random.choice(lines), None
 
 
 _RESPONSE_JUDGE_INSTRUCTIONS = """\
@@ -318,8 +331,23 @@ async def _post_due_events() -> None:
         await _post_one(event)
 
 
+def _build_announce_embed() -> discord.Embed:
+    """참여 방법 안내(2026-09-05 신규) — 사람들이 헬프 미 이벤트와 디저트 타임을
+    헷갈려한다는 피드백으로, 방송 밑에 항상 이 고정 임베드를 붙인다. 햄미의 말투는
+    위 프롬프트 문구에만 쓰고, 이 안내는 시스템 라벨이라 정중체로 고정한다."""
+    prefixes = ", ".join(f'**"{p}"**' for p in CALL_PREFIXES)
+    embed = discord.Embed(
+        title="🆘 헬프 햄미 이벤트",
+        description=f"가장 먼저 햄미를 불러 도와주세요! {prefixes}를 통해 부를 수 있어요!",
+        color=EMBED_COLOR,
+    )
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    return embed
+
+
 async def _post_one(event: dict) -> None:
     messages: dict[str, dict] = {}
+    embed = _build_announce_embed()
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:
             continue
@@ -330,7 +358,7 @@ async def _post_one(event: dict) -> None:
         if channel is None:
             continue
         try:
-            sent = await channel.send(event["prompt_text"])
+            sent = await channel.send(event["prompt_text"], embed=embed)
             messages[str(guild.id)] = {"channel_id": sent.channel.id, "message_id": sent.id}
         except discord.HTTPException:
             logging.exception("Failed to post help me event in guild %s", guild.id)
@@ -375,39 +403,61 @@ async def _announce_timeout(event: dict) -> None:
 
 async def handle_potential_response(
     user_id: int, guild_id: int, text: str
-) -> tuple[int, str | None, bool, str | None]:
+) -> tuple[int, bool, str | None, bool, str | None, str | None]:
     """자연어 메시지가 활성 헬프 미 이벤트에 대한 반응인지 확인하고 보상/페널티를 적용한다.
     항상 호출되며(호감도 음수여도) 아무 부수효과 없이 조용히 끝날 수 있다.
 
-    반환값: (적용된 호감도 증감, 새 업적 안내 또는 None, 이벤트 반응이었는지, 응답을
-    완전히 대체할 고정 문구 또는 None).
+    반환값: (적용된 호감도 증감, 그 증감이 배율 분해 대상인지, 새 업적 안내 또는 None,
+    이벤트 반응이었는지, 응답을 완전히 대체할 고정 문구 또는 None, 지금 진행 중인
+    활성 이벤트의 프롬프트 문구 또는 None).
+    - 두 번째 값(multiplier_eligible)은 이 delta가 add_affection의 배율 적용
+    경로만으로 이루어졌으면 True, `call_event_help`/`alone_on_a_happy_day` 같은 업적
+    보너스(apply_day_multiplier=False)가 섞였으면 False다 — 그래야 format_affection_notice가
+    "N x 배율"로 잘못 분해하지 않는다(예: 주말에 보상 3 + 업적 보너스 10 = 13처럼 딱
+    안 나누어떨어지면 우연히 안전하지만, 3+3=6처럼 우연히 나누어떨어지면 배율이
+    실제로 안 걸린 부분까지 분해해 보여주는 문제가 있었다).
     - 세 번째 값은 relevant(클레임 실패 포함)/negative/irrelevant면 True, 그 외(활성
       이벤트 없음/분류 실패)면 False — core/chat.py가 "상한 초과 상태에서도 헬프 미 이벤트
       응답은 남용 카운트에서 제외"하는 데 쓴다.
-    - 네 번째 값은 irrelevant일 때만 채워지며, core/chat.py는 이 값이 있으면 LLM 생성을
+    - 다섯 번째 값은 irrelevant일 때만 채워지며, core/chat.py는 이 값이 있으면 LLM 생성을
       건너뛰고 이 문구로 완전히 대체한다. 호감도<0/상한 소진/반복 페널티처럼 애초에
       생성을 안 하는 다른 고정 분기에는 영향 없다.
+    - 여섯 번째 값(active_prompt_text)은 지금 실제로 활성 상태인 이벤트가 있을 때만
+      채워진다(유예 기간/이미 클레임된 이벤트는 "지금 진행 중"이 아니므로 None) —
+      core/chat.py가 이 값을 자연어 생성 컨텍스트에 끼워 넣어, 사용자가 원래 요청을
+      재진술하지 않고 짧게 반응해도("햄미야 내가 해줄게") 무슨 얘기인지 알아듣고
+      반응하게 한다(2026-09-06, 재진술 안 하면 엉뚱하게 되묻으면서 보상만 지급되던
+      문제 수정).
     - 활성 이벤트가 없어도 클레임된 지 1분 이내(유예 기간)면 relevant에 한해
       `_grant_already_helped()`로 고정 +1을 준다. 유예 기간 중 irrelevant/negative는
-      완전히 무시(`(0, None, False, None)`)해서 다른 자연어 페널티만 평소대로 적용된다.
+      완전히 무시(`(0, True, None, False, None, None)`)해서 다른 자연어 페널티만
+      평소대로 적용된다.
     """
     events = await _get_active_events_cached()
     if not events:
         return await _handle_grace_period(user_id, text)
     event = events[0]
+    active_prompt_text = event["prompt_text"]
 
     classification = await _classify_response(event["prompt_text"], text)
 
     if classification == "negative":
         result = await add_affection(user_id, -5)
-        return result["applied_amount"], None, True, None
+        return result["applied_amount"], True, None, True, None, active_prompt_text
 
     if classification == "irrelevant":
         result = await add_affection(user_id, _IRRELEVANT_PENALTY)
-        return result["applied_amount"], None, True, random.choice(_IRRELEVANT_REDIRECT_LINES)
+        return (
+            result["applied_amount"],
+            True,
+            None,
+            True,
+            random.choice(_IRRELEVANT_REDIRECT_LINES),
+            active_prompt_text,
+        )
 
     if classification != "relevant":
-        return 0, None, False, None
+        return 0, True, None, False, None, active_prompt_text
 
     reward = random.randint(1, 5)
     won = await claim(event["id"], user_id, reward)
@@ -416,7 +466,7 @@ async def handle_potential_response(
         # 자기 자신이면(방금 이긴 직후 5초 캐시 TTL 안에 또 relevant 메시지를 보낸 경우)
         # 추가 보상 없이 조용히 끝낸다. 이미 자기가 다 받았으니 이중 지급이면 안 된다.
         if await get_claimed_by(event["id"]) == user_id:
-            return 0, None, True, None
+            return 0, True, None, True, None, active_prompt_text
         return await _grant_already_helped(user_id, event["prompt_text"])
 
     _invalidate_active_events_cache()
@@ -426,9 +476,11 @@ async def handle_potential_response(
 
     achievement_notice = result["achievement_notice"]
     applied_amount = result["applied_amount"]
+    multiplier_eligible = True
     achievement_result = await award_achievement(user_id, achievements.call_event_help.ID)
     if achievement_result["earned"]:
         applied_amount += achievement_result["applied_amount"]
+        multiplier_eligible = False
         extra = f"🏆 업적 달성: {achievements.format_name(achievements.call_event_help)}!!"
         achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
@@ -441,28 +493,31 @@ async def handle_potential_response(
         legendary_result = await award_achievement(user_id, achievements.alone_on_a_happy_day.ID)
         if legendary_result["earned"]:
             applied_amount += legendary_result["applied_amount"]
+            multiplier_eligible = False
             extra = f"🏆 업적 달성: {achievements.format_name(achievements.alone_on_a_happy_day)}!!"
             achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
 
-    return applied_amount, achievement_notice, True, None
+    return applied_amount, multiplier_eligible, achievement_notice, True, None, active_prompt_text
 
 
-async def _handle_grace_period(user_id: int, text: str) -> tuple[int, str | None, bool, str | None]:
+async def _handle_grace_period(
+    user_id: int, text: str
+) -> tuple[int, bool, str | None, bool, str | None, str | None]:
     """활성 이벤트가 없을 때 클레임된 지 1분 이내인 이벤트가 있는지 확인한다. relevant면
     `_grant_already_helped()`로, 그 외는 이벤트 자체가 없는 것과 동일하게 처리한다.
 
     클레임한 사람 본인이 유예 기간 중 또 relevant하게 반응해도 추가 지급하지 않는다 —
     이미 정식 보상(1~5)을 다 받은 사람이라 여기서 +1을 더 주면 한 사람이 같은 이벤트로
-    두 번 받는 셈이 된다."""
+    두 번 받는 셈이 된다. 활성 이벤트가 없는 경로라 active_prompt_text는 항상 None."""
     recently_claimed = await _get_recently_claimed_cached()
     if not recently_claimed:
-        return 0, None, False, None
+        return 0, True, None, False, None, None
     event = recently_claimed[0]
     if event.get("claimed_by") == user_id:
-        return 0, None, True, None
+        return 0, True, None, True, None, None
     classification = await _classify_response(event["prompt_text"], text)
     if classification != "relevant":
-        return 0, None, False, None
+        return 0, True, None, False, None, None
     return await _grant_already_helped(user_id, event["prompt_text"])
 
 
