@@ -1,10 +1,11 @@
+import logging
 import random
 from datetime import datetime
 
 import discord
 
 import achievements
-from core.base import EMBED_COLOR
+from core.base import EMBED_COLOR, LIST_EMBED_COLOR, reject_if_wrong_invoker
 from events.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 
@@ -126,26 +127,94 @@ async def handle(user_id: int, *, target_name: str | None = None) -> tuple[str, 
     return random.choice(_INTRO_OTHER_LINES).format(name=target_name), embed
 
 
-async def list_handle(user_id: int) -> tuple[str, discord.Embed]:
+# /업적-리스트 페이지네이션(2026-09-06 신규) — 한 임베드에 20개를 몰아넣으면
+# 가독성이 떨어져서 6개씩 나눈다. REGISTRY(dict)는 achievements/__init__.py의 _MODULES
+# 삽입 순서를 그대로 보존하므로("업적이 만들어진 순서") 전설/일반을 재정렬하지 않고
+# 그 순서 그대로 페이지를 나눈다 — "발견 순서"라는 자연스러운 흐름과 맞춘 것.
+_PAGE_SIZE = 6
+
+
+def _page_count() -> int:
+    return -(-achievements.TOTAL_COUNT // _PAGE_SIZE)  # 올림 나눗셈
+
+
+def _entry_lines(module, earned_ids: set[str]) -> tuple[str, str]:
+    """(이름 줄, 설명 줄) — 카드형으로 이름 위/설명 아래에 렌더링해 가독성을 높인다."""
+    if module.RARITY == achievements.LEGENDARY and module.ID not in earned_ids:
+        return achievements.format_hidden_legendary_name(module), f"({module.HINT})"
+    return achievements.format_name(module), module.HOW_TO_EARN
+
+
+def _build_list_embed(page: int, earned_ids: set[str]) -> discord.Embed:
+    start = page * _PAGE_SIZE
+    modules = list(achievements.REGISTRY.values())[start : start + _PAGE_SIZE]
+    blocks = []
+    for module in modules:
+        name_line, desc_line = _entry_lines(module, earned_ids)
+        blocks.append(f"**{name_line}**\n{desc_line}")
+
+    embed = discord.Embed(title="📖 업적 목록", color=LIST_EMBED_COLOR)
+    embed.add_field(
+        name=f"전체 업적 ({page + 1}/{_page_count()} 페이지)",
+        value="\n\n".join(blocks),
+        inline=False,
+    )
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    return embed
+
+
+class _AchievementListView(discord.ui.View):
+    """실행자 본인만 페이지를 넘길 수 있다(2026-09-06 신규 — 이전엔 이 명령어 자체가
+    페이지네이션이 없어서 검증할 대상도 없었음). 60초 무클릭 시 버튼만 제거(다른
+    쿨타임 명시 없음, 기본 규칙)."""
+
+    def __init__(self, user_id: int, earned_ids: set[str]) -> None:
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.earned_ids = earned_ids
+        self.page = 0
+        self.message: discord.Message | None = None
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= _page_count() - 1
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            logging.exception("Failed to clear achievement list buttons on timeout")
+
+    async def _go(self, interaction: discord.Interaction, step: int) -> None:
+        if not await reject_if_wrong_invoker(interaction, self.user_id):
+            return
+        self.page += step
+        self._sync_buttons()
+        await interaction.response.edit_message(
+            embed=_build_list_embed(self.page, self.earned_ids), view=self
+        )
+
+    @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._go(interaction, -1)
+
+    @discord.ui.button(label="다음 ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._go(interaction, 1)
+
+
+async def list_handle(user_id: int) -> tuple[str, discord.Embed, discord.ui.View]:
     """/업적-리스트 — 일반 업적은 항상 이름+획득 방법을 공개하는 정적 카탈로그지만,
     전설 업적은 호출한 본인의 획득 여부에 따라 개인화된다: 이미 획득했으면 실명+획득
     방법을 그대로 보여주고, 아직 못 얻었으면 "발견의 재미" 원칙대로 ???+힌트로 감춘다
-    (모든 전설을 무조건 숨기는 것도, 미획득 전설의 실명/조건을 공개하는 것도 둘 다 틀림)."""
+    (모든 전설을 무조건 숨기는 것도, 미획득 전설의 실명/조건을 공개하는 것도 둘 다 틀림).
+    6개씩 페이지네이션(◀ 이전/다음 ▶ 버튼)해서 보여준다."""
     earned = await get_earned(user_id)
     earned_ids = {row["achievement_id"] for row in earned}
 
-    legendary = [m for m in achievements.REGISTRY.values() if m.RARITY == achievements.LEGENDARY]
-    normal = [m for m in achievements.REGISTRY.values() if m.RARITY != achievements.LEGENDARY]
-
-    lines = []
-    for module in legendary:
-        if module.ID in earned_ids:
-            lines.append(f"- {achievements.format_name(module)} — {module.HOW_TO_EARN}")
-        else:
-            lines.append(f"- {achievements.format_hidden_legendary(module)}")
-    lines += [f"- {module.NAME} — {module.HOW_TO_EARN}" for module in normal]
-
-    embed = discord.Embed(title="📖 업적 목록", color=EMBED_COLOR)
-    embed.add_field(name=f"전체 업적 ({achievements.TOTAL_COUNT}개)", value="\n".join(lines), inline=False)
-    embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    return random.choice(_LIST_INTRO_LINES), embed
+    view = _AchievementListView(user_id, earned_ids)
+    embed = _build_list_embed(0, earned_ids)
+    return random.choice(_LIST_INTRO_LINES), embed, view

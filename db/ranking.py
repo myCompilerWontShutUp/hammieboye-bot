@@ -97,6 +97,44 @@ async def get_rank(user_id: int, affection: int, member_ids: list[int] | None = 
     return higher + position
 
 
+async def _count_higher_coins(coins: int, member_ids: list[int] | None) -> int:
+    if member_ids is not None and not member_ids:
+        return 0
+    params = {"coins": f"gt.{coins}", "select": "user_id"}
+    filter_params = _member_filter(member_ids)
+    if filter_params:
+        params.update(filter_params)
+    rows = await select("users", params)
+    return len(rows)
+
+
+async def _get_tied_coins(coins: int, member_ids: list[int] | None) -> list[dict]:
+    if member_ids is not None and not member_ids:
+        return []
+    params = {"coins": f"eq.{coins}", "select": "user_id,created_at"}
+    filter_params = _member_filter(member_ids)
+    if filter_params:
+        params.update(filter_params)
+    return await select("users", params)
+
+
+async def get_coin_rank(user_id: int, coins: int, member_ids: list[int] | None = None) -> int:
+    """coins 기준 순위(1부터 시작) — get_rank와 동일한 골격이지만, 동전은 "먼저 그
+    값에 도달한 사람"을 판정할 이력 테이블(affection_log에 대응하는 것)이 없어서
+    동점 타이브레이크가 (1) 가입일이 이른 사람 (2) user_id가 낮은 사람 2단계뿐이다
+    (/랭킹-동전의 _coin_sort_key와 동일한 원칙)."""
+    higher, tied = await asyncio.gather(
+        _count_higher_coins(coins, member_ids),
+        _get_tied_coins(coins, member_ids),
+    )
+    if len(tied) <= 1:
+        return higher + 1
+
+    keyed = sorted(tied, key=lambda row: (row["created_at"], row["user_id"]))
+    position = next(i for i, row in enumerate(keyed) if row["user_id"] == user_id) + 1
+    return higher + position
+
+
 async def count_total(member_ids: list[int] | None = None) -> int:
     """순위 계산 모집단의 전체 인원 수. member_ids를 주면 서버 인원, 생략하면 전체 유저."""
     if member_ids is not None and not member_ids:

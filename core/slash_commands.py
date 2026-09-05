@@ -4,7 +4,6 @@ import discord
 from discord import app_commands
 
 import command.achievements as achievements_view
-import command.bag as bag_view
 import command.bet as bet
 import command.coin as coin
 import command.eat as eat
@@ -12,7 +11,7 @@ import command.intro as intro
 import command.ranking as ranking
 import command.slot as slot
 import command.vending as vending
-from command.info import handle as info_handle
+from command.info import handle_self as info_handle_self
 from command.join import handle as join_handle
 from command.join_info import handle as join_info_handle
 from command.leave import handle as leave_handle
@@ -84,27 +83,17 @@ def register(tree: app_commands.CommandTree) -> None:
         text = await plastic_handle(interaction.user.id)
         await interaction.edit_original_response(content=text)
 
-    @tree.command(name="내정보", description="내 호감도, 채팅 횟수, 도와준 횟수 등 정보를 확인한다")
+    @tree.command(name="내정보", description="내 호감도·가방·업적·활동 기록을 카테고리별로 확인한다")
     async def info_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not await _prepare(interaction):
             return
-        text, embed = await info_handle(interaction.user.id, guild=interaction.guild)
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
-
-    @tree.command(name="내업적", description="내가 획득한 업적을 확인한다")
-    async def my_achievements_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        text, embed = await achievements_view.handle(interaction.user.id)
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
+        text, embed, view = await info_handle_self(interaction)
+        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.interaction = interaction
 
     @tree.command(name="랭킹-호감도", description="호감도 기준 상위 10명 순위를 확인한다")
     async def ranking_affection_command(interaction: discord.Interaction) -> None:
@@ -140,37 +129,6 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         await intro.handle(interaction, 이름)
 
-    @tree.command(name="니업적", description="서버 멤버가 획득한 업적을 확인한다")
-    @app_commands.describe(이름="찾을 사람의 서버 별명(입력하면 자동완성이 떠요) 또는 멘션")
-    @app_commands.autocomplete(이름=intro.autocomplete_이름)
-    async def intro_achievements_command(interaction: discord.Interaction, 이름: str) -> None:
-        if interaction.user.bot:
-            return
-        if not await _prepare(interaction, deferred=False):
-            return
-        await intro.handle_achievements(interaction, 이름)
-
-    @tree.command(name="내가방", description="내 동전 지갑과 간식 보따리를 확인한다")
-    async def bag_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        text, embed = await bag_view.handle(interaction.user.id)
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
-
-    @tree.command(name="니가방", description="서버 멤버의 동전 지갑과 간식 보따리를 확인한다")
-    @app_commands.describe(이름="찾을 사람의 서버 별명(입력하면 자동완성이 떠요) 또는 멘션")
-    @app_commands.autocomplete(이름=intro.autocomplete_이름)
-    async def intro_bag_command(interaction: discord.Interaction, 이름: str) -> None:
-        if interaction.user.bot:
-            return
-        if not await _prepare(interaction, deferred=False):
-            return
-        await intro.handle_bag(interaction, 이름)
-
     @tree.command(name="업적-리스트", description="이 세상 모든 업적의 목록을 확인한다")
     async def achievement_list_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
@@ -178,11 +136,12 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        text, embed = await achievements_view.list_handle(interaction.user.id)
+        text, embed, view = await achievements_view.list_handle(interaction.user.id)
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.message = await interaction.original_response()
 
-    @tree.command(name="자판기", description="자판기에서 간식이나 동전 지갑 용량 업그레이드를 산다")
+    @tree.command(name="자판기", description="자판기에서 간식이나 동전 획득량을 늘려주는 아이템을 산다")
     @app_commands.describe(품목="살 물건", 개수="살 개수(기본 1개)")
     @app_commands.choices(품목=[app_commands.Choice(name=n, value=n) for n in ITEM_NAMES])
     async def vending_command(
@@ -237,6 +196,7 @@ def register(tree: app_commands.CommandTree) -> None:
         text, embed, view = await bet.handle_rules()
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.interaction = interaction
 
     @tree.command(name="도박", description="동전을 걸고 위험한 도박을 한다")
     async def gamble_command(interaction: discord.Interaction) -> None:
@@ -259,6 +219,7 @@ def register(tree: app_commands.CommandTree) -> None:
         text, embed, view = await slot.handle_rules()
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.interaction = interaction
 
     @tree.command(name="먹어", description="디저트 타임에 햄미에게 간식을 먹인다")
     @app_commands.describe(간식="먹일 간식(내 가방에 있는 것만 나와요)")
@@ -279,6 +240,7 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        text, embed = await vending.handle_list()
+        text, embed, view = await vending.handle_list(interaction.user.id)
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.message = await interaction.original_response()

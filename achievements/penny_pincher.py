@@ -1,5 +1,5 @@
 ID = "penny_pincher"
 NAME = "티끌 모아 티끌"
-HOW_TO_EARN = "평생 획득한 금액이 100,000원을 넘으면 얻어"
+HOW_TO_EARN = "평생 획득한 동전이 1,000개를 넘으면 얻어"
 RARITY = "일반"
 CODE = "0reuu4xd"

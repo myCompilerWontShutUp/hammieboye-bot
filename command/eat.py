@@ -154,6 +154,7 @@ async def handle(user_id: int, snack_name: str) -> str:
     text = random.choice(_FEED_SUCCESS_LINES).format(snack=item.name)
 
     total_delta = result["applied_amount"]
+    multiplier_eligible = True
     current_affection = result["new_affection"]
     achievement_notices: list[str] = []
     if result["achievement_notice"]:
@@ -164,6 +165,7 @@ async def handle(user_id: int, snack_name: str) -> str:
         if three_meals["earned"]:
             total_delta += three_meals["applied_amount"]
             current_affection = three_meals["new_affection"]
+            multiplier_eligible = False
             achievement_notices.append(
                 f"🏆 업적 달성: {achievements.format_name(achievements.three_meals_a_day)}!!"
             )
@@ -173,6 +175,7 @@ async def handle(user_id: int, snack_name: str) -> str:
         if strongest["earned"]:
             total_delta += strongest["applied_amount"]
             current_affection = strongest["new_affection"]
+            multiplier_eligible = False
             achievement_notices.append(
                 f"🏆 업적 달성: {achievements.format_name(achievements.strongest_snack_ever)}!!"
             )
@@ -180,5 +183,7 @@ async def handle(user_id: int, snack_name: str) -> str:
     for notice in achievement_notices:
         text += f"\n{notice}"
     if total_delta != 0:
-        text += format_affection_notice(total_delta, current_affection)
+        # total_delta는 기본 지급(item.effect, 배율 적용)에 업적 보너스(배율 미적용)가
+        # 섞일 수 있어 — 업적이 하나라도 붙으면 multiplier_eligible=False로 넘긴다.
+        text += format_affection_notice(total_delta, current_affection, multiplier_eligible=multiplier_eligible)
     return text

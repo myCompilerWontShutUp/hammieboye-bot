@@ -7,10 +7,11 @@ import discord
 
 from command.vending_catalog import BY_ID
 from config import ALLOWED_GUILD_IDS
+from core.base import EMBED_COLOR
 from core.discord_names import resolve_real_name
 from db.daily_stats import get_dessert_feeders_for, kst_today_str
 from db.users import get_created_at_map
-from events.scheduler import KST, broadcast_to_guilds
+from events.scheduler import KST, broadcast_to_guilds, format_footer_time
 
 _client: discord.Client | None = None
 
@@ -24,49 +25,61 @@ SLOTS: dict[str, time] = {
 WINDOW = timedelta(minutes=30)
 
 _OPEN_LINES = (
-    "디저트 타임이야!! 간식 먹여줄래?? _(신남)_",
-    "냠냠 시간이 왔어!! /먹어로 간식 줘봐!! _(설렘)_",
-    "배가 출출해!! 지금이 디저트 타임이야!! _(기대)_",
-    "간식 먹을 시간!! 뭐 줄 거야?? _(두근)_",
-    "디저트 타임 개시!! _(반짝)_",
-    "지금이야!! 간식 먹여줄 시간!! _(신남)_",
-    "냠냠 타임 시작!! _(방긋)_",
-    "디저트 타임!! 뭐 먹을지 기대돼!! _(설렘)_",
-    "간식 시간이 왔어!! _(들뜸)_",
+    "배가 출출해!! 간식 먹여줄래?? _(기대)_",
+    "냠냠 하고 싶은 기분이야!! /먹어로 간식 줘봐!! _(설렘)_",
+    "간식 생각이 간절해!! _(칭얼)_",
+    "출출한데 간식 좀 줄래?? _(두근)_",
+    "간식 먹고 싶어!! 뭐 줄 거야?? _(기대)_",
+    "배 속에서 꼬르륵 소리가 나!! _(웃음)_",
     "지금 간식 주면 완전 좋아!! _(애교)_",
-    "디저트 타임이야!! 배고파!! _(칭얼)_",
-    "냠냠 시간!! /먹어 기다리고 있을게!! _(기대)_",
+    "출출해서 간식이 당겨!! _(칭얼)_",
+    "간식 좀 챙겨줄래?? 배고파!! _(칭얼)_",
+    "지금 딱 간식 먹고 싶은 타이밍이야!! _(설렘)_",
+    "누가 간식 좀 안 주나?? _(두리번)_",
     "간식 먹을 준비 완료!! _(신남)_",
-    "디저트 타임 왔다!! _(반짝)_",
-    "지금 먹여주면 진짜 조아!! _(애교)_",
-    "간식 시간이야!! 뭐가 좋을까?? _(궁금)_",
-    "냠냠, 디저트 타임 시작됐어!! _(방긋)_",
-    "지금이 간식 찬스야!! _(신남)_",
-    "디저트 타임!! 배 속에서 신호 왔어!! _(웃음)_",
-    "간식 먹을 시간이 됐어!! _(설렘)_",
+    "배가 살살 아파올 정도로 출출해!! _(엄살)_",
+    "지금 간식 주면 진짜 조아!! _(애교)_",
+    "간식이 먹고 싶어져써!! _(기대)_",
+    "출출함이 몰려와!! 간식 좀 줄래?? _(칭얼)_",
+    "냠냠 하고 싶다!! 간식 가져다줘!! _(설렘)_",
+    "배고픈 신호가 왔어!! _(웃음)_",
+    "간식 시간인 것 같아!! _(궁금)_",
+    "지금 간식 주면 최고로 행복할 것 같아!! _(들뜸)_",
 )
 _CLOSE_LINES = (
-    "냠냠 잘 먹었다!! 디저트 타임 끝!! _(만족)_",
+    "냠냠 잘 먹었다!! _(만족)_",
     "배부르다!! 잘 먹었어!! _(뿌듯)_",
-    "디저트 타임 종료!! 잘 먹었습니다!! _(방긋)_",
+    "간식 다 먹었어!! 잘 먹었습니다!! _(방긋)_",
     "냠냠, 오늘 간식도 맛있었어!! _(행복)_",
-    "잘 먹었어!! 다음 디저트 타임에 또 만나!! _(웃음)_",
+    "잘 먹었어!! 다음에 또 줘!! _(웃음)_",
     "배가 빵빵해!! 잘 먹었다!! _(만족)_",
-    "디저트 타임 끝!! 고마워!! _(감사)_",
-    "냠냠 끝!! 다음 시간에 또 줘!! _(기대)_",
+    "간식 시간 끝!! 고마워!! _(감사)_",
+    "냠냠 끝!! 다음에 또 줘!! _(기대)_",
     "잘 먹었습니다!! 행복해!! _(뿌듯)_",
-    "디저트 타임 마감!! 잘 먹었어!! _(방긋)_",
+    "간식 다 먹어서 배불러!! _(방긋)_",
     "냠냠, 배부르게 잘 먹었어!! _(만족)_",
     "오늘 간식도 최고였어!! 잘 먹었어!! _(행복)_",
-    "디저트 타임 종료됐어!! 고마워!! _(감사)_",
+    "잘 먹었어!! 고마워!! _(감사)_",
     "잘 먹었다!! 다음에 또 부탁해!! _(웃음)_",
-    "냠냠, 이번 디저트 타임도 만족!! _(뿌듯)_",
-    "배부르게 잘 먹었어!! 디저트 타임 끝!! _(만족)_",
-    "잘 먹었습니다!! 다음 시간을 기다릴게!! _(기대)_",
-    "디저트 타임 끝!! 냠냠 행복해!! _(행복)_",
+    "냠냠, 이번 간식도 만족!! _(뿌듯)_",
+    "배부르게 잘 먹었어!! _(만족)_",
+    "잘 먹었습니다!! 다음을 기다릴게!! _(기대)_",
+    "간식 냠냠 행복해!! _(행복)_",
     "잘 먹었어!! 다음에 또 만나자!! _(방긋)_",
     "냠냠 끝, 잘 먹었다구!! _(만족)_",
 )
+
+# 시스템 안내 임베드(2026-09-05 신규) — 사람들이 헬프 미 이벤트와 헷갈려한다는
+# 피드백으로, 방송 밑에 항상 이 고정 임베드를 붙여 참여 방법을 명확히 한다. 햄미의
+# 말투(반말/오타)는 위 문구에만 쓰고, 이 안내는 시스템 라벨이라 정중체로 고정한다.
+_ANNOUNCE_TITLE = "🍪 햄미의 디저트 타임"
+_ANNOUNCE_DESCRIPTION = "`/먹어`를 이용해 햄미에게 음식을 가져다 주세요! 음식은 자판기에서 구매 가능합니다."
+
+
+def _build_announce_embed() -> discord.Embed:
+    embed = discord.Embed(title=_ANNOUNCE_TITLE, description=_ANNOUNCE_DESCRIPTION, color=EMBED_COLOR)
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    return embed
 
 
 # 디저트 타임 종료 방송에 붙는 "이번 타임 최고 후원자" 랭킹 — 상위 몇 명까지 보여줄지.
@@ -141,7 +154,12 @@ def current_slot(now: datetime | None = None) -> str | None:
 async def broadcast_open() -> None:
     if _client is None:
         return
-    await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=random.choice(_OPEN_LINES))
+    await broadcast_to_guilds(
+        _client,
+        ALLOWED_GUILD_IDS,
+        content=random.choice(_OPEN_LINES),
+        embed=_build_announce_embed(),
+    )
 
 
 async def broadcast_close(slot: str) -> None:

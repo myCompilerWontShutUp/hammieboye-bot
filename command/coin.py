@@ -1,9 +1,9 @@
 import random
 from datetime import datetime, timedelta, timezone
 
-from command.economy_common import format_coin_notice, maybe_append_capacity_advice
+from command.economy_common import format_coin_notice
 from db.affection import add_affection, format_affection_notice
-from db.daily_stats import ensure_daily_stats, update_daily_stats
+from db.daily_stats import claim_coin_daily_use, ensure_daily_stats, update_daily_stats
 from db.users import claim_coin_cooldown, get_user
 from db.wallet import add_coins
 
@@ -16,10 +16,13 @@ _METHOD = "coin"
 # 동일한 원칙(§4-5), 남용 페널티도 동일하게 호감도 -1(동전이 아니라 호감도가 깎인다).
 _COOLDOWN_ABUSE_FREE_COUNT = 3
 
-# 지급량 상한: 지갑이 클수록 한 번에 더 많이 벌 수 있다(최소 10) — 용량을 늘릴수록
-# /동전 자체의 효율도 같이 올라가게 해서 자판기 용량 업그레이드에 실질적인 유인을 준다.
-_MIN_MAX_GRANT = 10
-_MAX_GRANT_DIVISOR = 5
+# 하루 최대 사용 횟수(2026-09-05 신규) — 쿨타임(1시간)과 별개로, 쿨타임이 다 지났어도
+# 오늘 이미 이만큼 벌었으면 더 못 받는다. daily_stats.coin_claims_today로 원자적 판정.
+_DAILY_CLAIM_LIMIT = 3
+
+# 지급량은 이제 고정이다(2026-09-05, 보유 상한 폐지와 함께 랜덤 범위도 폐지) — 기본
+# 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus.
+_BASE_GRANT = 1
 
 _GRANT_MESSAGES = (
     "쳇바퀴를 신나게 굴렸더니 동전이 떨어져써!! _(신남)_",
@@ -88,30 +91,29 @@ _COOLDOWN_WARNING_MESSAGES = (
     "햄미 화나기 직전이야!! 제발 좀 기다려줘!! _(짜증)_",
     "마지막으로 경고할게!! 더 누르면 화낼 거야!! _(화남)_",
 )
-# 지갑이 이미 꽉 찬 상태(add_coins의 applied_amount == 0)에서 쓰면, "동전 벌었다"는
-# 성공 플레이버 + 용량 부족 안내를 조합하는 대신 이 전용 문구를 쓴다 — 실제로는 한
-# 푼도 못 받았는데 성공한 것처럼 보이는 게 헷갈린다는 피드백으로 분리됨.
-_WALLET_FULL_LINES = (
-    "어라, 지갑이 이미 꽉 찼어!! 쳇바퀴 굴려봤자 소용없겠다!! _(갸웃)_",
-    "잠깐, 동전 넣을 자리가 없잖아!! 자판기에서 지갑부터 키우고 와!! _(당황)_",
-    "지갑이 빵빵해서 한 푼도 더 안 들어가!! _(끄덕)_",
-    "어?? 이미 가득 찼는데?? 쳇바퀴 굴린 보람이 없네!! _(허탈)_",
-    "동전 자리가 하나도 없어!! 용량부터 늘리고 다시 와줄래?? _(안내)_",
-    "지갑이 터지기 직전이야!! 지금은 더 못 벌어!! _(당황)_",
-    "이미 꽉 차서 쳇바퀴 굴려도 소용없어!! _(멋쩍)_",
-    "동전 넣을 데가 없어!! 자판기에서 용량 업그레이드 어때?? _(권유)_",
-    "지갑이 이미 가득이야!! 헛수고했네!! _(웃음)_",
-    "더 담을 자리가 없어!! 저금통이라도 하나 장만해봐!! _(추천)_",
-    "쳇바퀴는 굴렸는데 지갑이 꽉 차서 못 받았어!! _(아쉬움)_",
-    "지갑 용량 초과야!! 지금은 벌어도 의미가 없어!! _(설명)_",
-    "동전이 넘칠 지경이라 안 줬어!! 용량부터 늘려줘!! _(단호)_",
-    "이미 최대치야!! 자판기 들러서 지갑 키우고 오자!! _(제안)_",
-    "지갑에 자리가 없어서 못 벌었어!! _(속상)_",
-    "가득 찬 지갑에 동전을 더 넣을 순 없지!! _(끄덕)_",
-    "용량이 꽉 차서 이번엔 헛걸음이었어!! _(허탈)_",
-    "동전 자리가 없다구!! 자판기에서 확인해봐!! _(안내)_",
-    "지갑이 터질 것 같아!! 지금은 더 못 담아!! _(당황)_",
-    "이미 가득 차 있어서 벌어도 다 흘러넘쳐!! 용량부터 늘리자!! _(권유)_",
+# 쿨타임은 다 지났어도 오늘 이미 3번 다 벌었으면 못 받는다(2026-09-05 신규) — 메타
+# 발언("하루 한도") 없이 힘들어서/피곤해서 못 굴리겠다는 자연스러운 이유로 표현한다.
+_DAILY_LIMIT_LINES = (
+    "오늘은 이만큼 굴렸으면 충분해!! 내일 또 굴릴게!! _(만족)_",
+    "오늘치 쳇바퀴는 이미 다 굴렸어!! 내일 다시 와줘!! _(뿌듯)_",
+    "너무 많이 굴려서 오늘은 힘이 다 빠져써!! _(지침)_",
+    "오늘은 여기까지!! 다리가 완전히 풀려버려써!! _(헥헥)_",
+    "이제 오늘은 진짜 못 굴리겠어!! 푹 쉬어야 대!! _(피곤)_",
+    "오늘 몫은 다 채웠어!! 내일 또 보자!! _(끄덕)_",
+    "쳇바퀴를 너무 굴려서 오늘은 여기까지야!! _(헐떡)_",
+    "오늘은 이 정도로 만족할래!! 내일 또 굴려줄게!! _(웃음)_",
+    "오늘 벌 만큼은 다 벌어써!! 내일 다시 굴려보자!! _(뿌듯)_",
+    "힘을 다 써버려써!! 오늘은 이만 쉴게!! _(지침)_",
+    "오늘의 쳇바퀴는 끝났어!! 내일 만나!! _(방긋)_",
+    "이제 다리가 후들거려서 못 굴려!! 내일 다시 와줘!! _(후들)_",
+    "오늘 분량은 다 채웠어!! 조금만 기다려줘!! _(만족)_",
+    "너무 열심히 굴려서 오늘은 지쳐써!! _(헥헥)_",
+    "오늘은 충분히 굴렸어!! 내일 또 해보자!! _(끄덕)_",
+    "이제 오늘 몫은 끝!! 내일 다시 만나자!! _(웃음)_",
+    "쳇바퀴 굴리기, 오늘은 여기까지가 한계야!! _(지침)_",
+    "오늘은 힘을 다 써서 더는 못 굴리겠어!! _(피곤)_",
+    "오늘치는 다 굴려써!! 내일 또 부탁해!! _(방긋)_",
+    "이 정도면 오늘 할 만큼 했어!! 내일 봐!! _(뿌듯)_",
 )
 
 _COOLDOWN_PENALTY_MESSAGES = (
@@ -184,6 +186,13 @@ def _with_affection_notice(message: str, delta: int, current: int) -> str:
 async def handle(user_id: int) -> str:
     now = datetime.now(timezone.utc)
 
+    # 쿨타임이 아직 안 지났어도 오늘 3번 다 썼으면 어차피 못 받으니, 먼저 오늘 횟수부터
+    # 빠르게 확인한다(불필요한 쿨타임 클레임을 아낀다) — 최종 권한은 아래 원자적
+    # claim_coin_daily_use가 가진다(아주 드문 동시 요청 경합 대비).
+    stats = await ensure_daily_stats(user_id)
+    if stats.get("coin_claims_today", 0) >= _DAILY_CLAIM_LIMIT:
+        return random.choice(_DAILY_LIMIT_LINES)
+
     # 확인 후 갱신하는 대신, "쿨타임이 지금 끝나 있을 때만" 원자적으로 새 쿨타임을
     # 먼저 선점한다(claim_coin_cooldown) — 두 요청이 쿨타임 만료 직후 거의 동시에
     # 들어와도 이중 지급이 안 생기게 하는 DB 레벨 가드(TOCTOU 방지).
@@ -195,24 +204,19 @@ async def handle(user_id: int) -> str:
         delta, current, message = await _register_cooldown_abuse(user_id, cooldown_until - now)
         return _with_affection_notice(message, delta, current)
 
-    user = await get_user(user_id)
-    stats = await ensure_daily_stats(user_id)
+    if not await claim_coin_daily_use(user_id):
+        # 아주 드문 경합(쿨타임이 막 끝난 순간 동시 요청)으로 오늘 몫이 방금 다
+        # 채워진 경우 — 쿨타임은 이미 새로 잡혔지만 코인은 지급하지 않는다.
+        return random.choice(_DAILY_LIMIT_LINES)
+
     await update_daily_stats(user_id, {"cooldown_abuse_counts": _reset_cooldown_abuse(stats)})
 
-    max_grant = max(_MIN_MAX_GRANT, user["max_coins"] // _MAX_GRANT_DIVISOR)
-    amount = random.randint(1, max_grant)
+    user = await get_user(user_id)
+    amount = _BASE_GRANT + user["coin_grant_bonus"]
     result = await add_coins(user_id, amount, method=_METHOD)
 
-    if result["applied_amount"] == 0:
-        # amount는 항상 1 이상이라, applied_amount가 정확히 0이면 지갑이 이미
-        # max_coins에 도달해 있었다는 뜻이다 — "동전 벌었다"는 성공 문구 대신
-        # 전용 문구 하나로 상황을 명확히 알려준다(용량 부족 안내도 이 문구 안에
-        # 이미 포함돼 있어 maybe_append_capacity_advice를 따로 안 붙인다).
-        text = random.choice(_WALLET_FULL_LINES)
-    else:
-        text = random.choice(_GRANT_MESSAGES)
-        text += format_coin_notice(result["applied_amount"], result["new_coins"])
-        text = maybe_append_capacity_advice(text, amount, result)
+    text = random.choice(_GRANT_MESSAGES)
+    text += format_coin_notice(result["applied_amount"], result["new_coins"])
     if result["achievement_notice"]:
         text += f"\n{result['achievement_notice']}"
     return text

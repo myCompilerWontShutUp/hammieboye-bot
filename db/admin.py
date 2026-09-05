@@ -48,15 +48,10 @@ async def set_affection(user_id: int, value: int) -> int:
 
 
 async def set_coins(user_id: int, value: int) -> int:
-    """co set/co reset 전용: 0~max_coins로 클램프해 절대값으로 SET (lifetime_coins_earned는
-    안 건드림 — set_affection이 daily_stats를 안 건드리는 것과 동일한 원칙)."""
+    """co set/co reset 전용: 0 밑으로만 클램프(2026-09-05부로 보유 상한 폐지, 위쪽
+    클램프 없음)해 절대값으로 SET (lifetime_coins_earned는 안 건드림 — set_affection이
+    daily_stats를 안 건드리는 것과 동일한 원칙)."""
     return await rpc("set_coins", {"p_user_id": user_id, "p_amount": value})
-
-
-async def set_max_coins(user_id: int, value: int) -> int:
-    """vol set/vol reset 전용: 0 밑으로만 클램프(상한 없음)해 최대 동전 보유량을
-    절대값으로 SET."""
-    return await rpc("set_max_coins", {"p_user_id": user_id, "p_amount": value})
 
 
 async def log_command(command: str, args: str, before: str | None, after: str | None) -> None:

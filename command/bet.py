@@ -5,16 +5,16 @@ from datetime import datetime
 import discord
 
 import achievements
+from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
+    GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
     MAX_BET,
     TIMEOUT_SECONDS,
-    VENDING_EMBED_COLOR,
     BetAmountModal,
     ReplayView,
     RulesView,
     format_coin_notice,
-    maybe_append_capacity_advice,
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
@@ -253,7 +253,11 @@ async def _maybe_award_win_achievement(user_id: int) -> str:
     if not result["earned"]:
         return ""
     notice = f"\n🏆 업적 달성: {achievements.format_name(achievements.hammie_ez_noob)}!!"
-    notice += format_affection_notice(result["applied_amount"], result["new_affection"])
+    # 업적 보너스는 항상 배율 미적용(apply_day_multiplier=False)으로 지급되므로,
+    # 우연히 그날 배율로 나누어떨어져도 "N x 배율"로 잘못 분해해 보여주면 안 된다.
+    notice += format_affection_notice(
+        result["applied_amount"], result["new_affection"], multiplier_eligible=False
+    )
     return notice
 
 
@@ -315,7 +319,6 @@ class _OddEvenView(discord.ui.View):
             result = await add_coins(self.user_id, self.bet * 2, method="bet_odd_even_win")
             text = random.choice(_ODD_EVEN_WIN_LINES).format(actual=actual)
             text += format_coin_notice(result["applied_amount"], result["new_coins"])
-            text = maybe_append_capacity_advice(text, self.bet * 2, result)
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             text += await _maybe_award_win_achievement(self.user_id)
@@ -369,7 +372,6 @@ class _RPSView(discord.ui.View):
             result = await add_coins(self.user_id, self.bet * 2, method="bet_rps_win")
             text = random.choice(_RPS_WIN_LINES).format(actual=actual_bold)
             text += format_coin_notice(result["applied_amount"], result["new_coins"])
-            text = maybe_append_capacity_advice(text, self.bet * 2, result)
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             text += await _maybe_award_win_achievement(self.user_id)
@@ -395,24 +397,16 @@ class _RPSView(discord.ui.View):
         await self._resolve(interaction, "보")
 
 
-class _GameSelectView(discord.ui.View):
+class _GameSelectView(EphemeralAutoDeleteView):
     """/내기 실행 직후 뜨는 ephemeral 프롬프트 — 본인에게만 보이므로 "다른 사람이
     눌렀을 때" 처리는 애초에 불필요하다(디스코드가 다른 사람에게 아예 안 보여준다)."""
 
     def __init__(self, user_id: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
-        self.interaction: discord.Interaction | None = None
-
-    async def on_timeout(self) -> None:
-        if self.interaction is None:
-            return
-        try:
-            await self.interaction.delete_original_response()
-        except discord.HTTPException:
-            logging.exception("Failed to delete game-select prompt on timeout")
 
     async def _select(self, interaction: discord.Interaction, game_kind: str) -> None:
+        self.bump()
         user = await get_user(self.user_id)
         balance = user["coins"] if user is not None else 0
 
@@ -442,7 +436,7 @@ async def handle_bet(interaction: discord.Interaction) -> None:
     user = await get_user(interaction.user.id)
     balance = user["coins"] if user is not None else 0
 
-    embed = discord.Embed(title="🎲 내기", color=VENDING_EMBED_COLOR)
+    embed = discord.Embed(title="🎲 내기", color=GAMBLING_EMBED_COLOR)
     embed.description = (
         f"현재 보유 동전 : {balance}개\n"
         "햄미와 내기를 하여 승리 시 배팅 금액의 2배, 패배 시 모두 잃습니다.\n"
@@ -460,7 +454,11 @@ async def handle_bet(interaction: discord.Interaction) -> None:
 async def handle_rules() -> tuple[str, discord.Embed, discord.ui.View]:
     """/내기-규칙 진입점 — ephemeral. 개요 임베드 + 게임별 버튼(RulesView)을 보여주고,
     버튼을 누르면 그 게임의 상세 규칙으로 임베드만 바꿔치기한다."""
-    embed = discord.Embed(title="🎲 내기 규칙", description=_RULES_OVERVIEW_TEXT, color=VENDING_EMBED_COLOR)
+    embed = discord.Embed(title="🎲 내기 규칙", description=_RULES_OVERVIEW_TEXT, color=GAMBLING_EMBED_COLOR)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    view = RulesView("🎲 내기 규칙", {"홀짝": _ODD_EVEN_RULE_TEXT, "가위바위보": _RPS_RULE_TEXT})
+    view = RulesView(
+        "🎲 내기 규칙",
+        {"홀짝": _ODD_EVEN_RULE_TEXT, "가위바위보": _RPS_RULE_TEXT},
+        color=GAMBLING_EMBED_COLOR,
+    )
     return random.choice(_RULES_INTRO_LINES), embed, view

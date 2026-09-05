@@ -5,6 +5,7 @@ from typing import Awaitable, Callable
 
 import discord
 
+from core.base import EphemeralAutoDeleteView
 from core.korean import josa
 from db.users import get_user
 from events.scheduler import KST, format_footer_time
@@ -12,6 +13,11 @@ from events.scheduler import KST, format_footer_time
 # /자판기·/자판기-리스트 전용 색(하늘색) — command/info.py 등의 EMBED_COLOR(연주황색)와
 # 구분해 자판기만의 색으로 쓴다.
 VENDING_EMBED_COLOR = 0x87CEEB
+
+# /내기·/내기-규칙·/도박·/도박-규칙(및 그 안의 모든 게임 뷰) 전용 색(밝은 노란색,
+# 2026-09-06 舊 command/slot.py::_SLOT_EMBED_COLOR를 여기로 옮기고 이름을 바꿔
+# 도박 도메인 전체가 공유하게 함 — 자판기와는 다른 도메인이라 색을 분리한다).
+GAMBLING_EMBED_COLOR = 0xFFEB3B
 
 # /내기·/도박 버튼 게임 공통 타임아웃(초).
 TIMEOUT_SECONDS = 60
@@ -166,62 +172,30 @@ class _RuleButton(discord.ui.Button):
     """RulesView 안의 게임별 규칙 버튼 — 누르면 그 게임의 상세 규칙으로 임베드만
     바꿔치기한다(다른 버튼도 그대로 남아 있어 자유롭게 오갈 수 있다)."""
 
-    def __init__(self, label: str, text: str, embed_title: str) -> None:
+    def __init__(self, label: str, text: str, embed_title: str, color: int) -> None:
         super().__init__(label=label, style=discord.ButtonStyle.primary)
         self._text = text
         self._embed_title = embed_title
+        self._color = color
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        embed = discord.Embed(title=self._embed_title, description=self._text, color=VENDING_EMBED_COLOR)
+        self.view.bump()
+        embed = discord.Embed(title=self._embed_title, description=self._text, color=self._color)
         embed.set_footer(text=format_footer_time(datetime.now(KST)))
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 
-class RulesView(discord.ui.View):
+class RulesView(EphemeralAutoDeleteView):
     """/내기-규칙·/도박-규칙이 공유하는 게임별 규칙 버튼 뷰 — ephemeral 전용(본인만
     봄)이라 wrong-user 체크가 불필요하다. game_rules는 {버튼 라벨: 규칙 본문} — 게임이
     하나뿐이어도(예: /도박-규칙의 슬롯머신) 나중에 늘어날 걸 감안해 버튼 형태를
-    유지한다."""
+    유지한다. color는 버튼을 눌러 바뀌는 상세 규칙 임베드에도 그대로 쓰인다(도메인
+    전용 색과 통일 — 개요 임베드와 다른 색으로 바뀌면 안 되므로)."""
 
-    def __init__(self, embed_title: str, game_rules: dict[str, str]) -> None:
+    def __init__(self, embed_title: str, game_rules: dict[str, str], *, color: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
-        self.interaction: discord.Interaction | None = None
         for label, text in game_rules.items():
-            self.add_item(_RuleButton(label, text, embed_title))
-
-    async def on_timeout(self) -> None:
-        if self.interaction is None:
-            return
-        try:
-            await self.interaction.edit_original_response(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear rules view on timeout")
-
-
-# 동전 지급이 max_coins에 걸려 요청량보다 적게 들어갔을 때(/동전·/내기·/도박 공통)
-# 답변 끝에 덧붙이는 안내 — 용량을 늘리라고 권하되 강제하지는 않는다.
-_CAPACITY_ADVICE_LINES = (
-    "동전 지갑이 꽉 찼나봐!! 자판기에서 동전 지갑이라도 사 와!! _(권유)_",
-    "이런, 동전이 넘쳐버려써!! 용량 좀 늘리고 오는 게 어때?? _(안타까움)_",
-    "동전 자리가 모자라!! 자판기에서 지갑 하나 사면 더 담을 수 있어!! _(추천)_",
-    "헉, 동전이 흘러넘쳐써!! 저금통 하나 장만하는 거 어때?? _(권유)_",
-    "지갑이 작아서 다 못 담았어!! 용량 업그레이드 한번 생각해봐!! _(아쉬움)_",
-    "동전이 자꾸 넘쳐써... 자판기 들러서 용량 좀 늘려조!! _(칭얼)_",
-    "이만큼은 다 못 넣었어!! 큰 지갑이 있으면 좋을 텐데!! _(안타까움)_",
-    "동전 자리가 부족해!! 돼지 저금통 어때?? _(추천)_",
-    "다 담기엔 지갑이 좁아써!! 자판기에서 업그레이드 해봐!! _(권유)_",
-    "아깝게 흘려버려써!! 용량 늘리면 다음엔 다 받을 수 있어!! _(속상)_",
-    "지갑 용량 좀 늘리고 오면 더 챙길 수 있을 텐데!! _(아쉬움)_",
-    "동전이 넘쳐서 못 받은 게 있어!! 자판기 한번 들러봐!! _(권유)_",
-    "이 정도면 지갑 업그레이드 할 때 된 것 같아!! _(넌지시)_",
-    "동전 자리 모자란 거 봐써!! 저금통 하나 사는 거 추천이야!! _(추천)_",
-    "다 못 받아서 아쉬워!! 용량 늘리면 다음엔 문제없을 거야!! _(속상)_",
-    "지갑이 작아서 넘쳐버려써!! 자판기에서 큰 걸로 바꿔봐!! _(권유)_",
-    "동전 자리 부족한 거 눈치챘어?? 자판기 좀 들러조!! _(넌지시)_",
-    "이만큼 흘려버리다니!! 용량부터 늘리고 오는 게 좋겠어!! _(안타까움)_",
-    "지갑 용량이 딱 부족했어!! 자판기에서 채워볼래?? _(권유)_",
-    "다음엔 다 받고 싶으면 지갑부터 키우고 오자!! _(제안)_",
-)
+            self.add_item(_RuleButton(label, text, embed_title, color))
 
 
 # 잔액 부족 안내 — /자판기·/내기·/도박이 전부 공유(다들 spend_coins 실패 시 이
@@ -235,60 +209,13 @@ INSUFFICIENT_FUNDS_LINES = (
 )
 
 
-def maybe_append_capacity_advice(text: str, requested: int, result: dict) -> str:
-    """add_coins 결과가 max_coins에 걸려 요청량보다 적게 지급됐으면 안내 문구를
-    덧붙인다 — /동전·/내기·/도박이 전부 이 헬퍼 하나를 공유한다."""
-    if result["applied_amount"] < requested:
-        return f"{text}\n{random.choice(_CAPACITY_ADVICE_LINES)}"
-    return text
-
-
-def _display_width(text: str) -> int:
-    """코드블록(모노스페이스) 기준 표시 폭 — 한글/전각 문자는 Discord 코드블록 폰트에서
-    영문/숫자의 2배 폭으로 렌더링되므로 2, 그 외는 1로 계산해 표 정렬에 쓴다."""
-    width = 0
-    for ch in text:
-        code = ord(ch)
-        if (
-            0x1100 <= code <= 0x115F  # 한글 자모
-            or 0x2E80 <= code <= 0xA4CF  # CJK 부수~
-            or 0xAC00 <= code <= 0xD7A3  # 한글 음절
-            or 0xF900 <= code <= 0xFAFF  # CJK 호환 한자
-            or 0xFF00 <= code <= 0xFF60  # 전각 형태
-            or 0xFFE0 <= code <= 0xFFE6
-        ):
-            width += 2
-        else:
-            width += 1
-    return width
-
-
-def format_table(
-    header: tuple[str, ...], rows: list[tuple[str, ...]], *, right_align: tuple[int, ...] = ()
-) -> str:
-    """헤더+행을 코드블록 표로 렌더링 — `/자판기-리스트`처럼 여러 줄을 표 형태로 보여줘야
-    하는 곳에서 공유한다. `_display_width`로 한글 폭을 보정해 열을 맞추고,
-    `right_align`(열 인덱스)에 지정된 열만 오른쪽 정렬(가격처럼 자릿수가 다른 숫자용)."""
-    all_rows = [header, *rows]
-    widths = [max(_display_width(row[i]) for row in all_rows) for i in range(len(header))]
-
-    def pad(cell: str, width: int, align_right: bool) -> str:
-        filler = " " * max(0, width - _display_width(cell))
-        return filler + cell if align_right else cell + filler
-
-    def render(row: tuple[str, ...]) -> str:
-        return "  ".join(pad(cell, widths[i], i in right_align) for i, cell in enumerate(row))
-
-    lines = [render(header), "-" * (sum(widths) + 2 * (len(widths) - 1))]
-    lines.extend(render(row) for row in rows)
-    return "```\n" + "\n".join(lines) + "\n```"
-
-
 def format_coin_notice(delta: int, new_coins: int) -> str:
     """동전 변화량 알림 — format_affection_notice(db/affection.py)와 동일한 원칙(델타+
-    현재 잔액)을 동전에 적용한 버전. /동전·/내기·/도박이 공유. delta==0이면 빈
-    문자열(호출부가 그냥 이어 붙이면 되게)."""
+    변화 전후 값)을 동전에 적용한 버전. /동전·/내기·/도박이 공유. delta==0이면 빈
+    문자열(호출부가 그냥 이어 붙이면 되게). 2026-09-06부터 "(현재 N)" 대신
+    "(전 → 후)"로 보여준다."""
     if delta == 0:
         return ""
     sign = "+" if delta > 0 else ""
-    return f"\n🪙 동전 {sign}{delta} (현재 {new_coins})"
+    before = new_coins - delta
+    return f"\n🪙 동전 {sign}{delta} ({before} → {new_coins})"

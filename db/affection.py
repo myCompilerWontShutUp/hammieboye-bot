@@ -80,20 +80,32 @@ async def add_affection_uncapped(
     }
 
 
-def format_affection_notice(delta: int, current: int) -> str:
+def format_affection_notice(delta: int, current: int, *, multiplier_eligible: bool = True) -> str:
     """호감도 변화를 하트 이모지와 함께 알려주는 문구. delta==0이면 호출하지 않는다.
 
     양수 획득이고 오늘이 배율이 붙는 날(주말/기념일/생일)이면서 delta가 그 배율로 딱
     나누어떨어지면 "호감도 10 x 2배 (주말 이벤트)"처럼 배율을 눈에 띄게 보여주고 하트도
-    더 특별한 색(🩷)으로 바꾼다. 한 턴에 배율이 안 붙는 다른 획득(예: 업적 보너스)이
-    같이 섞여 delta가 배율로 안 나누어떨어지면, 틀린 분해를 보여주느니 평소 형식(💕)으로
-    그냥 총합만 보여준다."""
+    더 특별한 색(🩷)으로 바꾼다.
+
+    multiplier_eligible=False면 이 분해를 아예 시도하지 않는다 — delta가 나누어
+    떨어지는지는 순전히 우연일 뿐, 실제로 배율이 적용됐는지는 알려주지 않기 때문이다.
+    업적 달성 보너스(§15)는 항상 apply_day_multiplier=False로 지급되는데, 예를 들어
+    전설 보너스 +10이 주말(배율 2배)과 겹치면 10%2==0이라 아무 정보 없이 "5 x 2"처럼
+    잘못 분해해 보여주는 문제가 있었다 — 배율이 실제로 적용됐는지("하루 최대 획득
+    호감도"에 포함되는 경로를 탔는지)를 호출부가 명시적으로 알려주게 해서 고쳤다.
+    호출부가 여러 성분(예: 기본 지급 + 업적 보너스)을 하나의 delta로 합산했다면,
+    그중 하나라도 배율 미적용 성분이 섞이는 순간 반드시 False를 넘겨야 한다.
+
+    2026-09-06부터 "(현재 N)"이 아니라 "(전 → 후)"로 보여준다 — delta와 current(변경
+    후 값)만 있으면 before = current - delta로 계산 가능해서 호출부 변경은 불필요."""
+    before = current - delta
     if delta > 0:
-        today = datetime.now(timezone.utc).astimezone(KST).date()
-        multiplier = get_multiplier(today)
-        if multiplier > 1 and delta % multiplier == 0:
-            base = delta // multiplier
-            label = get_event_label(today)
-            return f"\n🩷 호감도 {base} x {multiplier}배 ({label}) (현재 {current})"
-        return f"\n💕 호감도 +{delta} (현재 {current})"
-    return f"\n💔 호감도 {delta} (현재 {current})"
+        if multiplier_eligible:
+            today = datetime.now(timezone.utc).astimezone(KST).date()
+            multiplier = get_multiplier(today)
+            if multiplier > 1 and delta % multiplier == 0:
+                base = delta // multiplier
+                label = get_event_label(today)
+                return f"\n🩷 호감도 {base} x {multiplier}배 ({label}) ({before} → {current})"
+        return f"\n💕 호감도 +{delta} ({before} → {current})"
+    return f"\n💔 호감도 {delta} ({before} → {current})"

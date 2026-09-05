@@ -67,7 +67,8 @@ def format_name(module) -> str:
     return module.NAME
 
 
-def format_hidden_legendary(module) -> str:
-    """미획득 전설 업적을 이름 대신 ???+힌트로 표시한다("발견의 재미" 원칙, /업적-리스트
-    전용 — module.HINT가 필수인 전설 업적에서만 호출할 것)."""
-    return f"{_LEGENDARY_PREFIX}??? ({module.HINT})"
+def format_hidden_legendary_name(module) -> str:
+    """미획득 전설 업적의 "이름 자리"를 실명 대신 ???로 가린다("발견의 재미" 원칙,
+    /업적-리스트 전용). 힌트(module.HINT)는 이름과 분리된 "설명 자리"에 별도로
+    보여준다(2026-09-06, 카드형 레이아웃으로 바뀌며 한 줄 결합 버전은 폐지)."""
+    return f"{_LEGENDARY_PREFIX}???"

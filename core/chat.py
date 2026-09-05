@@ -134,6 +134,16 @@ _BITE_THRESHOLD = -20
 _IGNORE_RESPONSE = "(무시)"
 _BITE_RESPONSE = "(콱 깨묾)"
 
+# 헬프 미 이벤트 진행 중 자연어 생성에 끼워 넣는 컨텍스트(2026-09-06 신규) — 사용자가
+# 원래 요청을 재진술하지 않고 짧게 반응해도("햄미야 내가 해줄게") 무슨 요청이었는지
+# 몰라 엉뚱하게 되묻으면서 보상만 지급되는 문제를 고치기 위함(handle_potential_response의
+# active_prompt_text 참고).
+_EVENT_CONTEXT_NOTE_TEMPLATE = (
+    '지금 헬프 미 이벤트가 진행 중이야 — 방금 네가 이렇게 말했었어: "{prompt}". '
+    "사용자의 이번 메시지는 이 요청에 대한 반응일 수 있으니(예: 도와주겠다는 짧은 대답), "
+    "사용자가 원래 요청을 다시 설명하지 않아도 무슨 얘기인지 자연스럽게 알아듣고 반응해."
+)
+
 _HAPPY_EMOTION = "행복함"
 _HAPPY_METHOD = "happy_emotion"
 
@@ -186,12 +196,15 @@ async def handle_natural_language(
     )
 
     total_delta = 0
+    multiplier_eligible = True
     current_affection = affection
 
-    def _record(result: dict) -> None:
-        nonlocal total_delta, current_affection
+    def _record(result: dict, *, eligible: bool = True) -> None:
+        nonlocal total_delta, current_affection, multiplier_eligible
         total_delta += result["applied_amount"]
         current_affection = result["new_affection"]
+        if not eligible:
+            multiplier_eligible = False
 
     nl_cap = stats["nl_cap"]
     over_cap = stats["nl_count"] >= nl_cap
@@ -214,48 +227,81 @@ async def handle_natural_language(
     )
 
     if will_generate:
-        context_turns, (event_delta, event_achievement, was_event_response, event_override) = await asyncio.gather(
+        context_turns, (
+            event_delta,
+            event_multiplier_eligible,
+            event_achievement,
+            was_event_response,
+            event_override,
+            active_prompt_text,
+        ) = await asyncio.gather(
             get_recent_turns(user_id, since=now - _HISTORY_WINDOW, limit=_CONTEXT_TURN_LIMIT),
             help_me_event.handle_potential_response(user_id, guild_id, text),
         )
     else:
         context_turns = None
         # 헬프 미 이벤트 응답 판정은 호감도가 음수여도 예외적으로 항상 시도한다.
-        event_delta, event_achievement, was_event_response, event_override = await help_me_event.handle_potential_response(
-            user_id, guild_id, text
-        )
+        (
+            event_delta,
+            event_multiplier_eligible,
+            event_achievement,
+            was_event_response,
+            event_override,
+            active_prompt_text,
+        ) = await help_me_event.handle_potential_response(user_id, guild_id, text)
 
     logged_row = await log(user_id, guild_id, text)
 
     if event_delta:
         total_delta += event_delta
         current_affection += event_delta
+        if not event_multiplier_eligible:
+            multiplier_eligible = False
 
     # 헬프 미 이벤트 업적 알림은 이후 어떤 분기로 빠지든 최종 응답에 붙어야 한다.
     achievement_notices = [event_achievement] if event_achievement else []
 
     if affection < 0:
         base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
-        return _finalize(base, total_delta, current_affection, achievement_notices)
+        return _finalize(
+            base, total_delta, current_affection, achievement_notices, multiplier_eligible=multiplier_eligible
+        )
 
     if over_cap:
         return await _handle_over_cap(
-            user_id, stats, total_delta, current_affection, achievement_notices, was_event_response
+            user_id,
+            stats,
+            total_delta,
+            current_affection,
+            achievement_notices,
+            was_event_response,
+            multiplier_eligible=multiplier_eligible,
         )
 
     if is_repeat_penalty:
         return _finalize(
-            random.choice(_REPEAT_ANGRY_PHRASES), total_delta, current_affection, achievement_notices
+            random.choice(_REPEAT_ANGRY_PHRASES),
+            total_delta,
+            current_affection,
+            achievement_notices,
+            multiplier_eligible=multiplier_eligible,
         )
     if is_repeat_warning:
         return _finalize(
-            random.choice(_REPEAT_WARNING_PHRASES), total_delta, current_affection, achievement_notices
+            random.choice(_REPEAT_WARNING_PHRASES),
+            total_delta,
+            current_affection,
+            achievement_notices,
+            multiplier_eligible=multiplier_eligible,
         )
 
     # 헬프 미 이벤트가 활성 상태인데 관련 없는 잡담이면(-1은 이미 total_delta에 반영됨) 정상
     # 생성을 하지 않고 이 고정 문구로 대체한다(API 미호출, nl_count 미증가).
     if event_override is not None:
-        return _finalize(event_override, total_delta, current_affection, achievement_notices)
+        return _finalize(
+            event_override, total_delta, current_affection, achievement_notices,
+            multiplier_eligible=multiplier_eligible,
+        )
 
     today = datetime.now(KST).date()
 
@@ -265,18 +311,24 @@ async def handle_natural_language(
         keyword in normalize(text) for keyword in _BIRTHDAY_KEYWORDS
     ):
         return _finalize(
-            random.choice(_BIRTHDAY_FALSE_ALARM_LINES), total_delta, current_affection, achievement_notices
+            random.choice(_BIRTHDAY_FALSE_ALARM_LINES),
+            total_delta,
+            current_affection,
+            achievement_notices,
+            multiplier_eligible=multiplier_eligible,
         )
 
     # 여기부터 실제 OpenAI API 호출(분류+생성) 구간. 생일/아침 인사 감지는 키워드 매칭이라
     # API 호출과 무관하게 분류와 병렬로 처리한다.
-    classification, (greeting_delta, greeting_achievement) = await asyncio.gather(
+    classification, (greeting_delta, greeting_multiplier_eligible, greeting_achievement) = await asyncio.gather(
         intent.classify(text),
         _apply_greeting_bonuses(user_id, text, stats, today),
     )
     total_delta += greeting_delta
     if greeting_delta:
         current_affection += greeting_delta
+    if not greeting_multiplier_eligible:
+        multiplier_eligible = False
     if greeting_achievement:
         achievement_notices.append(greeting_achievement)
 
@@ -298,17 +350,24 @@ async def handle_natural_language(
     if "admin_commands" in classification.categories:
         if not admin_console.is_authorized(user_id):
             return _finalize(
-                "너한테는 알려줄 수 없어!!", total_delta, current_affection, achievement_notices
+                "너한테는 알려줄 수 없어!!", total_delta, current_affection, achievement_notices,
+                multiplier_eligible=multiplier_eligible,
             )
         admin_response = await get_admin_command_response(text, admin_commands_doc.get_text())
-        return _finalize(admin_response, total_delta, current_affection, achievement_notices)
+        return _finalize(
+            admin_response, total_delta, current_affection, achievement_notices,
+            multiplier_eligible=multiplier_eligible,
+        )
 
     context_note = documents.build_context_note(classification.categories)
+    if active_prompt_text is not None:
+        event_context_note = _EVENT_CONTEXT_NOTE_TEMPLATE.format(prompt=active_prompt_text)
+        context_note = f"{event_context_note}\n\n{context_note}" if context_note else event_context_note
     response_text = await get_response(text, history=context_turns, context_note=context_note)
 
     first_chat_result = await award_achievement(user_id, achievements.first_chat.ID)
     if first_chat_result["earned"]:
-        _record(first_chat_result)
+        _record(first_chat_result, eligible=False)
         achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.first_chat)}!!")
 
     # nl_count는 실제 생성까지 도달한 메시지만 증가시킨다. 상한에 정확히 도달하는
@@ -320,7 +379,7 @@ async def handle_natural_language(
     if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD:
         speech_bubble_result = await award_achievement(user_id, achievements.speech_bubble.ID)
         if speech_bubble_result["earned"]:
-            _record(speech_bubble_result)
+            _record(speech_bubble_result, eligible=False)
             achievement_notices.append(
                 f"🏆 업적 달성: {achievements.format_name(achievements.speech_bubble)}!!"
             )
@@ -330,7 +389,10 @@ async def handle_natural_language(
         log(user_id, guild_id, response_text, role="assistant"),
     )
 
-    return _finalize(response_text, total_delta, current_affection, achievement_notices)
+    return _finalize(
+        response_text, total_delta, current_affection, achievement_notices,
+        multiplier_eligible=multiplier_eligible,
+    )
 
 
 async def _handle_over_cap(
@@ -340,12 +402,15 @@ async def _handle_over_cap(
     current_affection: int,
     achievement_notices: list[str],
     was_event_response: bool = False,
+    *,
+    multiplier_eligible: bool = True,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     # 이 메시지가 헬프 미 이벤트 반응이었다면(긍/부정 무관) 남용 카운터를 건드리지 않는다 —
     # 안 그러면 이벤트 자체의 호감도 변화 위에 남용 페널티까지 겹쳐 붙는다.
     if was_event_response:
         return _finalize(
-            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices
+            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices,
+            multiplier_eligible=multiplier_eligible,
         )
 
     attempts = stats["over_cap_attempts"] + 1
@@ -353,7 +418,8 @@ async def _handle_over_cap(
 
     if attempts <= _OVER_CAP_FREE_ATTEMPTS:
         return _finalize(
-            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices
+            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices,
+            multiplier_eligible=multiplier_eligible,
         )
     if attempts == _OVER_CAP_WARNING_ATTEMPT:
         return _finalize(
@@ -361,12 +427,16 @@ async def _handle_over_cap(
             total_delta,
             current_affection,
             achievement_notices,
+            multiplier_eligible=multiplier_eligible,
         )
 
     result = await add_affection(user_id, -1)
     total_delta += result["applied_amount"]
     current_affection = result["new_affection"]
-    return _finalize(_OVER_CAP_IGNORE_RESPONSE, total_delta, current_affection, achievement_notices)
+    return _finalize(
+        _OVER_CAP_IGNORE_RESPONSE, total_delta, current_affection, achievement_notices,
+        multiplier_eligible=multiplier_eligible,
+    )
 
 
 def _finalize(
@@ -374,13 +444,15 @@ def _finalize(
     delta: int,
     current: int,
     achievement_notices: list[str] | None = None,
+    *,
+    multiplier_eligible: bool = True,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     # embed 응답엔 이미 호감도가 필드로 보이므로 알림을 따로 안 붙인다.
     if isinstance(response, (discord.Embed, tuple)):
         return response
     text = response
     if delta != 0:
-        text += format_affection_notice(delta, current)
+        text += format_affection_notice(delta, current, multiplier_eligible=multiplier_eligible)
     for notice in achievement_notices or ():
         text += f"\n{notice}"
     return text
@@ -388,11 +460,17 @@ def _finalize(
 
 async def _apply_greeting_bonuses(
     user_id: int, text: str, stats: dict, today: date
-) -> tuple[int, str | None]:
+) -> tuple[int, bool, str | None]:
     """생일 축하(3-2)/아침 인사(3-6) 자연어 보상. 둘 다 하루 1회, 반복 시엔 추가 지급 없이
-    정상 생성 흐름만 그대로 진행한다(생일 쪽은 "이미 줬어" 같은 메타 발언도 없음)."""
+    정상 생성 흐름만 그대로 진행한다(생일 쪽은 "이미 줬어" 같은 메타 발언도 없음).
+
+    반환값 두 번째 요소(multiplier_eligible)는 delta가 배율 분해 대상인지 — 아침 인사
+    성공 시 함께 지급되는 "일찍 일어난 새가 먹이를 옴뇸뇸" 업적 보너스는
+    apply_day_multiplier=False라서 섞이는 순간 False가 된다(format_affection_notice의
+    잘못된 "N x 배율" 분해 방지)."""
     updates = {}
     delta = 0
+    multiplier_eligible = True
     achievement_notice = None
     normalized = normalize(text)
 
@@ -416,12 +494,13 @@ async def _apply_greeting_bonuses(
         achievement_result = await award_achievement(user_id, achievements.early_bird.ID)
         if achievement_result["earned"]:
             delta += achievement_result["applied_amount"]
+            multiplier_eligible = False
             achievement_notice = f"🏆 업적 달성: {achievements.format_name(achievements.early_bird)}!!"
 
     if updates:
         await update_daily_stats(user_id, updates)
 
-    return delta, achievement_notice
+    return delta, multiplier_eligible, achievement_notice
 
 
 async def _apply_message_effects(

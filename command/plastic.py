@@ -230,6 +230,7 @@ async def handle(user_id: int) -> str:
 
     stats = await ensure_daily_stats(user_id)
     total_delta = 0
+    multiplier_eligible = True
     current_affection = user["affection"]
 
     if random.random() >= _SUCCESS_RATE:
@@ -274,6 +275,7 @@ async def handle(user_id: int) -> str:
     if achievement_result["earned"]:
         total_delta += achievement_result["applied_amount"]
         current_affection = achievement_result["new_affection"]
+        multiplier_eligible = False
         achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance.NAME}!!")
 
     # 하루 최대 획득량은 4(성공 +1, 연속 3회 보너스 +3) — 4회차 이상은 보너스 미지급.
@@ -294,6 +296,7 @@ async def handle(user_id: int) -> str:
         if god_result["earned"]:
             total_delta += god_result["applied_amount"]
             current_affection = god_result["new_affection"]
+            multiplier_eligible = False
             achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
 
     await update_daily_stats(user_id, update_fields)
@@ -302,7 +305,7 @@ async def handle(user_id: int) -> str:
         message += f"\n{_ALREADY_CLAIMED_TODAY_NOTE}"
     for notice in achievement_notices:
         message += f"\n{notice}"
-    return _with_notice(message, total_delta, current_affection)
+    return _with_notice(message, total_delta, current_affection, multiplier_eligible=multiplier_eligible)
 
 
 async def _register_cooldown_abuse(user_id: int, remaining: timedelta) -> tuple[int, int, str]:
@@ -327,7 +330,7 @@ async def _register_cooldown_abuse(user_id: int, remaining: timedelta) -> tuple[
     return 0, user["affection"], message
 
 
-def _with_notice(message: str, delta: int, current: int) -> str:
+def _with_notice(message: str, delta: int, current: int, *, multiplier_eligible: bool = True) -> str:
     if delta == 0:
         return message
-    return message + format_affection_notice(delta, current)
+    return message + format_affection_notice(delta, current, multiplier_eligible=multiplier_eligible)

@@ -5,15 +5,15 @@ from datetime import datetime
 import discord
 
 import achievements
+from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
+    GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
     TIMEOUT_SECONDS,
-    VENDING_EMBED_COLOR,
     BetAmountModal,
     ReplayView,
     RulesView,
     format_coin_notice,
-    maybe_append_capacity_advice,
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
@@ -211,8 +211,8 @@ _ROW_NUMBER_EMOJI = ("1️⃣", "2️⃣", "3️⃣")
 # 버튼 label에 emoji를 같이 안 섞고 discord.ui.button의 전용 emoji 슬롯을 쓴다 — 그래야
 # 숫자가 아이콘 크기로 크게 나온다(label 문자열 안에 넣으면 다른 글자와 똑같이 작게
 # 렌더링됨). "돌리기"/"완료됨"은 둘 다 3글자라 눌러도 버튼 너비가 거의 안 바뀐다.
-_SPIN_LABEL = "돌리기"
-_SPIN_DONE_LABEL = "완료됨"
+_SPIN_LABEL = "돌림"
+_SPIN_DONE_LABEL = "완료"
 _UNSPUN_PLACEHOLDER = "❔"
 
 _SPIN_PROMPT_LINES = (
@@ -239,20 +239,18 @@ _SPIN_PROMPT_LINES = (
 )
 
 
-_SLOT_EMBED_COLOR = 0xFFEB3B  # 밝은 노란색 — 자판기류(VENDING_EMBED_COLOR, 하늘색)와 구분되는 슬롯머신 전용 색.
-
-
 def _render_grid(grid: list[str | None]) -> str:
     # 마크다운 헤딩(#/##/###)은 title이 아니라 description 안에서만 실제로 크기가
     # 커진다 — 그래서 그리드를 title이 아니라 description에 두고, 줄마다 "## "를
-    # 붙여 이모지가 일반 텍스트보다 크게 보이게 한다.
+    # 붙여 이모지가 일반 텍스트보다 크게 보이게 한다. 줄 번호와 그림 사이 구분선은
+    # 얇은 "|"보다 눈에 잘 띄는 굵은 세로선("┃")으로 확실하게 나눈다.
     rows = (" ".join(cell or _UNSPUN_PLACEHOLDER for cell in grid[i : i + 3]) for i in range(0, 9, 3))
-    return "\n".join(f"## {num} | {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
+    return "\n".join(f"## {num} ┃ {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
 
 
 def _build_embed(grid: list[str | None]) -> discord.Embed:
     embed = discord.Embed(
-        title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=_SLOT_EMBED_COLOR
+        title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=GAMBLING_EMBED_COLOR
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
@@ -285,7 +283,6 @@ async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord
     result = await add_coins(user_id, bet * multiplier, method="slot_win")
     text = random.choice(_WIN_LINES).format(multiplier=multiplier)
     text += format_coin_notice(result["applied_amount"], result["new_coins"])
-    text = maybe_append_capacity_advice(text, bet * multiplier, result)
 
     total_affection_delta = 0
     current_affection: int | None = None
@@ -312,7 +309,12 @@ async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord
     for notice in achievement_notices:
         text += f"\n{notice}"
     if total_affection_delta != 0:
-        text += format_affection_notice(total_affection_delta, current_affection)
+        # total_affection_delta는 항상 업적 보너스(apply_day_multiplier=False)로만
+        # 구성돼 있어 배율 적용 대상이 아니다 — "N x 배율"로 잘못 분해되지 않도록
+        # 명시적으로 알린다.
+        text += format_affection_notice(
+            total_affection_delta, current_affection, multiplier_eligible=False
+        )
     return text, embed
 
 
@@ -416,7 +418,7 @@ async def _start_round(interaction: discord.Interaction, user_id: int, bet: int,
     view.message = await interaction.original_response()
 
 
-class _GambleSelectView(discord.ui.View):
+class _GambleSelectView(EphemeralAutoDeleteView):
     """/도박 실행 직후 뜨는 ephemeral 프롬프트 — 본인에게만 보이므로 "다른 사람이
     눌렀을 때" 처리는 애초에 불필요하다(디스코드가 다른 사람에게 아예 안 보여준다).
     지금은 슬롯머신 하나뿐이지만, /내기의 _GameSelectView와 동일한 골격이라 게임이
@@ -425,18 +427,10 @@ class _GambleSelectView(discord.ui.View):
     def __init__(self, user_id: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
-        self.interaction: discord.Interaction | None = None
-
-    async def on_timeout(self) -> None:
-        if self.interaction is None:
-            return
-        try:
-            await self.interaction.delete_original_response()
-        except discord.HTTPException:
-            logging.exception("Failed to delete gamble-select prompt on timeout")
 
     @discord.ui.button(label="슬롯머신", style=discord.ButtonStyle.danger)
     async def slot_machine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.bump()
         user = await get_user(self.user_id)
         balance = user["coins"] if user is not None else 0
 
@@ -458,7 +452,7 @@ async def handle_gamble(interaction: discord.Interaction) -> None:
     user = await get_user(interaction.user.id)
     balance = user["coins"] if user is not None else 0
 
-    embed = discord.Embed(title="🎰 도박", color=VENDING_EMBED_COLOR)
+    embed = discord.Embed(title="🎰 도박", color=GAMBLING_EMBED_COLOR)
     embed.description = (
         f"현재 보유 동전 : {balance}개\n"
         "위험한 게임을 진행하여 한 번에 매우 많은 돈을 얻을 수 있지만, "
@@ -477,7 +471,9 @@ async def handle_gamble(interaction: discord.Interaction) -> None:
 async def handle_rules() -> tuple[str, discord.Embed, discord.ui.View]:
     """/도박-규칙 진입점 — ephemeral. 개요 임베드 + 게임별 버튼(RulesView)을 보여주고,
     버튼을 누르면 그 게임의 상세 규칙으로 임베드만 바꿔치기한다."""
-    embed = discord.Embed(title="🎰 도박 규칙", description=_RULES_OVERVIEW_TEXT, color=VENDING_EMBED_COLOR)
+    embed = discord.Embed(title="🎰 도박 규칙", description=_RULES_OVERVIEW_TEXT, color=GAMBLING_EMBED_COLOR)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    view = RulesView("🎰 도박 규칙", {"슬롯머신": _SLOT_MACHINE_RULE_TEXT})
+    view = RulesView(
+        "🎰 도박 규칙", {"슬롯머신": _SLOT_MACHINE_RULE_TEXT}, color=GAMBLING_EMBED_COLOR
+    )
     return random.choice(_RULES_INTRO_LINES), embed, view
