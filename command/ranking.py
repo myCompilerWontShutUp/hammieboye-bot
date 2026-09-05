@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import random
 from datetime import datetime
 
 import discord
 
-from core.base import EMBED_COLOR
+from core.base import EMBED_COLOR, LIST_EMBED_COLOR, reject_if_wrong_invoker
 from core.discord_names import resolve_real_name
 from events.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates, get_top_coin_candidates
@@ -85,7 +86,7 @@ async def build_affection_embed(client: discord.Client) -> tuple[str, discord.Em
     keyed.sort(key=lambda pair: pair[0])
     top = [c for _, c in keyed[:_TOP_N]]
 
-    embed = discord.Embed(title="햄미의 호감도 랭킹", color=EMBED_COLOR)
+    embed = discord.Embed(title="햄미의 호감도 랭킹", color=LIST_EMBED_COLOR)
     if not top:
         embed.description = "아직 등록된 사용자가 없어."
     else:
@@ -103,7 +104,7 @@ async def build_coin_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     candidates = await get_top_coin_candidates()
     top = sorted(candidates, key=_coin_sort_key)[:_TOP_N]
 
-    embed = discord.Embed(title="햄미의 동전 랭킹", color=EMBED_COLOR)
+    embed = discord.Embed(title="햄미의 동전 랭킹", color=LIST_EMBED_COLOR)
     if not top:
         embed.description = "아직 등록된 사용자가 없어."
     else:
@@ -117,3 +118,60 @@ async def build_coin_embed(client: discord.Client) -> tuple[str, discord.Embed]:
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     return random.choice(_COIN_INTRO_LINES), embed
+
+
+# /랭킹 통합(2026-09-06) — 舊 /랭킹-호감도·/랭킹-동전을 자판기-리스트와 동일한
+# "카테고리 버튼" UI로 합쳤다. 기본값은 호감도.
+_CATEGORY_LABELS: dict[str, str] = {"affection": "호감도", "coin": "동전"}
+_CATEGORY_ORDER: tuple[str, ...] = ("affection", "coin")
+_DEFAULT_CATEGORY = "affection"
+_BUILDERS = {"affection": build_affection_embed, "coin": build_coin_embed}
+
+
+class _CategoryButton(discord.ui.Button):
+    def __init__(self, kind: str, *, active: bool) -> None:
+        # 활성=초록(success), 비활성=회색(secondary) — command/vending.py의
+        # _CategoryButton과 동일한 배색 규칙.
+        style = discord.ButtonStyle.success if active else discord.ButtonStyle.secondary
+        super().__init__(label=_CATEGORY_LABELS[kind], style=style)
+        self._kind = kind
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: _RankingView = self.view
+        if not await reject_if_wrong_invoker(interaction, view.user_id):
+            return
+        for child in view.children:
+            if isinstance(child, _CategoryButton):
+                child.style = (
+                    discord.ButtonStyle.success if child is self else discord.ButtonStyle.secondary
+                )
+        # content는 안 건드린다 — 취침 중이라 고정 문구로 대체된 상태였다면(sleep_guard),
+        # 카테고리를 바꾼다고 그 문구가 평소 인트로로 되돌아가면 안 되기 때문
+        # (command/vending.py::_CategoryButton과 동일한 원칙).
+        _, embed = await _BUILDERS[self._kind](interaction.client)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class _RankingView(discord.ui.View):
+    """1분간 상호작용이 없으면 버튼만 지운다(내용은 그대로 둠) — 명령어 실행자
+    (user_id) 외에는 카테고리 버튼을 못 누른다(자판기-리스트와 동일한 원칙)."""
+
+    def __init__(self, user_id: int) -> None:
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.message: discord.Message | None = None
+        for kind in _CATEGORY_ORDER:
+            self.add_item(_CategoryButton(kind, active=(kind == _DEFAULT_CATEGORY)))
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            logging.exception("Failed to clear ranking list buttons on timeout")
+
+
+async def handle(user_id: int, client: discord.Client) -> tuple[str, discord.Embed, discord.ui.View]:
+    text, embed = await _BUILDERS[_DEFAULT_CATEGORY](client)
+    return text, embed, _RankingView(user_id)

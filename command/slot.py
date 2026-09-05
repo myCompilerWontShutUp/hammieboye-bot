@@ -17,6 +17,7 @@ from command.economy_common import (
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
+from events import sleep_guard
 from events.scheduler import KST, format_footer_time
 from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
@@ -448,7 +449,10 @@ class _GambleSelectView(EphemeralAutoDeleteView):
 
 async def handle_gamble(interaction: discord.Interaction) -> None:
     """/도박 진입점 — 이미 ephemeral로 defer된 상태라고 가정하고 edit_original_response로
-    게임 선택 프롬프트(인트로 문구 + 임베드 + 슬롯머신 버튼)를 보여준다."""
+    게임 선택 프롬프트(인트로 문구 + 임베드 + 슬롯머신 버튼)를 보여준다.
+
+    /내기와 달리 취침 시간대에도 완전히 차단하지 않고 그대로 진행된다(2026-09-06) —
+    대신 인트로 문구만 SLEEP_REPLY_GAMBLE로 바뀐다("몰래 하는" 컨셉)."""
     user = await get_user(interaction.user.id)
     balance = user["coins"] if user is not None else 0
 
@@ -462,9 +466,12 @@ async def handle_gamble(interaction: discord.Interaction) -> None:
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     view = _GambleSelectView(interaction.user.id)
-    await interaction.edit_original_response(
-        content=random.choice(_GAMBLE_SELECT_INTRO_LINES), embed=embed, view=view
+    content = sleep_guard.wrap_text_if_asleep(
+        interaction.channel_id,
+        random.choice(_GAMBLE_SELECT_INTRO_LINES),
+        override=sleep_guard.SLEEP_REPLY_GAMBLE,
     )
+    await interaction.edit_original_response(content=content, embed=embed, view=view)
     view.interaction = interaction
 
 

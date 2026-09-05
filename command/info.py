@@ -130,7 +130,12 @@ def _format_other_line(pool: tuple[str, ...], name: str) -> str:
 
 
 def _format_date(iso_str: str) -> str:
-    return datetime.fromisoformat(iso_str).astimezone(KST).strftime("%Y. %m. %d")
+    """"처음 만난 날" 전용 — 날짜 뒤에 (N일째)를 덧붙인다. 만난 날 당일을 1일째로 센다
+    (예: 오늘 가입했으면 "1일째" — events/greeting.py의 "태어난 지 N일째"는 생일 당일을
+    0일째로 세는 별개 관례라 여기 그대로 안 맞춘다)."""
+    first_seen = datetime.fromisoformat(iso_str).astimezone(KST)
+    days = (datetime.now(KST).date() - first_seen.date()).days + 1
+    return f"{first_seen.strftime('%Y. %m. %d')} ({days}일째)"
 
 
 # 카테고리 설명(시스템 메시지 색) — 5개 카테고리를 간단히 소개한다. 정책 고지 성격이라

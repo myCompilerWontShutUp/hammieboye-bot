@@ -18,7 +18,7 @@ async def get_top_candidates() -> list[dict]:
 
 
 async def get_top_coin_candidates() -> list[dict]:
-    """동전 보유량 상위 후보(여유 있게 넉넉히)를 가져온다 — /랭킹-동전 전용.
+    """동전 보유량 상위 후보(여유 있게 넉넉히)를 가져온다 — /랭킹(동전 카테고리) 전용.
     get_top_candidates와 동일한 골격, 대상 컬럼만 coins로 바뀐다."""
     return await select(
         "users",
@@ -78,7 +78,7 @@ async def _get_tied(affection: int, member_ids: list[int] | None) -> list[dict]:
 
 async def get_rank(user_id: int, affection: int, member_ids: list[int] | None = None) -> int:
     """affection 기준 순위(1부터 시작)를 계산한다. member_ids를 주면 그 안에서만(서버 랭크),
-    생략하면(None) 전체 유저 기준(글로벌 랭크)으로 계산한다. 동점 처리는 /랭킹-호감도와 동일한 기준
+    생략하면(None) 전체 유저 기준(글로벌 랭크)으로 계산한다. 동점 처리는 /랭킹(호감도 카테고리)와 동일한 기준
     (증가로 먼저 도달한 사람 -> 가입일이 이른 사람 -> user_id가 낮은 사람)을 재사용한다."""
     higher, tied = await asyncio.gather(
         _count_higher(affection, member_ids),
@@ -122,7 +122,7 @@ async def get_coin_rank(user_id: int, coins: int, member_ids: list[int] | None =
     """coins 기준 순위(1부터 시작) — get_rank와 동일한 골격이지만, 동전은 "먼저 그
     값에 도달한 사람"을 판정할 이력 테이블(affection_log에 대응하는 것)이 없어서
     동점 타이브레이크가 (1) 가입일이 이른 사람 (2) user_id가 낮은 사람 2단계뿐이다
-    (/랭킹-동전의 _coin_sort_key와 동일한 원칙)."""
+    (/랭킹(동전 카테고리)의 _coin_sort_key와 동일한 원칙)."""
     higher, tied = await asyncio.gather(
         _count_higher_coins(coins, member_ids),
         _get_tied_coins(coins, member_ids),

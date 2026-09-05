@@ -11,6 +11,12 @@ SLEEP_REPLY_NOTEBOOK = "Zzzzz... _(쿨쿨)_ _(햄미 옆에 놓인 수첩을 슬
 # /페트병 전용 — 놀이형 커맨드라 메모/수첩 컨셉과 안 어울려서 분리했다.
 SLEEP_REPLY_PLASTIC = "(자고 있어서 반응을 보이지 않는다)"
 
+# /도박 전용(2026-09-06) — /내기와 달리 취침 중에도 완전히 차단하지 않고 그대로 진행되게
+# 바뀌었다("도박"이라는 컨셉상 몰래 하는 쪽이 더 자연스럽다는 판단). 명령어 자체는 막지
+# 않고, 게임 선택 프롬프트의 안내 문구만 이 문구로 바꿔치기한다(wrap_text_if_asleep의
+# override로 사용).
+SLEEP_REPLY_GAMBLE = "Zzzzzz... _(햄미 몰래 해보자!!)_"
+
 
 async def guard(interaction: discord.Interaction, *, silent: bool, message: str = SLEEP_REPLY) -> bool:
     """취침 시간대에 슬래시 커맨드를 가로챈다.
@@ -26,10 +32,16 @@ async def guard(interaction: discord.Interaction, *, silent: bool, message: str 
     return False
 
 
-def wrap_text_if_asleep(channel_id: int | None, text: str, *, notebook: bool = False) -> str:
+def wrap_text_if_asleep(
+    channel_id: int | None, text: str, *, notebook: bool = False, override: str | None = None
+) -> str:
     """임베드가 있는 시스템 커맨드는 취침 중에도 실제로 실행해서 임베드는 그대로 붙이고
     응답 텍스트만 이 고정 문구로 바꾼다("메모/수첩에 적힌 내용이 바로 그 임베드").
-    notebook=True면(/내정보·/니정보) `SLEEP_REPLY_NOTEBOOK`을, 그 외엔 `SLEEP_REPLY`를 쓴다."""
+    override가 있으면 그 문구를 그대로 쓰고(/도박의 SLEEP_REPLY_GAMBLE 전용), 없으면
+    notebook=True일 때(/내정보·/니정보) `SLEEP_REPLY_NOTEBOOK`을, 그 외엔 `SLEEP_REPLY`를
+    쓴다."""
     if is_sleep_time_for(channel_id):
+        if override is not None:
+            return override
         return SLEEP_REPLY_NOTEBOOK if notebook else SLEEP_REPLY
     return text

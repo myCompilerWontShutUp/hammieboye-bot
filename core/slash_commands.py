@@ -57,19 +57,19 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
 
 
 def register(tree: app_commands.CommandTree) -> None:
-    @tree.command(name="가입", description="햄미와 친해지기 위해 가입한다")
+    @tree.command(name="가입", description="햄미에게 가입한다")
     async def join_command(interaction: discord.Interaction) -> None:
         await join_handle(interaction)
 
-    @tree.command(name="가입-수집항목", description="가입 시 수집되는 정보를 자세히 안내한다")
+    @tree.command(name="가입-수집항목", description="가입 시 수집되는 정보를 안내한다")
     async def join_info_command(interaction: discord.Interaction) -> None:
         await join_info_handle(interaction)
 
-    @tree.command(name="탈퇴", description="햄미와의 관계를 정리하고 탈퇴한다")
+    @tree.command(name="탈퇴", description="햄미와 탈퇴한다")
     async def leave_command(interaction: discord.Interaction) -> None:
         await leave_handle(interaction)
 
-    @tree.command(name="페트병", description="페트병 던지기 놀이를 한다")
+    @tree.command(name="페트병", description="페트병을 던진다")
     async def plastic_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
@@ -83,7 +83,7 @@ def register(tree: app_commands.CommandTree) -> None:
         text = await plastic_handle(interaction.user.id)
         await interaction.edit_original_response(content=text)
 
-    @tree.command(name="내정보", description="내 호감도·가방·업적·활동 기록을 카테고리별로 확인한다")
+    @tree.command(name="내정보", description="내 호감도·가방·업적·기록을 확인한다")
     async def info_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
@@ -95,30 +95,20 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.interaction = interaction
 
-    @tree.command(name="랭킹-호감도", description="호감도 기준 상위 10명 순위를 확인한다")
-    async def ranking_affection_command(interaction: discord.Interaction) -> None:
+    @tree.command(name="랭킹", description="호감도·동전 순위를 확인한다")
+    async def ranking_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        text, embed = await ranking.build_affection_embed(interaction.client)
+        text, embed, view = await ranking.handle(interaction.user.id, interaction.client)
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.message = await interaction.original_response()
 
-    @tree.command(name="랭킹-동전", description="동전 보유량 기준 상위 10명 순위를 확인한다")
-    async def ranking_coin_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        text, embed = await ranking.build_coin_embed(interaction.client)
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed)
-
-    @tree.command(name="니정보", description="서버 멤버의 정보를 소개한다")
-    @app_commands.describe(이름="찾을 사람의 서버 별명(입력하면 자동완성이 떠요) 또는 멘션")
+    @tree.command(name="니정보", description="서버 멤버를 소개한다")
+    @app_commands.describe(이름="찾을 사람의 서버 별명(자동완성) 또는 멘션")
     @app_commands.autocomplete(이름=intro.autocomplete_이름)
     async def intro_command(interaction: discord.Interaction, 이름: str) -> None:
         if interaction.user.bot:
@@ -129,7 +119,7 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         await intro.handle(interaction, 이름)
 
-    @tree.command(name="업적-리스트", description="이 세상 모든 업적의 목록을 확인한다")
+    @tree.command(name="업적-리스트", description="전체 업적 목록을 확인한다")
     async def achievement_list_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
@@ -141,7 +131,7 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.message = await interaction.original_response()
 
-    @tree.command(name="자판기", description="자판기에서 간식이나 동전 획득량을 늘려주는 아이템을 산다")
+    @tree.command(name="자판기", description="자판기에서 물건을 산다")
     @app_commands.describe(품목="살 물건", 개수="살 개수(기본 1개)")
     @app_commands.choices(품목=[app_commands.Choice(name=n, value=n) for n in ITEM_NAMES])
     async def vending_command(
@@ -186,7 +176,7 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         await bet.handle_bet(interaction)
 
-    @tree.command(name="내기-규칙", description="내기 종류와 배당 규칙을 확인한다")
+    @tree.command(name="내기-규칙", description="내기 규칙을 확인한다")
     async def bet_rules_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
@@ -198,18 +188,18 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.interaction = interaction
 
-    @tree.command(name="도박", description="동전을 걸고 위험한 도박을 한다")
+    @tree.command(name="도박", description="동전을 걸고 도박을 한다")
     async def gamble_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        if not await sleep_guard.guard(interaction, silent=False):
-            return
+        # /내기와 달리 취침 시간대에도 차단하지 않는다(2026-09-06) — slot.handle_gamble이
+        # 대신 인트로 문구만 SLEEP_REPLY_GAMBLE로 바꿔치기한다.
         await interaction.response.defer(ephemeral=True)
         if not await _prepare(interaction):
             return
         await slot.handle_gamble(interaction)
 
-    @tree.command(name="도박-규칙", description="도박 종류와 배율 규칙을 확인한다")
+    @tree.command(name="도박-규칙", description="도박 규칙을 확인한다")
     async def gamble_rules_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
@@ -221,8 +211,8 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.interaction = interaction
 
-    @tree.command(name="먹어", description="디저트 타임에 햄미에게 간식을 먹인다")
-    @app_commands.describe(간식="먹일 간식(내 가방에 있는 것만 나와요)")
+    @tree.command(name="먹어", description="햄미에게 간식을 먹인다")
+    @app_commands.describe(간식="먹일 간식")
     @app_commands.autocomplete(간식=eat.autocomplete_간식)
     async def eat_command(interaction: discord.Interaction, 간식: str) -> None:
         if interaction.user.bot:
@@ -233,7 +223,7 @@ def register(tree: app_commands.CommandTree) -> None:
         text = await eat.handle(interaction.user.id, 간식)
         await interaction.edit_original_response(content=text)
 
-    @tree.command(name="자판기-리스트", description="자판기에서 파는 물건 전체 목록을 확인한다")
+    @tree.command(name="자판기-리스트", description="자판기 판매 목록을 확인한다")
     async def vending_list_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return

@@ -115,39 +115,42 @@ _CATEGORY_ORDER: tuple[str, ...] = ("snack", "coin", "joke")
 _DEFAULT_CATEGORY = "snack"
 
 
-def _category_lines(kind: str) -> list[str]:
-    lines = []
-    for item in ITEMS:
-        if item.kind != kind:
-            continue
-        note = f" ({item.note})" if item.note else ""
-        if kind == "snack":
-            detail = f"먹일 시 호감도 +{item.effect}{note}"
-        elif kind == "coin":
-            detail = f"/동전 획득량 +{item.effect}"
-        else:
-            detail = "???"
-        lines.append(f"- **{item.name}** — {item.price:,}코인 ({detail})")
-    return lines
+def _category_items(kind: str) -> list:
+    return [item for item in ITEMS if item.kind == kind]
 
 
-# 카테고리를 바꿔도 임베드 세로 길이가 들쭉날쭉하지 않게, 가장 긴 카테고리(간식) 줄
-# 수에 맞춰 짧은 카테고리는 빈 줄로 채운다.
-_MAX_CATEGORY_LINES = max(len(_category_lines(kind)) for kind in _CATEGORY_ORDER)
+def _item_block(item) -> str:
+    """업적 리스트(command/achievements.py)와 동일한 카드형 — 이름 줄 + 설명 줄로
+    가독성을 높인다(2026-09-06, 舊 "- **이름** — 가격 (설명)" 한 줄 형식에서 변경)."""
+    note = f" ({item.note})" if item.note else ""
+    if item.kind == "snack":
+        detail = f"먹일 시 호감도 +{item.effect}{note}"
+    elif item.kind == "coin":
+        detail = f"/동전 획득량 +{item.effect}"
+    else:
+        detail = "???"
+    return f"**{item.name}**\n{item.price:,}코인 — {detail}"
+
+
+# 카테고리를 바꿔도 임베드 세로 길이가 들쭉날쭉하지 않게, 가장 긴 카테고리(간식) 품목
+# 수에 맞춰 짧은 카테고리는 빈 칸으로 채운다.
+_MAX_CATEGORY_ITEMS = max(len(_category_items(kind)) for kind in _CATEGORY_ORDER)
 
 
 def _build_list_embed(kind: str) -> discord.Embed:
+    blocks = [_item_block(item) for item in _category_items(kind)]
+    blocks += [""] * (_MAX_CATEGORY_ITEMS - len(blocks))
     embed = discord.Embed(title="🛒 자판기 판매 목록", color=VENDING_EMBED_COLOR)
-    lines = _category_lines(kind)
-    lines += [""] * (_MAX_CATEGORY_LINES - len(lines))
-    embed.description = f"**[{_CATEGORY_LABELS[kind]}]**\n" + "\n".join(lines)
+    embed.description = f"**[{_CATEGORY_LABELS[kind]}]**\n\n" + "\n\n".join(blocks)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
 
 
 class _CategoryButton(discord.ui.Button):
     def __init__(self, kind: str, *, active: bool) -> None:
-        style = discord.ButtonStyle.success if active else discord.ButtonStyle.primary
+        # 활성=초록(success), 비활성=회색(secondary) — 2026-09-06 舊 파란색(primary)에서
+        # 변경, /랭킹의 카테고리 버튼(command/ranking.py)도 동일한 배색을 쓴다.
+        style = discord.ButtonStyle.success if active else discord.ButtonStyle.secondary
         super().__init__(label=_CATEGORY_LABELS[kind], style=style)
         self._kind = kind
 
@@ -158,7 +161,7 @@ class _CategoryButton(discord.ui.Button):
         for child in view.children:
             if isinstance(child, _CategoryButton):
                 child.style = (
-                    discord.ButtonStyle.success if child is self else discord.ButtonStyle.primary
+                    discord.ButtonStyle.success if child is self else discord.ButtonStyle.secondary
                 )
         await interaction.response.edit_message(embed=_build_list_embed(self._kind), view=view)
 
