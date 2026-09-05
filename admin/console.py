@@ -1091,7 +1091,7 @@ _COMMAND_LIST = (
     _CommandSpec("sh event all", 0, "{boolean}", "오늘 헬프 미 이벤트 전부와 결과 표시", _handle_sh_event_all),
     _CommandSpec("sh event next", 0, "{boolean}", "다음으로 남은 헬프 미 이벤트 시각 표시", _handle_sh_event_next),
     _CommandSpec("sh event last", 0, "{boolean}", "가장 최근에 지난 헬프 미 이벤트 시각 표시", _handle_sh_event_last),
-    _CommandSpec("sh user stats", 1, "{user_id} {boolean}", "해당 유저의 일반 정보(=/내정보) 표시", _handle_sh_user_stats),
+    _CommandSpec("sh user stats", 1, "{user_id} {boolean}", "해당 유저의 호감도·오늘 기록·전체 기록 요약 표시(가방·업적 제외)", _handle_sh_user_stats),
     _CommandSpec("sh db list", 0, "{boolean}", "등록된 테이블 이름 전부 표시", _handle_sh_db_list),
     _CommandSpec("sh db", 2, "{name} {amount|*} {boolean}", "해당 테이블 최근 amount개 행(amount가 *면 전체) 표시", _handle_sh_db),
     _CommandSpec("sh hammie runtime", 0, "{boolean}", "햄미 활동 시간 및 이벤트 발생 가능 시간 표시", _handle_sh_hammie_runtime),
