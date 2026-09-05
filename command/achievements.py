@@ -151,14 +151,19 @@ def _build_list_embed(page: int, earned_ids: set[str]) -> discord.Embed:
     blocks = []
     for module in modules:
         name_line, desc_line = _entry_lines(module, earned_ids)
-        blocks.append(f"**{name_line}**\n{desc_line}")
+        # format_name()/format_hidden_legendary_name()이 전설 업적은 이미
+        # "**__[👑]__** 이름" 형태로 굵게 스타일을 입혀서 반환한다 — 여기서 또
+        # **로 감싸면 연속 4개의 *가 겹쳐 마크다운이 깨져 별표가 그대로 보인다
+        # (일반 업적만 이름 자체에 스타일이 없어 여기서 감싸야 한다).
+        if module.RARITY == achievements.LEGENDARY:
+            blocks.append(f"{name_line}\n{desc_line}")
+        else:
+            blocks.append(f"**{name_line}**\n{desc_line}")
 
-    embed = discord.Embed(title="📖 업적 목록", color=LIST_EMBED_COLOR)
-    embed.add_field(
-        name=f"전체 업적 ({page + 1}/{_page_count()} 페이지)",
-        value="\n\n".join(blocks),
-        inline=False,
+    embed = discord.Embed(
+        title=f"📖 업적 목록 ({page + 1}/{_page_count()} 페이지)", color=LIST_EMBED_COLOR
     )
+    embed.description = "\n\n".join(blocks)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
 

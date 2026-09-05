@@ -232,9 +232,9 @@ async def _render_lifetime(user_id: int, *, target_name: str | None) -> tuple[st
         name=record_field_name,
         value=(
             f"- 간식 준 횟수: **{user['total_snacks_given']}**\n"
-            f"- 도와준 횟수: **{user['help_count']}**\n"
-            f"- 대화한 횟수: **{user['chat_count']}**\n"
-            f"- 평생 획득한 동전: **{user['lifetime_coins_earned']}**개\n"
+            f"- 도움 횟수: **{user['help_count']}**\n"
+            f"- 대화 횟수: **{user['chat_count']}**\n"
+            f"- 획득한 동전: **{user['lifetime_coins_earned']}**개\n"
             f"- 처음 만난 날: {_format_date(user['first_seen_at'])}"
         ),
         inline=False,
@@ -277,7 +277,7 @@ async def render_admin_summary(user_id: int) -> tuple[str, discord.Embed]:
             f"- 간식 준 횟수: **{user['total_snacks_given']}**\n"
             f"- 도와준 횟수: **{user['help_count']}**\n"
             f"- 대화한 횟수: **{user['chat_count']}**\n"
-            f"- 평생 획득한 동전: **{user['lifetime_coins_earned']}**개\n"
+            f"- 획득한 동전: **{user['lifetime_coins_earned']}**개\n"
             f"- 처음 만난 날: {_format_date(user['first_seen_at'])}\n​"
         ),
         inline=False,
