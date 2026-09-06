@@ -213,7 +213,7 @@ async def handle(user_id: int) -> str:
 
     user = await get_user(user_id)
     amount = _BASE_GRANT + user["coin_grant_bonus"]
-    result = await add_coins(user_id, amount, method=_METHOD)
+    result = await add_coins(user_id, amount, method=_METHOD, apply_day_multiplier=True)
 
     text = random.choice(_GRANT_MESSAGES)
     text += format_coin_notice(result["applied_amount"], result["new_coins"])

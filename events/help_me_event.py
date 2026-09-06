@@ -9,7 +9,6 @@ from openai import AsyncOpenAI
 import achievements
 from config import (
     ALLOWED_GUILD_IDS,
-    CALL_PREFIXES,
     OPENAI_API_KEY,
     OPENAI_JUDGE_MODEL,
     openai_service_tier_kwargs,
@@ -343,11 +342,15 @@ async def _post_due_events() -> None:
 def _build_announce_embed() -> discord.Embed:
     """참여 방법 안내(2026-09-05 신규) — 사람들이 헬프 미 이벤트와 디저트 타임을
     헷갈려한다는 피드백으로, 방송 밑에 항상 이 고정 임베드를 붙인다. 햄미의 말투는
-    위 프롬프트 문구에만 쓰고, 이 안내는 시스템 라벨이라 정중체로 고정한다."""
-    prefixes = ", ".join(f'**"{p}"**' for p in CALL_PREFIXES)
+    위 프롬프트 문구에만 쓰고, 이 안내는 시스템 라벨이라 정중체로 고정한다.
+
+    호출 단어는 `CALL_PREFIXES` 전체(9개)가 아니라 "햄미야" 하나만 예시로 보여준다
+    (2026-09-07 수정) — 전부 나열하면 안내가 너무 길어져 가독성이 떨어졌다. 실제
+    호출 가능한 단어는 여전히 `CALL_PREFIXES` 전체이고, 여기서는 표시만 대표 단어
+    하나로 줄인다."""
     embed = discord.Embed(
         title="🆘 헬프 햄미 이벤트",
-        description=f"가장 먼저 햄미를 불러 도와주세요! {prefixes}를 통해 부를 수 있어요!",
+        description='가장 먼저 햄미를 불러 도와주세요! **"햄미야"**를 통해 부를 수 있어요!',
         color=SYSTEM_EMBED_COLOR,
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))

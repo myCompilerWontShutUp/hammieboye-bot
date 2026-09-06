@@ -66,7 +66,7 @@ async def handle_purchase(
         gained = item.effect * count
         new_bonus = await increase_coin_grant_bonus(user_id, gained)
         effect_summary = (
-            f"/동전 획득량이 {gained}만큼 늘어서 이제 한 번에 {1 + new_bonus}개씩 벌 수 있어!!"
+            f"`/동전` 획득량이 {gained}만큼 늘어서 이제 한 번에 {1 + new_bonus}개씩 벌 수 있어!!"
         )
 
     user = await get_user(user_id)
@@ -130,7 +130,7 @@ def _item_block(item) -> str:
     if item.kind == "snack":
         detail = f"먹일 시 호감도 +{item.effect}{note}"
     elif item.kind == "coin":
-        detail = f"/동전 획득량 +{item.effect}"
+        detail = f"`/동전` 획득량 +{item.effect}"
     else:
         detail = "???"
     return f"**{item.name}**\n{item.price:,}코인 — {detail}"

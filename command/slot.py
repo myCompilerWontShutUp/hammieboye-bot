@@ -13,7 +13,7 @@ from command.economy_common import (
     BetAmountModal,
     ReplayView,
     RulesView,
-    format_coin_notice,
+    format_bet_receipt,
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
@@ -85,23 +85,30 @@ _RULES_OVERVIEW_TEXT = (
     "조심해!!"
 )
 
-_GRAPE, _PEANUT, _STRAWBERRY, _HAMSTER, _DIAMOND, _STAR, _SEVEN = (
-    "🍇", "🥜", "🍓", "🐹", "💎", "⭐", "7️⃣",
+_GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _CHEESE, _HAMSTER, _DIAMOND, _STAR, _SEVEN = (
+    "🍇", "🥜", "🍓", "🌰", "🧀", "🐹", "💎", "⭐", "7️⃣",
 )
 SYMBOLS: tuple[str, ...] = (
-    _GRAPE, _PEANUT, _STRAWBERRY, _HAMSTER, _DIAMOND, _STAR, _SEVEN,
+    _GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _CHEESE, _HAMSTER, _DIAMOND, _STAR, _SEVEN,
 )
 
 # 햄스터(🐹)는 배율표에 없다 — 한 줄이라도 걸리면 배율 무관하게 전액 페널티로 분기.
-# 심볼이 9종에서 7종으로 줄어(밤/치즈 제거, 2026-09-04) 칸당 적중 확률이 1/9 -> 1/7로
-# 올라간다 — 확률이 너무 낮다는 피드백으로 당첨 라인이 나올 확률 자체를 높인 것.
+# 심볼을 7종으로 줄였다가(밤/치즈 제거, 2026-09-04) 확률이 너무 높아졌다는 피드백으로
+# 2026-09-07 다시 9종으로 복원 — 칸당 적중 확률이 1/7 -> 1/9로 낮아진다. 밤/치즈는
+# 포도/땅콩/딸기와 동일한 x2 등급.
 _MULTIPLIERS: dict[str, int] = {
-    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _STAR: 3, _DIAMOND: 10, _SEVEN: 77,
+    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _CHESTNUT: 2, _CHEESE: 2,
+    _STAR: 3, _DIAMOND: 10, _SEVEN: 77,
 }
 _SYMBOL_NAMES: dict[str, str] = {
-    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기",
+    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기", _CHESTNUT: "밤", _CHEESE: "치즈",
     _DIAMOND: "다이아", _STAR: "별", _SEVEN: "세븐", _HAMSTER: "햄스터",
 }
+
+# 세븐 8라인 동시 완성(77^8) 등 배율이 지나치게 커지는 것을 막는 하드 상한
+# (2026-09-07) — 이 이상은 절대 안 올라간다.
+_MAX_MULTIPLIER = 77
+_MAX_MULTIPLIER_NOTICE = "🏆 최대 배수에 도달했어!! 이 이상은 더 안 올라가!! _(경악)_"
 
 # 3x3 인덱스 0~8 기준 가로 3 + 세로 3 + 대각선 2 = 8라인.
 _LINES: tuple[tuple[int, int, int], ...] = (
@@ -120,8 +127,9 @@ _SLOT_MACHINE_RULE_TEXT = (
     "한 줄에 같은 그림이 3개 모이면 그 그림의 배율이 곱해지고, 여러 줄이 동시에 완성되면 "
     "배율끼리 전부 곱해져!! (배팅액 x 최종 배율을 돌려받아)\n\n"
     "그림별 배율은 이래:\n"
-    "🍇 포도 x2 · 🥜 땅콩 x2 · 🍓 딸기 x2\n"
+    "🍇 포도 x2 · 🥜 땅콩 x2 · 🍓 딸기 x2 · 🌰 밤 x2 · 🧀 치즈 x2\n"
     "⭐ 별 x3 · 💎 다이아 x10 · 7️⃣ 세븐 x77\n\n"
+    f"여러 줄이 동시에 완성돼도 최종 배율은 최대 x{_MAX_MULTIPLIER}를 넘지 않아!!\n\n"
     "그런데 🐹 햄스터가 한 줄이라도 걸리면 다른 배율은 몽땅 무시되고, 배팅액만큼 "
     "추가로 더 잃어버려!! 조심해!! _(경고)_"
 )
@@ -193,9 +201,10 @@ _WIN_LINES = (
     "완전 좋았어!! 배율 x{multiplier}!! _(뿌듯)_",
 )
 
-def evaluate(grid: list[str]) -> tuple[int, bool]:
-    """고정 그리드를 받아 (최종 배율, 햄스터 발동 여부)를 반환하는 순수 함수 — 랜덤 추출과
-    분리해서 오프라인 테스트에서 특정 그리드를 그대로 넣어 검증할 수 있게 한다."""
+def evaluate(grid: list[str]) -> tuple[int, bool, bool]:
+    """고정 그리드를 받아 (최종 배율, 햄스터 발동 여부, 상한 클램프 여부)를 반환하는
+    순수 함수 — 랜덤 추출과 분리해서 오프라인 테스트에서 특정 그리드를 그대로 넣어
+    검증할 수 있게 한다. capped는 클램프 전 원래 배율이 _MAX_MULTIPLIER를 넘었는지."""
     multiplier = 1
     hamster_hit = False
     for a, b, c in _LINES:
@@ -205,7 +214,10 @@ def evaluate(grid: list[str]) -> tuple[int, bool]:
                 hamster_hit = True
             else:
                 multiplier *= _MULTIPLIERS[symbol]
-    return multiplier, hamster_hit
+    capped = multiplier > _MAX_MULTIPLIER
+    if capped:
+        multiplier = _MAX_MULTIPLIER
+    return multiplier, hamster_hit, capped
 
 
 _ROW_NUMBER_EMOJI = ("1️⃣", "2️⃣", "3️⃣")
@@ -257,10 +269,12 @@ def _build_embed(grid: list[str | None]) -> discord.Embed:
     return embed
 
 
-async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord.Embed]:
+async def _settle(user_id: int, bet: int, before_coins: int, grid: list[str]) -> tuple[str, discord.Embed]:
     """세 줄이 모두 채워진 뒤 정산 — 배율/보상 로직 자체는 커맨드 개편과 무관하게
-    그대로 유지된다."""
-    multiplier, hamster_hit = evaluate(grid)
+    그대로 유지된다. before_coins는 판이 시작될 때 역산해둔 배팅 전 잔액 —
+    format_bet_receipt로 "기존/배팅/현재 금액" 3줄을 채워 보여준다(2026-09-07,
+    기존 format_coin_notice의 화살표 한 줄을 대체)."""
+    multiplier, hamster_hit, capped = evaluate(grid)
     embed = _build_embed(grid)
 
     if hamster_hit:
@@ -269,7 +283,7 @@ async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord
         # 정확히 한 번만 지급한다(햄스터 줄이 몇 개든 penalty처럼 한 번만).
         affection_result = await add_affection(user_id, 1, "slot_hamster_penalty")
         text = random.choice(_HAMSTER_PENALTY_LINES)
-        text += format_coin_notice(-penalty["deducted"], penalty["new_coins"])
+        text += "\n\n" + format_bet_receipt(before_coins, bet, penalty["new_coins"])
         if affection_result["achievement_notice"]:
             text += f"\n{affection_result['achievement_notice']}"
         if affection_result["applied_amount"] != 0:
@@ -279,11 +293,16 @@ async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord
         return text, embed
 
     if multiplier == 1:
-        return random.choice(_LOSE_LINES), embed
+        user = await get_user(user_id)
+        text = random.choice(_LOSE_LINES)
+        text += "\n\n" + format_bet_receipt(before_coins, bet, user["coins"])
+        return text, embed
 
     result = await add_coins(user_id, bet * multiplier, method="slot_win")
     text = random.choice(_WIN_LINES).format(multiplier=multiplier)
-    text += format_coin_notice(result["applied_amount"], result["new_coins"])
+    if capped:
+        text += f"\n{_MAX_MULTIPLIER_NOTICE}"
+    text += "\n\n" + format_bet_receipt(before_coins, bet, result["new_coins"])
 
     total_affection_delta = 0
     current_affection: int | None = None
@@ -321,10 +340,19 @@ async def _settle(user_id: int, bet: int, grid: list[str]) -> tuple[str, discord
 
 def _build_replay_view(user_id: int) -> ReplayView:
     """다시하기를 누르면 새 배팅액으로 슬롯머신을 다시 연다 — game_kind가 하나뿐이라
-    bet.py의 _build_replay_view와 달리 게임 종류를 안 받는다."""
+    bet.py의 _build_replay_view와 달리 게임 종류를 안 받는다. 2026-09-07부터 새
+    판은 old_message(이 판의 메시지)를 고쳐쓰지 않고 새 공개 메시지로 열리고,
+    old_message는 버튼만 제거해 기록으로 남긴다."""
 
-    async def _on_replay(interaction: discord.Interaction, amount: int) -> None:
-        await _start_round(interaction, user_id, amount, edit=True)
+    async def _on_replay(
+        interaction: discord.Interaction, amount: int, old_message: "discord.Message | None"
+    ) -> None:
+        await _start_round(interaction, user_id, amount)
+        if old_message is not None:
+            try:
+                await old_message.edit(view=None)
+            except discord.HTTPException:
+                logging.exception("Failed to clear old slot message buttons after replay")
 
     return ReplayView(user_id, _OWN_COMMAND, _on_replay)
 
@@ -333,10 +361,11 @@ class _SlotView(discord.ui.View):
     """가위바위보/홀짝과 동일한 결의 버튼 게임 — 다만 승부를 "고르는" 게 아니라 세 줄을
     각자 돌려서 "채우는" 방식이라 버튼이 3개 다 눌려야 결과가 나온다(순서는 자유)."""
 
-    def __init__(self, user_id: int, bet: int) -> None:
+    def __init__(self, user_id: int, bet: int, before_coins: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
+        self.before_coins = before_coins
         self.grid: list[str | None] = [None] * 9
         self._spun: set[int] = set()
         self.message: discord.Message | None = None
@@ -352,7 +381,7 @@ class _SlotView(discord.ui.View):
             if row not in self._spun:
                 self._spun.add(row)
                 self.grid[row * 3 : row * 3 + 3] = random.choices(SYMBOLS, k=3)
-        text, embed = await _settle(self.user_id, self.bet, self.grid)
+        text, embed = await _settle(self.user_id, self.bet, self.before_coins, self.grid)
         replay_view = _build_replay_view(self.user_id)
         try:
             await self.message.edit(content=text, embed=embed, view=replay_view)
@@ -382,7 +411,7 @@ class _SlotView(discord.ui.View):
             return
 
         self.stop()
-        text, embed = await _settle(self.user_id, self.bet, self.grid)
+        text, embed = await _settle(self.user_id, self.bet, self.before_coins, self.grid)
         replay_view = _build_replay_view(self.user_id)
         await interaction.response.edit_message(content=text, embed=embed, view=replay_view)
         replay_view.message = await interaction.original_response()
@@ -400,22 +429,25 @@ class _SlotView(discord.ui.View):
         await self._spin_row(interaction, 2, button)
 
 
-async def _start_round(interaction: discord.Interaction, user_id: int, bet: int, *, edit: bool) -> None:
-    """모달에서 유효한 금액을 받은 뒤 실제 슬롯머신 판을 연다 — edit=False면 새 공개
-    메시지로(게임 선택 직후 첫 판), edit=True면 지금 이 메시지를 고쳐 쓴다("다시하기").
-    금액 검증(1~MAX_BET)은 모달이 이미 끝냈으니 여기서는 잔액만 확인한다."""
+async def _start_round(interaction: discord.Interaction, user_id: int, bet: int) -> None:
+    """모달에서 유효한 금액을 받은 뒤 실제 슬롯머신 판을 새 공개 메시지로 연다 —
+    첫 판이든 "다시하기"든 항상 새 메시지다(2026-09-07, 이전엔 다시하기가 같은
+    메시지를 고쳐써서 이전 판 기록이 사라졌다). 금액 검증(1~MAX_BET)은 모달이 이미
+    끝냈으니 여기서는 잔액만 확인한다."""
     if not await spend_coins(user_id, bet):
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
 
-    view = _SlotView(user_id, bet)
-    content = random.choice(_SPIN_PROMPT_LINES)
+    # vending.py::handle_purchase와 동일한 역산 — spend_coins가 차감 전 잔액을
+    # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
+    user = await get_user(user_id)
+    before_coins = user["coins"] + bet
+
+    view = _SlotView(user_id, bet, before_coins)
+    content = random.choice(_SPIN_PROMPT_LINES) + "\n\n" + format_bet_receipt(before_coins, bet, None)
     embed = _build_embed(view.grid)
 
-    if edit:
-        await interaction.response.edit_message(content=content, embed=embed, view=view)
-    else:
-        await interaction.response.send_message(content=content, embed=embed, view=view)
+    await interaction.response.send_message(content=content, embed=embed, view=view)
     view.message = await interaction.original_response()
 
 
@@ -436,7 +468,7 @@ class _GambleSelectView(EphemeralAutoDeleteView):
         balance = user["coins"] if user is not None else 0
 
         async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
-            await _start_round(modal_interaction, self.user_id, amount, edit=False)
+            await _start_round(modal_interaction, self.user_id, amount)
             # 게임이 실제로 시작됐으니(= 공개 메시지가 새로 생겼으니) 애초의 ephemeral
             # 선택 프롬프트는 이제 볼일이 없다 — 지운다.
             try:
@@ -461,7 +493,7 @@ async def handle_gamble(interaction: discord.Interaction) -> None:
         f"현재 보유 동전 : {balance}개\n"
         "위험한 게임을 진행하여 한 번에 매우 많은 돈을 얻을 수 있지만, "
         "패배 시 배팅 금액을 모두 잃습니다.\n"
-        "자세한 규칙은 /도박-규칙 을 통해 확인할 수 있습니다."
+        "자세한 규칙은 `/도박-규칙` 을 통해 확인할 수 있습니다."
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 

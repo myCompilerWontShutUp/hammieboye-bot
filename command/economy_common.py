@@ -74,7 +74,7 @@ INVALID_AMOUNT_RESPONSE = f"1~{MAX_BET} 사이의 숫자로 적어줘!! _(갸웃
 
 # reject_if_wrong_user_with_cta의 미가입자용 안내 — 가입자용 안내는 호출부마다 자기
 # 커맨드 이름("/내기"/"/도박")을 끼워 넣어야 해서 own_command 인자로 매번 조립한다.
-_CTA_UNREGISTERED = "너도 /가입하면 함께 즐길 수 있어!!"
+_CTA_UNREGISTERED = "너도 `/가입`하면 함께 즐길 수 있어!!"
 
 
 async def reject_if_wrong_user_with_cta(
@@ -134,14 +134,17 @@ class ReplayView(discord.ui.View):
     """게임이 끝난 뒤 기존 선택/스핀 버튼을 전부 걷어내고 이 뷰(버튼 1개)로 통째로
     교체한다(/내기·/도박 공유) — 10초 안에 안 누르면 버튼만 사라지고 결과 텍스트는
     그대로 남는다. own_command는 CTA 문구용("/내기"/"/도박"), on_replay(interaction,
-    amount)는 모달 검증을 통과한 뒤 실제로 새 판을 여는 콜백(호출부가 game_kind를
-    클로저로 감싸 전달)이다."""
+    amount, old_message)는 모달 검증을 통과한 뒤 실제로 새 판을 여는 콜백(호출부가
+    game_kind를 클로저로 감싸 전달) — 2026-09-07부터 새 판은 이 메시지를 고쳐쓰지
+    않고 **새 공개 메시지**로 열리고, old_message(=이 판의 메시지, self.message)는
+    그 콜백이 버튼만 제거해 기록으로 남긴다(판마다 새 메시지로 이어지길 원한다는
+    요청 — 기존엔 이 메시지 자체를 edit해서 이전 판 기록이 사라졌었다)."""
 
     def __init__(
         self,
         user_id: int,
         own_command: str,
-        on_replay: Callable[[discord.Interaction, int], Awaitable[None]],
+        on_replay: Callable[[discord.Interaction, int, "discord.Message | None"], Awaitable[None]],
     ) -> None:
         super().__init__(timeout=REPLAY_TIMEOUT_SECONDS)
         self.user_id = user_id
@@ -163,8 +166,13 @@ class ReplayView(discord.ui.View):
             return
         user = await get_user(self.user_id)
         balance = user["coins"] if user is not None else 0
+        old_message = self.message
+
+        async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
+            await self._on_replay(modal_interaction, amount, old_message)
+
         await interaction.response.send_modal(
-            BetAmountModal(balance=balance, on_valid=self._on_replay)
+            BetAmountModal(balance=balance, on_valid=_on_valid)
         )
 
 
@@ -202,7 +210,7 @@ class RulesView(EphemeralAutoDeleteView):
 # 풀에서 하나 골라 그대로 응답한다).
 INSUFFICIENT_FUNDS_LINES = (
     "어라, 동전이 모자라!! 좀 더 모아서 와줄래?? _(아쉬움)_",
-    "동전이 부족해!! /동전으로 더 모아보자!! _(속상)_",
+    "동전이 부족해!! `/동전`으로 더 모아보자!! _(속상)_",
     "앗, 그만큼 동전이 없어!! 조금만 더 모아줘!! _(미안)_",
     "동전이 모자라써!! 다음에 다시 와줄래?? _(아쉬움)_",
     "이런, 잔액이 부족해!! 더 모아서 다시 와줘!! _(속상)_",
@@ -219,3 +227,17 @@ def format_coin_notice(delta: int, new_coins: int) -> str:
     sign = "+" if delta > 0 else ""
     before = new_coins - delta
     return f"\n🪙 동전 {sign}{delta} ({before} → {new_coins})"
+
+
+def format_bet_receipt(before: int, bet: int, current: int | None) -> str:
+    """`/자판기` 구매 영수증(기존 금액/사용 금액/현재 금액)과 동일한 형식을 배팅
+    게임(/내기·/도박)에 적용한 버전(2026-09-07) — 판이 시작될 때 먼저 이 블록을
+    보여주고(current=None -> "???"), 정산되면 같은 메시지를 고쳐써서 current를
+    채운다. /내기·/도박이 공유. 승패가 갈리기 전엔 최종 잔액을 알 수 없어 "사용
+    금액" 대신 "배팅 금액"(아직 확정 안 된 위험 부담)이라는 라벨을 쓴다."""
+    current_label = f"{current:,}코인" if current is not None else "???"
+    return (
+        f"- 기존 금액: {before:,}코인\n"
+        f"- 배팅 금액: {bet:,}코인\n"
+        f"- 현재 금액: {current_label}"
+    )

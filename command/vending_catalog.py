@@ -19,14 +19,10 @@ class VendingItem:
 # //100 환산이 안 쓰였다).
 ITEMS: tuple[VendingItem, ...] = (
     VendingItem("sunflower_seed", "해바라기 씨", 5, "snack", 1),
-    VendingItem("almond", "아몬드", 23, "snack", 4),
-    VendingItem("dandelion", "민들레 꽃", 69, "snack", 10),
-    VendingItem("frozen_yolk", "동결된 노른자", 740, "snack", 36),
-    # 추가 효과는 아직 미정 — 지금은 간식 지급만 하고 자리만 남겨둔다(note에만 표시).
-    VendingItem(
-        "premium_mealworm", "프리미엄 건조 밀웜", 10_001, "snack", 99,
-        note="추가 효과 ???",
-    ),
+    VendingItem("almond", "아몬드", 22, "snack", 2),
+    VendingItem("dandelion", "민들레 꽃", 69, "snack", 5),
+    VendingItem("frozen_yolk", "동결된 노른자", 740, "snack", 19),
+    VendingItem("premium_mealworm", "프리미엄 건조 밀웜", 10_001, "snack", 33),
     # "coin" 품목(2026-09-05, 舊 "capacity" — 동전 보유 상한 폐지와 함께 용도 전환)은
     # 이제 /동전의 기본 지급량(1개)에 더해지는 보너스를 늘린다.
     VendingItem("coin_wallet", "동전 지갑", 10, "coin", 1),

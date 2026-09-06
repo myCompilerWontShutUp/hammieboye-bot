@@ -1,10 +1,22 @@
+from datetime import datetime, timezone
+
 import achievements
 from db.achievements import award as award_achievement
 from db.client import rpc
+from events.scheduler import KST
+from events.special_days import get_multiplier
 
 # 1,000코인("티끌 모아 티끌" 업적 기준 — 2026-09-05부터 "원" 단위 개념을 없애면서
 # 문구도 "100,000원"에서 "1,000코인"으로 바뀌었지만, 코인 기준 수치 자체는 그대로다).
 _PENNY_PINCHER_THRESHOLD = 1_000
+
+
+def _multiplied(amount: int) -> int:
+    """db/affection.py::_multiplied()와 동일한 원칙 — 양수(획득)에만 오늘의 주말/
+    기념일/생일 배율을 곱한다."""
+    if amount <= 0:
+        return amount
+    return amount * get_multiplier(datetime.now(timezone.utc).astimezone(KST).date())
 
 
 async def add_coins(
@@ -13,6 +25,7 @@ async def add_coins(
     method: str | None = None,
     *,
     count_as_earned: bool = True,
+    apply_day_multiplier: bool = False,
 ) -> dict:
     """동전을 원자적으로 지급한다. 2026-09-05부로 보유 상한 개념이 폐지돼 클램프 없이
     그대로 더한다.
@@ -29,7 +42,16 @@ async def add_coins(
     count_as_earned=False면 users.lifetime_coins_earned를 안 늘린다 — 무승부/배팅
     타임아웃 환불처럼 "실제로 번 게 아니라 원금을 그대로 돌려주는" 경우 전용(이 경우
     lifetime_coins_earned가 안 늘어나므로 아래 마일스톤도 자연히 새로 안 걸린다).
+
+    apply_day_multiplier=True면 db/affection.py::add_affection()과 동일하게 오늘의
+    주말/기념일/생일 배율을 곱한다(2026-09-07 신규) — 기본값은 False라서 대부분의
+    호출부(내기/도박 승리금, 자판기, 관리자 조작 등)는 그대로 배율 미적용이고,
+    /동전(command/coin.py) 지급 한 곳에서만 True로 넘긴다 — "내기·도박 승리금엔
+    배율이 안 붙고 오직 /동전 지급에만 적용된다"는 요구사항이 이 파라미터
+    하나로 정확히 구현된다.
     """
+    if apply_day_multiplier:
+        amount = _multiplied(amount)
     rows = await rpc(
         "add_coins",
         {

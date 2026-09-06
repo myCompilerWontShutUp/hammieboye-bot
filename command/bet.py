@@ -14,7 +14,7 @@ from command.economy_common import (
     BetAmountModal,
     ReplayView,
     RulesView,
-    format_coin_notice,
+    format_bet_receipt,
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
@@ -263,43 +263,57 @@ async def _maybe_award_win_achievement(user_id: int) -> str:
 
 def _build_replay_view(user_id: int, game_kind: str) -> ReplayView:
     """다시하기를 누르면 같은 게임 종류로 새 판을 연다 — game_kind를 클로저로 감싸서
-    ReplayView(범용, economy_common.py)에 넘긴다."""
+    ReplayView(범용, economy_common.py)에 넘긴다. 2026-09-07부터 새 판은
+    old_message(이 판의 메시지)를 고쳐쓰지 않고 새 공개 메시지로 열리고,
+    old_message는 버튼만 제거해 기록으로 남긴다."""
 
-    async def _on_replay(interaction: discord.Interaction, amount: int) -> None:
-        await _start_round(interaction, user_id, game_kind, amount, edit=True)
+    async def _on_replay(
+        interaction: discord.Interaction, amount: int, old_message: "discord.Message | None"
+    ) -> None:
+        await _start_round(interaction, user_id, game_kind, amount)
+        if old_message is not None:
+            try:
+                await old_message.edit(view=None)
+            except discord.HTTPException:
+                logging.exception("Failed to clear old bet message buttons after replay")
 
     return ReplayView(user_id, _OWN_COMMAND, _on_replay)
 
 
 async def _start_round(
-    interaction: discord.Interaction, user_id: int, game_kind: str, bet: int, *, edit: bool
+    interaction: discord.Interaction, user_id: int, game_kind: str, bet: int
 ) -> None:
-    """모달에서 유효한 금액을 받은 뒤 실제 판을 연다 — edit=False면 새 공개 메시지로
-    (게임 선택 직후 첫 판), edit=True면 지금 이 메시지를 고쳐 쓴다("다시하기").
-    금액 검증(1~MAX_BET)은 모달이 이미 끝냈으니 여기서는 잔액만 확인한다."""
+    """모달에서 유효한 금액을 받은 뒤 실제 판을 새 공개 메시지로 연다 — 첫 판이든
+    "다시하기"든 항상 새 메시지다(2026-09-07, 이전엔 다시하기가 같은 메시지를
+    고쳐써서 이전 판 기록이 사라졌다). 금액 검증(1~MAX_BET)은 모달이 이미 끝냈으니
+    여기서는 잔액만 확인한다."""
     if not await spend_coins(user_id, bet):
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
 
-    if game_kind == _ODD_EVEN:
-        view: discord.ui.View = _OddEvenView(user_id, bet)
-        content = f"홀?? 짝?? 골라봐!! (배팅: {bet}동전) _(두근)_"
-    else:
-        view = _RPSView(user_id, bet)
-        content = f"가위?? 바위?? 보?? 골라봐!! (배팅: {bet}동전) _(긴장)_"
+    # vending.py::handle_purchase와 동일한 역산 — spend_coins가 차감 전 잔액을
+    # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
+    user = await get_user(user_id)
+    before_coins = user["coins"] + bet
+    receipt = format_bet_receipt(before_coins, bet, None)
 
-    if edit:
-        await interaction.response.edit_message(content=content, embed=None, view=view)
+    if game_kind == _ODD_EVEN:
+        view: discord.ui.View = _OddEvenView(user_id, bet, before_coins)
+        content = f"홀?? 짝?? 골라봐!! (배팅: {bet}동전) _(두근)_\n\n{receipt}"
     else:
-        await interaction.response.send_message(content=content, view=view)
+        view = _RPSView(user_id, bet, before_coins)
+        content = f"가위?? 바위?? 보?? 골라봐!! (배팅: {bet}동전) _(긴장)_\n\n{receipt}"
+
+    await interaction.response.send_message(content=content, view=view)
     view.message = await interaction.original_response()
 
 
 class _OddEvenView(discord.ui.View):
-    def __init__(self, user_id: int, bet: int) -> None:
+    def __init__(self, user_id: int, bet: int, before_coins: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
+        self.before_coins = before_coins
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
@@ -318,14 +332,14 @@ class _OddEvenView(discord.ui.View):
         if guess == actual:
             result = await add_coins(self.user_id, self.bet * 2, method="bet_odd_even_win")
             text = random.choice(_ODD_EVEN_WIN_LINES).format(actual=actual)
-            text += format_coin_notice(result["applied_amount"], result["new_coins"])
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             text += await _maybe_award_win_achievement(self.user_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
-            text += format_coin_notice(-self.bet, user["coins"])
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
 
         replay_view = _build_replay_view(self.user_id, _ODD_EVEN)
         await interaction.response.edit_message(content=text, view=replay_view)
@@ -344,10 +358,11 @@ class _RPSView(discord.ui.View):
     # key가 value를 이긴다 (가위는 보를 이기고, 바위는 가위를 이기고, 보는 바위를 이긴다).
     _BEATS = {"가위": "보", "바위": "가위", "보": "바위"}
 
-    def __init__(self, user_id: int, bet: int) -> None:
+    def __init__(self, user_id: int, bet: int, before_coins: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
+        self.before_coins = before_coins
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
@@ -367,18 +382,18 @@ class _RPSView(discord.ui.View):
         if choice == actual:
             result = await add_coins(self.user_id, self.bet, method="bet_rps_draw", count_as_earned=False)
             text = random.choice(_RPS_DRAW_LINES).format(actual=actual_bold)
-            text += format_coin_notice(result["applied_amount"], result["new_coins"])
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
         elif self._BEATS[choice] == actual:
             result = await add_coins(self.user_id, self.bet * 2, method="bet_rps_win")
             text = random.choice(_RPS_WIN_LINES).format(actual=actual_bold)
-            text += format_coin_notice(result["applied_amount"], result["new_coins"])
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             text += await _maybe_award_win_achievement(self.user_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
-            text += format_coin_notice(-self.bet, user["coins"])
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
 
         replay_view = _build_replay_view(self.user_id, _RPS)
         await interaction.response.edit_message(content=text, view=replay_view)
@@ -411,7 +426,7 @@ class _GameSelectView(EphemeralAutoDeleteView):
         balance = user["coins"] if user is not None else 0
 
         async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
-            await _start_round(modal_interaction, self.user_id, game_kind, amount, edit=False)
+            await _start_round(modal_interaction, self.user_id, game_kind, amount)
             # 게임이 실제로 시작됐으니(= 공개 메시지가 새로 생겼으니) 애초의 ephemeral
             # 선택 프롬프트는 이제 볼일이 없다 — 지운다.
             try:
@@ -440,7 +455,7 @@ async def handle_bet(interaction: discord.Interaction) -> None:
     embed.description = (
         f"현재 보유 동전 : {balance}개\n"
         "햄미와 내기를 하여 승리 시 배팅 금액의 2배, 패배 시 모두 잃습니다.\n"
-        "자세한 규칙은 /내기-규칙 을 통해 확인할 수 있습니다."
+        "자세한 규칙은 `/내기-규칙` 을 통해 확인할 수 있습니다."
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
