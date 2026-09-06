@@ -103,19 +103,17 @@ async def _resolve_target(interaction: discord.Interaction, 이름: str) -> disc
 
 
 async def handle(interaction: discord.Interaction, 이름: str) -> None:
-    """/니정보 — "모르는 사람"(개인 전용)과 "찾음"(ephemeral 카테고리 선택 프롬프트)
-    응답은 공개 범위가 갈리는 게 아니라 둘 다 ephemeral이지만, 분기를 다 확인한
-    뒤에야 defer 여부를 스스로 결정한다(_resolve_target이 "모르는 사람"이면 이미
-    자기 응답을 보낸 상태라 여기서 또 defer하면 안 됨)."""
+    """/니정보 — "모르는 사람"(개인 전용, ephemeral)과 "찾음"(공개, 카테고리 탭 포함)의
+    공개 범위가 서로 다르므로, 분기를 다 확인한 뒤에야 defer 여부를 스스로 결정한다
+    (_resolve_target이 "모르는 사람"이면 이미 ephemeral로 자기 응답을 보낸 상태라
+    여기서 또 defer하면 안 됨)."""
     member = await _resolve_target(interaction, 이름)
     if member is None:
         return
     guild = interaction.guild
 
-    await interaction.response.defer(ephemeral=True)
-    text, embed, view = await info_handle_other(member, guild=guild)
-    # text(_CATEGORY_PROMPT_OTHER_LINES)가 이미 대상자 이름을 문장 안에 포함하고
-    # 있으므로 실제 이름을 따로 앞에 붙이지 않는다(붙이면 이름이 중복 노출된다).
+    await interaction.response.defer()
+    text, embed, view = await info_handle_other(member, guild=guild, requester_id=interaction.user.id)
     content = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
     await interaction.edit_original_response(content=content, embed=embed, view=view)
-    view.interaction = interaction
+    view.message = await interaction.original_response()

@@ -87,13 +87,13 @@ def register(tree: app_commands.CommandTree) -> None:
     async def info_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         if not await _prepare(interaction):
             return
         text, embed, view = await info_handle_self(interaction)
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text, notebook=True)
         await interaction.edit_original_response(content=text, embed=embed, view=view)
-        view.interaction = interaction
+        view.message = await interaction.original_response()
 
     @tree.command(name="랭킹", description="호감도·동전 순위를 확인한다")
     async def ranking_command(interaction: discord.Interaction) -> None:
@@ -141,7 +141,7 @@ def register(tree: app_commands.CommandTree) -> None:
     ) -> None:
         if interaction.user.bot:
             return
-        if not await sleep_guard.guard(interaction, silent=False):
+        if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_VENDING):
             return
         await interaction.response.defer()
         if not await _prepare(interaction):
@@ -157,7 +157,7 @@ def register(tree: app_commands.CommandTree) -> None:
     async def coin_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        if not await sleep_guard.guard(interaction, silent=False):
+        if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_COIN):
             return
         await interaction.response.defer()
         if not await _prepare(interaction):
@@ -169,7 +169,7 @@ def register(tree: app_commands.CommandTree) -> None:
     async def bet_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
-        if not await sleep_guard.guard(interaction, silent=False):
+        if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_BET):
             return
         await interaction.response.defer(ephemeral=True)
         if not await _prepare(interaction):

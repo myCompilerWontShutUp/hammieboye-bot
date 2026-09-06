@@ -2,7 +2,10 @@ import discord
 
 from events.scheduler import is_sleep_time_for
 
-# 취침 시간대(00:00~06:30)에 계정 관리형 커맨드(/가입 등)를 막는 고정 문구.
+# `wrap_text_if_asleep()`의 기본값 — 임베드가 있는 읽기 전용 "확인한다"류 명령어
+# (/랭킹·/업적-리스트·/내기-규칙·/도박-규칙·/자판기-리스트) 전용. 이 명령어들은 취침
+# 중에도 실제로 실행돼 embed는 그대로 붙고 텍스트만 이 문구로 바뀐다 — "이미 적어둔
+# 메모(=그 embed)를 보여준다"는 컨셉이라 별도 행동이 필요 없는 조회성 명령어에만 맞는다.
 SLEEP_REPLY = "Zzzzz... _(쿨쿨)_ _(근처에 메모가 하나 놓여있다.)_"
 
 # /내정보·/니정보(2026-09-06 통합) 전용 — 수첩을 펼쳐 읽어본다는 능동적인 컨셉.
@@ -16,6 +19,14 @@ SLEEP_REPLY_PLASTIC = "(자고 있어서 반응을 보이지 않는다)"
 # 않고, 게임 선택 프롬프트의 안내 문구만 이 문구로 바꿔치기한다(wrap_text_if_asleep의
 # override로 사용).
 SLEEP_REPLY_GAMBLE = "Zzzzzz... _(햄미 몰래 해보자!!)_"
+
+# 아래 3개는 `guard()`로 명령어 실행 자체를 완전히 막는 "행동형" 명령어 전용
+# (2026-09-06) — 舊에는 이 셋 다 위 SLEEP_REPLY(메모 컨셉)를 그대로 썼는데, 아무
+# embed도 안 뜨고 그냥 거절되는 상황이라 "메모가 놓여있다"는 설명이 안 맞았다(뭘 보라는
+# 메모인지 알 수 없음). 각자 실제로 못 하는 이유에 맞춰 따로 뺐다.
+SLEEP_REPLY_COIN = "(자고 있어서 못 가져오는 듯 하다)"
+SLEEP_REPLY_VENDING = "(자고 있어서 자판기를 쓸 수 없는 듯 하다)"
+SLEEP_REPLY_BET = "(자고 있어서 내기에 응할 수 없는 듯 하다)"
 
 
 async def guard(interaction: discord.Interaction, *, silent: bool, message: str = SLEEP_REPLY) -> bool:
