@@ -7,7 +7,7 @@ import discord
 
 from command.vending_catalog import BY_ID
 from config import ALLOWED_GUILD_IDS
-from core.base import EMBED_COLOR
+from core.base import SYSTEM_EMBED_COLOR
 from core.discord_names import resolve_real_name
 from db.daily_stats import get_dessert_feeders_for, kst_today_str
 from db.users import get_created_at_map
@@ -77,7 +77,7 @@ _ANNOUNCE_DESCRIPTION = "`/먹어`를 이용해 햄미에게 음식을 가져다
 
 
 def _build_announce_embed() -> discord.Embed:
-    embed = discord.Embed(title=_ANNOUNCE_TITLE, description=_ANNOUNCE_DESCRIPTION, color=EMBED_COLOR)
+    embed = discord.Embed(title=_ANNOUNCE_TITLE, description=_ANNOUNCE_DESCRIPTION, color=SYSTEM_EMBED_COLOR)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
 

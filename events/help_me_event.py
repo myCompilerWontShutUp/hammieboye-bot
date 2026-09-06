@@ -14,7 +14,7 @@ from config import (
     OPENAI_JUDGE_MODEL,
     openai_service_tier_kwargs,
 )
-from core.base import EMBED_COLOR
+from core.base import SYSTEM_EMBED_COLOR
 from core.discord_names import resolve_real_name
 from core.korean import josa
 from events import dessert_time
@@ -348,7 +348,7 @@ def _build_announce_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🆘 헬프 햄미 이벤트",
         description=f"가장 먼저 햄미를 불러 도와주세요! {prefixes}를 통해 부를 수 있어요!",
-        color=EMBED_COLOR,
+        color=SYSTEM_EMBED_COLOR,
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed

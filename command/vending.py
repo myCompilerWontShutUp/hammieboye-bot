@@ -70,6 +70,8 @@ async def handle_purchase(
         )
 
     user = await get_user(user_id)
+    current_coins = user["coins"]
+    before_coins = current_coins + total_cost  # spend_coins 이후 조회라 역산으로 구한다
     total_delta = 0
     current_affection = user["affection"]
     achievement_notices: list[str] = []
@@ -93,7 +95,9 @@ async def handle_purchase(
     embed = discord.Embed(title="🛒 구매 완료!!", color=VENDING_EMBED_COLOR)
     embed.description = (
         f"- 품목: {item.name} x {count}\n"
-        f"- 차감: {total_cost:,}코인\n"
+        f"- 기존 금액: {before_coins:,}코인\n"
+        f"- 사용 금액: {total_cost:,}코인\n"
+        f"- 현재 금액: {current_coins:,}코인\n"
         f"- {effect_summary}"
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
