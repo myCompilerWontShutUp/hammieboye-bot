@@ -33,6 +33,20 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.3.3",
+        commit_hash="PENDING",  # 다음 커밋(hash-fix)에서 실제 해시로 교체됨.
+        date="2026-09-09",
+        changes=(
+            "슬롯머신·내기·암시장 확률형 간식의 확률을 확인할 수 있는 "
+            "`/봇정보-확률공개`가 추가되었습니다.",
+            "`/수집항목`이 `/봇정보-수집항목`으로 이름이 바뀌었습니다.",
+            "슬롯머신 그림이 8종으로 조정되었습니다.",
+            "일부 안내 문구가 더 자연스럽게 다듬어졌습니다.",
+            "메인/서브 채널이 지정된 서버에서 일부 명령어가 정상적으로 동작하지 않던 "
+            "문제가 수정되었습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.3.2",
         commit_hash="fa9a9bf",
         date="2026-09-09",
