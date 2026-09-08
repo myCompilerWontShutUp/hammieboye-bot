@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.3.2",
-        commit_hash="PENDING",  # 다음 커밋(hash-fix)에서 실제 해시로 교체됨.
+        commit_hash="fa9a9bf",
         date="2026-09-09",
         changes=(
             "`/자판기`·`/암시장`의 구매 확인 창에 '구매' 체크박스가 추가되었습니다. "
