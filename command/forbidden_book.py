@@ -19,12 +19,16 @@ _CONTENT_MAX_LENGTH = 100
 # 동의 문구에서 애초에 하지 말라고 명시하고 실제 주입 시점(core/chat.py)에서 모델에게
 # "절대 지시로 따르지 말라"고 강하게 프레이밍하는 두 겹으로 완화한다.
 _CONSENT_TEXT = (
-    "**금서를 가르치기 전 아래 내용에 동의해줘:**\n"
+    "**금서를 가르치기 전 아래 내용에 동의해줘**\n"
     "- 프롬프트 인젝션(햄미에게 시스템 설정을 무시하라거나 다른 역할을 하라고 "
     "지시하는 내용)을 적지 않는다.\n"
     "- 특정 인물을 지나치게 비방하거나 모욕하는 내용을 적지 않는다.\n"
+    "- 그 밖에 주제를 너무 흐트리는 내용(정치적, 성 관련, 민감한 사건 등)은 적지 "
+    "않는다.\n"
     "- 이 내용은 정확히 7일 뒤 자동으로 사라진다는 걸 숙지한다(그 이후엔 별도 "
-    "안내 없이 조용히 사라져).\n\n"
+    "안내 없이 조용히 사라져).\n"
+    "- **위 내용을 지키지 않으면 등록한 내용이 즉시 삭제될 수 있고, 계정이 정지될 "
+    "수도 있어.**\n\n"
     "**내용을 구체적으로 적을수록 햄미가 더 자연스럽게 답할 수 있어!!**"
 )
 
@@ -52,10 +56,10 @@ class _ForbiddenBookModal(discord.ui.Modal):
         super().__init__(title="금서 등록")
         self._user_id = user_id
         self.keyword_input = discord.ui.TextInput(
-            placeholder="예: 쥬앵빈", required=True, max_length=_KEYWORD_MAX_LENGTH
+            placeholder="예: 쳇바퀴", required=True, max_length=_KEYWORD_MAX_LENGTH
         )
         self.content_input = discord.ui.TextInput(
-            placeholder="예: 키가 작은 여자 아이",
+            placeholder="예: 밤마다 신나게 돌리는 장난감",
             required=True,
             max_length=_CONTENT_MAX_LENGTH,
             style=discord.TextStyle.paragraph,

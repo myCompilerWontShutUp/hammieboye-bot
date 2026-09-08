@@ -73,8 +73,10 @@ def _category_items(kind: str) -> list:
 
 
 def _item_block(item, purchase_count: int) -> str:
-    """/자판기와 동일한 카드형(이름+횟수 줄 / 가격+효과 줄). 확률적 간식은 "N 오르거나
-    M 감소" 형태로 두 결과를 함께 보여주고, 도구는 카탈로그의 description을 그대로 쓴다.
+    """/자판기와 동일한 카드형(이름+횟수 줄 / 가격 줄 / 효과 줄로 3줄 — 2026-09-08
+    가격과 효과를 한 줄에 "—"로 붙여 쓰다가 모바일에서 줄바꿈이 애매하게 꺾여
+    가독성이 떨어진다는 지적으로 줄을 분리했다). 확률적 간식은 "N 오르거나 M 감소"
+    형태로 두 결과를 함께 보여주고, 도구는 카탈로그의 description을 그대로 쓴다.
     장난 품목(is_joke)은 실제로 결제/지급이 없어 "(N회 구매)" 표시를 생략한다(舊
     /자판기 "기타" 품목과 동일한 원칙)."""
     count_suffix = "" if item.is_joke else f" ({purchase_count}회 구매)"
@@ -85,7 +87,7 @@ def _item_block(item, purchase_count: int) -> str:
             detail = f"먹일 시 호감도 +{item.good_delta} 또는 {item.bad_delta}"
     else:
         detail = item.description or "???"
-    return f"**{item.name}**{count_suffix}\n{item.price:,}코인 — {detail}"
+    return f"**{item.name}**{count_suffix}\n{item.price:,}코인\n{detail}"
 
 
 _MAX_CATEGORY_ITEMS = max(len(_category_items(kind)) for kind in _CATEGORY_ORDER) or 1

@@ -171,10 +171,17 @@ class ReplayView(discord.ui.View):
 
 class PurchaseConfirmModal(discord.ui.Modal):
     """자판기류(`/자판기`·`/암시장`) 구매 확인 모달(2026-09-08 신규) — 가진 금액/상품
-    가격/구매 후 잔액을 보여주고, "제출"을 누르면 실제 구매를 실행하는 on_confirm
-    콜백을 부른다. 구매는 항상 1개 고정이라 수량은 이 모달 어디에도 표시하지 않는다.
-    실제로 입력받을 값이 없어(순수 확인용) TextInput은 `required=False`로 둔다 —
-    Discord 모달은 컴포넌트가 최소 1개 있어야 해서 형식상 넣을 뿐, 값 자체는 안 쓴다."""
+    가격/구매 후 잔액을 보여주고, "구매" 체크박스를 체크한 채 제출해야 실제 구매를
+    실행하는 on_confirm 콜백을 부른다. 구매는 항상 1개 고정이라 수량은 이 모달
+    어디에도 표시하지 않는다.
+
+    최초 설계는 값을 안 받는 `TextInput(required=False)`을 형식상 자리만 채우는
+    용도로 넣었었다 — Discord 모달은 컴포넌트가 최소 1개 있어야 해서였는데, "아무것도
+    안 적어도 그냥 제출된다"는 게 실수로 결제될 위험이 있어 불친절하다는 지적으로,
+    discord.py 2.7에서 새로 지원하는 `discord.ui.Checkbox`(모달 전용 체크박스)로
+    교체했다 — 기본값 미체크, 체크한 채로 제출해야만 구매가 진행된다."""
+
+    _NOT_CHECKED_MESSAGE = "'구매' 체크박스를 체크해야 진행돼!! _(갸웃)_"
 
     def __init__(
         self, *, item_name: str, before: int, price: int, on_confirm: Callable[[discord.Interaction], Awaitable[None]]
@@ -182,21 +189,22 @@ class PurchaseConfirmModal(discord.ui.Modal):
         super().__init__(title=f"{item_name} 구매 확인"[:45])
         self._on_confirm = on_confirm
         after = before - price
-        confirm_input = discord.ui.TextInput(
-            placeholder="그대로 제출하면 구매가 진행돼!!", required=False, style=discord.TextStyle.short
-        )
+        self._confirm_checkbox = discord.ui.Checkbox(default=False)
         self.add_item(
             discord.ui.Label(
-                text="구매하려면 제출을 눌러줘!!",
+                text="구매",
                 description=(
                     f"가진 금액: {before:,}코인 / 상품 가격: {price:,}코인 / "
                     f"구매 후 잔액: {after:,}코인"
                 ),
-                component=confirm_input,
+                component=self._confirm_checkbox,
             )
         )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self._confirm_checkbox.value:
+            await interaction.response.send_message(self._NOT_CHECKED_MESSAGE, ephemeral=True)
+            return
         await self._on_confirm(interaction)
 
 

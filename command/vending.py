@@ -87,15 +87,17 @@ def _price_from_counts(item, counts: dict[str, int]) -> int:
 
 
 def _item_block(item, price: int, purchase_count: int) -> str:
-    """업적 리스트(command/achievements.py)와 동일한 카드형 — 이름 줄 + 설명 줄로
-    가독성을 높인다. price는 그 유저 기준 "다음 구매 가격"(투자 품목은 이미 산
-    횟수만큼 2배씩 올라 카탈로그 기본값과 다를 수 있다)."""
+    """업적 리스트(command/achievements.py)와 동일한 카드형 — 이름 줄 + 가격 줄 + 효과
+    줄로 3줄 분리한다(2026-09-08 — 가격과 효과를 "—"로 한 줄에 붙여 쓰다가 모바일에서
+    줄바꿈이 애매하게 꺾여 가독성이 떨어진다는 지적으로 줄을 나눴다, /암시장
+    ::_item_block과 동일한 원칙). price는 그 유저 기준 "다음 구매 가격"(투자 품목은
+    이미 산 횟수만큼 2배씩 올라 카탈로그 기본값과 다를 수 있다)."""
     note = f" ({item.note})" if item.note else ""
     if item.kind == "snack":
         detail = f"먹일 시 호감도 +{item.effect}{note}"
     else:  # "coin"("투자") — /동전 획득량 증가
         detail = f"`/동전` 획득량 +{item.effect}"
-    return f"**{item.name}** ({purchase_count}회 구매)\n{price:,}코인 — {detail}"
+    return f"**{item.name}** ({purchase_count}회 구매)\n{price:,}코인\n{detail}"
 
 
 _MAX_CATEGORY_ITEMS = max(len(_category_items(kind)) for kind in _CATEGORY_ORDER)
