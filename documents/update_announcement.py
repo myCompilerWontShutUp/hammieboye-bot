@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.3.1",
-        commit_hash="PENDING",  # 다음 커밋(hash-fix)에서 실제 해시로 교체됨.
+        commit_hash="12433e3",
         date="2026-09-08",
         changes=(
             "'/먹어'가 '/사용'으로 통합되었습니다. 이제 간식을 먹이는 것 외에 다른 "
