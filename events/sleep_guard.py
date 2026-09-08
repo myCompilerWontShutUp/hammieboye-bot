@@ -3,9 +3,12 @@ import discord
 from events.scheduler import is_sleep_time_for
 
 # `wrap_text_if_asleep()`의 기본값 — 임베드가 있는 읽기 전용 "확인한다"류 명령어
-# (/랭킹·/업적-리스트·/내기-규칙·/도박-규칙·/자판기-리스트) 전용. 이 명령어들은 취침
+# (/랭킹·/업적-리스트·/내기-규칙·/도박-규칙) 전용. 이 명령어들은 취침
 # 중에도 실제로 실행돼 embed는 그대로 붙고 텍스트만 이 문구로 바뀐다 — "이미 적어둔
 # 메모(=그 embed)를 보여준다"는 컨셉이라 별도 행동이 필요 없는 조회성 명령어에만 맞는다.
+# 2026-09-08 舊 /자판기-리스트가 폐지되고 /자판기 하나로 합쳐지면서(간식/투자
+# 목록 보기 + 구매를 한 명령어가 겸함) 이 기본값 대상에서 완전히 빠졌다 — /자판기는
+# 원래도 `guard()`(완전 차단, SLEEP_REPLY_VENDING) 대상이었다.
 SLEEP_REPLY = "Zzzzz... _(쿨쿨)_ _(근처에 메모가 하나 놓여있다.)_"
 
 # /내정보·/니정보(2026-09-06 통합) 전용 — 수첩을 펼쳐 읽어본다는 능동적인 컨셉.
@@ -40,6 +43,18 @@ async def guard(interaction: discord.Interaction, *, silent: bool, message: str 
         return True
     if not silent:
         await interaction.response.send_message(message)
+    return False
+
+
+async def guard_sleep_only(interaction: discord.Interaction, *, message: str) -> bool:
+    """`guard()`와 정반대 게이트 — 오직 취침 시간대(`is_sleep_time_for`)에만 실행을
+    허용한다. `/암시장` 전용이다(2026-09-08 신규) — "햄미가 몰래 일어나 거래한다"는
+    컨셉이라, 다른 모든 명령어와 반대로 **깨어있는 시간대에 차단**된다. 방해금지로
+    기상이 늦춰진 날도 `is_sleep_time_for`가 이미 그 지연(`DELAYED_WAKE_TIME`)을
+    반영하므로 이 함수는 별도 처리 없이 그대로 넘겨받아 정확하게 동작한다."""
+    if is_sleep_time_for(interaction.channel_id):
+        return True
+    await interaction.response.send_message(message)
     return False
 
 

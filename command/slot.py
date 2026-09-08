@@ -447,7 +447,7 @@ async def _start_round(interaction: discord.Interaction, user_id: int, bet: int)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
 
-    # vending.py::handle_purchase와 동일한 역산 — spend_coins가 차감 전 잔액을
+    # vending.py::_execute_purchase와 동일한 역산 — spend_coins가 차감 전 잔액을
     # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
     user = await get_user(user_id)
     before_coins = user["coins"] + bet

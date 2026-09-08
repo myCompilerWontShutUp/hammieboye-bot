@@ -21,6 +21,7 @@ KNOWN_TABLES = (
     "user_emoji_tags",
     "guild_sub_channels",
     "vending_purchases",
+    "forbidden_book_entries",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -41,6 +42,7 @@ _ORDER_COLUMN = {
     "user_emoji_tags": "updated_at",
     "guild_sub_channels": "created_at",
     "vending_purchases": "purchased_at",
+    "forbidden_book_entries": "created_at",
 }
 
 

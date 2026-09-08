@@ -193,6 +193,12 @@ CREATE TABLE daily_stats (
   -- /동전 하루 사용 횟수(신규, 하루 최대 3회) — claim_coin_daily_use()로 원자적 증가.
   coin_claims_today                 integer NOT NULL DEFAULT 0,
 
+  -- /암시장 "햄미 일정표"를 오늘 처음 사용했는지(2026-09-08 신규) — 첫 사용 시점에만
+  -- 재고 1개를 소비하고 이 플래그를 세운다. 같은 날 재사용은 이 플래그 덕분에 재고
+  -- 소비 없이 몇 번이든 다시 볼 수 있고, 다음 날은 새 daily_stats 행이라 자연히
+  -- false로 리셋된다(command/hammie_schedule.py).
+  schedule_activated_today          boolean NOT NULL DEFAULT false,
+
   -- 쿨타임 남용(4-5) 카운터 — 이벤트별로 집계 (예: {"plastic_bottle": 2})
   cooldown_abuse_counts              jsonb NOT NULL DEFAULT '{}'::jsonb,
 
@@ -454,6 +460,26 @@ CREATE TABLE user_emoji_tags (
   emojis        jsonb NOT NULL,          -- 순서 있는 이모지 문자 배열, 예: ["🔥", "👍"]
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- ------------------------------------------------------------
+-- 9-7. forbidden_book_entries — /암시장 "금서" (신규, 2026-09-08)
+--    유저가 가르친 키워드/내용 — 자연어 메시지에 키워드가 (부분일치로) 나오면
+--    자동으로 생성 컨텍스트에 주입된다(전역 적용, 가르친 사람 한정 아님).
+--    teacher_user_id는 "누가 가르쳤는지" 기록용일 뿐 매칭 로직엔 안 쓰인다.
+--    7일 지난 행은 db/forbidden_books.py::purge_old()가 매일 조용히 지운다
+--    ("일주일 뒤 까먹고, 까먹은 뒤엔 알리지 않는다") — 5개/인 한도와 키워드
+--    전역 유일성 검사는 애플리케이션 레벨에서 처리한다(만료 기준이 걸린
+--    조건부 유니크 제약은 DB로 표현하기 번거로워서).
+-- ------------------------------------------------------------
+
+CREATE TABLE forbidden_book_entries (
+  id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  teacher_user_id   bigint REFERENCES users(user_id) ON DELETE SET NULL,
+  keyword           text NOT NULL,
+  content           text NOT NULL,
+  created_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_forbidden_book_entries_created_at ON forbidden_book_entries (created_at);
 
 -- ------------------------------------------------------------
 -- 10. 원자적 호감도 증감 RPC (일일 +100 상한 적용, affection_log 기록)
@@ -866,6 +892,29 @@ AS $$
   RETURNING coin_grant_bonus;
 $$;
 
+-- coin_grant_bonus를 최대 p_amount만큼 원자적으로 감소(0 밑으로 안 내려감) — 관리자
+-- 콘솔 itm remove 전용(투자 품목 회수). 반환값은 (removed, new_bonus).
+CREATE OR REPLACE FUNCTION decrease_coin_grant_bonus(p_user_id bigint, p_amount bigint)
+RETURNS TABLE (removed bigint, new_bonus bigint)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_current bigint;
+  v_removed bigint;
+  v_new bigint;
+BEGIN
+  SELECT coin_grant_bonus INTO v_current FROM users WHERE user_id = p_user_id FOR UPDATE;
+
+  v_current := COALESCE(v_current, 0);
+  v_removed := LEAST(p_amount, v_current);
+  v_new := v_current - v_removed;
+
+  UPDATE users SET coin_grant_bonus = v_new WHERE user_id = p_user_id;
+
+  RETURN QUERY SELECT v_removed, v_new;
+END;
+$$;
+
 -- 간식 지급(자판기 구매 전용) — 없으면 새로 만들고, 있으면 누적.
 CREATE OR REPLACE FUNCTION add_snack(p_user_id bigint, p_snack_id text, p_quantity integer)
 RETURNS integer
@@ -883,7 +932,7 @@ BEGIN
 END;
 $$;
 
--- 간식 1개 소비(원자적 조건부 차감, spend_coins와 동일한 idiom) — /먹어 전용.
+-- 간식 1개 소비(원자적 조건부 차감, spend_coins와 동일한 idiom) — /사용 전용.
 -- 실패(false)면 그 간식을 안 가지고 있거나 0개인 것.
 CREATE OR REPLACE FUNCTION consume_snack(p_user_id bigint, p_snack_id text)
 RETURNS boolean
@@ -901,7 +950,35 @@ BEGIN
 END;
 $$;
 
--- 평생 간식 준 횟수 원자적 증가(increment_chat_count와 동일 골격) — /먹어로 실제로
+-- 간식/도구를 최대 quantity개 원자적으로 제거(0 밑으로 안 내려감) — 관리자 콘솔
+-- itm remove 전용. 반환값은 (removed, new_quantity).
+CREATE OR REPLACE FUNCTION remove_snack(p_user_id bigint, p_snack_id text, p_quantity integer)
+RETURNS TABLE (removed integer, new_quantity integer)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_current integer;
+  v_removed integer;
+  v_new integer;
+BEGIN
+  SELECT quantity INTO v_current FROM user_snacks
+  WHERE user_id = p_user_id AND snack_id = p_snack_id
+  FOR UPDATE;
+
+  v_current := COALESCE(v_current, 0);
+  v_removed := LEAST(p_quantity, v_current);
+  v_new := v_current - v_removed;
+
+  IF v_removed > 0 THEN
+    UPDATE user_snacks SET quantity = v_new
+    WHERE user_id = p_user_id AND snack_id = p_snack_id;
+  END IF;
+
+  RETURN QUERY SELECT v_removed, v_new;
+END;
+$$;
+
+-- 평생 간식 준 횟수 원자적 증가(increment_chat_count와 동일 골격) — /사용으로 실제로
 -- "먹였을 때"만 호출한다(자판기 구매 시점엔 안 올림 — /내정보의 "간식 준 횟수" 필드용).
 CREATE OR REPLACE FUNCTION increment_snacks_given(p_user_id bigint)
 RETURNS bigint
@@ -1018,3 +1095,4 @@ ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_chat_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_emoji_tags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vending_purchases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE forbidden_book_entries ENABLE ROW LEVEL SECURITY;

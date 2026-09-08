@@ -1,4 +1,4 @@
-from db.client import rpc, select
+from db.client import delete, rpc, select
 
 
 async def get_inventory(user_id: int) -> list[dict]:
@@ -21,5 +21,18 @@ async def add_snack(user_id: int, snack_id: str, quantity: int) -> int:
 
 async def consume_snack(user_id: int, snack_id: str) -> bool:
     """간식 1개를 원자적으로 소비한다(조건부 차감, spend_coins와 동일한 idiom) —
-    /먹어 전용. 실패(False)면 그 간식을 안 가지고 있거나 0개인 것."""
+    /사용 전용. 실패(False)면 그 간식을 안 가지고 있거나 0개인 것."""
     return await rpc("consume_snack", {"p_user_id": user_id, "p_snack_id": snack_id})
+
+
+async def remove_snack(user_id: int, snack_id: str, quantity: int) -> dict:
+    """간식(도구 품목 포함)을 최대 quantity개 원자적으로 제거한다 — 관리자 itm remove
+    전용. 보유량보다 많이 지우려 하면 있는 만큼만 지운다(deduct_coins_clamped와 동일한
+    "0 밑으로 안 내려감" 원칙). 반환값은 {removed, new_quantity}."""
+    rows = await rpc("remove_snack", {"p_user_id": user_id, "p_snack_id": snack_id, "p_quantity": quantity})
+    return rows[0]
+
+
+async def clear_inventory(user_id: int) -> None:
+    """이 유저의 간식/도구 인벤토리를 전부 지운다(관리자 itm clear 전용)."""
+    await delete("user_snacks", {"user_id": f"eq.{user_id}"})

@@ -10,8 +10,9 @@ from core.korean import josa
 from db.users import get_user
 from events.scheduler import KST, format_footer_time
 
-# /자판기·/자판기-리스트 전용 색(하늘색) — command/info.py 등의 EMBED_COLOR(연주황색)와
-# 구분해 자판기만의 색으로 쓴다.
+# /자판기 전용 색(하늘색) — command/info.py 등의 EMBED_COLOR(연주황색)와
+# 구분해 자판기만의 색으로 쓴다. /암시장은 별도로 discord.Color.dark_purple()을 쓴다
+# (같은 "상점" 계열이지만 밤에만 여는 다른 컨셉이라 색을 분리).
 VENDING_EMBED_COLOR = 0x87CEEB
 
 # /내기·/내기-규칙·/도박·/도박-규칙(및 그 안의 모든 게임 뷰) 전용 색(밝은 노란색,
@@ -166,6 +167,37 @@ class ReplayView(discord.ui.View):
         await interaction.response.send_modal(
             BetAmountModal(balance=balance, on_valid=_on_valid)
         )
+
+
+class PurchaseConfirmModal(discord.ui.Modal):
+    """자판기류(`/자판기`·`/암시장`) 구매 확인 모달(2026-09-08 신규) — 가진 금액/상품
+    가격/구매 후 잔액을 보여주고, "제출"을 누르면 실제 구매를 실행하는 on_confirm
+    콜백을 부른다. 구매는 항상 1개 고정이라 수량은 이 모달 어디에도 표시하지 않는다.
+    실제로 입력받을 값이 없어(순수 확인용) TextInput은 `required=False`로 둔다 —
+    Discord 모달은 컴포넌트가 최소 1개 있어야 해서 형식상 넣을 뿐, 값 자체는 안 쓴다."""
+
+    def __init__(
+        self, *, item_name: str, before: int, price: int, on_confirm: Callable[[discord.Interaction], Awaitable[None]]
+    ) -> None:
+        super().__init__(title=f"{item_name} 구매 확인"[:45])
+        self._on_confirm = on_confirm
+        after = before - price
+        confirm_input = discord.ui.TextInput(
+            placeholder="그대로 제출하면 구매가 진행돼!!", required=False, style=discord.TextStyle.short
+        )
+        self.add_item(
+            discord.ui.Label(
+                text="구매하려면 제출을 눌러줘!!",
+                description=(
+                    f"가진 금액: {before:,}코인 / 상품 가격: {price:,}코인 / "
+                    f"구매 후 잔액: {after:,}코인"
+                ),
+                component=confirm_input,
+            )
+        )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._on_confirm(interaction)
 
 
 class _RuleButton(discord.ui.Button):

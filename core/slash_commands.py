@@ -6,18 +6,18 @@ from discord import app_commands
 from admin import console as admin
 import command.achievements as achievements_view
 import command.bet as bet
+import command.black_market as black_market
 import command.coin as coin
-import command.eat as eat
 import command.intro as intro
 import command.ranking as ranking
 import command.slot as slot
+import command.use as use_item
 import command.vending as vending
 from command.collection_info import handle as collection_info_handle
 from command.info import handle_self as info_handle_self
 from command.leave import handle as leave_handle
 from command.plastic import handle as plastic_handle
 from command.update_log import autocomplete_버전, handle as update_log_handle
-from command.vending_catalog import ITEM_NAMES
 from core import onboarding
 from core.base import touch_channel
 from db.daily_stats import increment_messages_today
@@ -130,12 +130,7 @@ def register(tree: app_commands.CommandTree) -> None:
         view.message = await interaction.original_response()
 
     @tree.command(name="자판기", description="자판기에서 물건을 산다")
-    @app_commands.describe(품목="살 물건")
-    @app_commands.choices(품목=[app_commands.Choice(name=n, value=n) for n in ITEM_NAMES])
-    async def vending_command(
-        interaction: discord.Interaction,
-        품목: app_commands.Choice[str],
-    ) -> None:
+    async def vending_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return
         if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_VENDING):
@@ -143,12 +138,24 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        result = await vending.handle_purchase(interaction.user.id, 품목.value)
-        if isinstance(result, tuple):
-            text, embed = result
-            await interaction.edit_original_response(content=text, embed=embed)
-        else:
-            await interaction.edit_original_response(content=result)
+        text, embed, view = await vending.handle(interaction.user.id)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.message = await interaction.original_response()
+
+    @tree.command(name="암시장", description="밤에만 몰래 열리는 상점에서 거래한다")
+    async def black_market_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        # /자판기와 정반대 게이트 — 오직 취침 시간대에만 열린다("햄미가 몰래 일어나
+        # 거래한다"는 컨셉, events/sleep_guard.py::guard_sleep_only 참고).
+        if not await sleep_guard.guard_sleep_only(interaction, message=black_market.DAYTIME_BLOCK_MESSAGE):
+            return
+        await interaction.response.defer()
+        if not await _prepare(interaction):
+            return
+        text, embed, view = await black_market.handle(interaction.user.id)
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
+        view.message = await interaction.original_response()
 
     @tree.command(name="동전", description="쳇바퀴를 굴려서 동전을 번다")
     async def coin_command(interaction: discord.Interaction) -> None:
@@ -208,29 +215,18 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.interaction = interaction
 
-    @tree.command(name="먹어", description="햄미에게 간식을 먹인다")
-    @app_commands.describe(간식="먹일 간식")
-    @app_commands.autocomplete(간식=eat.autocomplete_간식)
-    async def eat_command(interaction: discord.Interaction, 간식: str) -> None:
+    @tree.command(name="사용", description="가방에 있는 아이템을 사용한다")
+    @app_commands.describe(아이템="사용할 아이템")
+    @app_commands.autocomplete(아이템=use_item.autocomplete_아이템)
+    async def use_command(interaction: discord.Interaction, 아이템: str) -> None:
         if interaction.user.bot:
             return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
+        # 아이템에 따라 응답 공개 범위가 갈려서(간식=공개, 금서·햄미 일정표=ephemeral),
+        # /니정보와 동일하게 use_item.handle()이 아이템을 먼저 확인한 뒤 defer 여부를
+        # 스스로 결정한다.
+        if not await _prepare(interaction, deferred=False):
             return
-        text = await eat.handle(interaction.user.id, 간식)
-        await interaction.edit_original_response(content=text)
-
-    @tree.command(name="자판기-리스트", description="자판기 판매 목록을 확인한다")
-    async def vending_list_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        text, embed, view = await vending.handle_list(interaction.user.id)
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed, view=view)
-        view.message = await interaction.original_response()
+        await use_item.handle(interaction, interaction.user.id, 아이템)
 
     @tree.command(name="업데이트-로그", description="지난 업데이트 내역을 버전별로 확인한다")
     @app_commands.describe(버전="확인할 버전(예: v1.0.1), 생략하면 최신 버전")

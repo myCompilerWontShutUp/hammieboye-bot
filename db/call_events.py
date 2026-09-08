@@ -1,6 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from db.client import delete, insert, rpc, select, update
+
+# 디버깅 목적으로 헬프 미 이벤트(global_call_events) 기록을 30일치만 보관한다
+# (2026-09-08 신규 — 이전엔 이 테이블에서 실제로 행을 지우는 코드가 전혀 없어
+# 무기한 쌓였다, db/history.py::RETENTION_DAYS와 동일한 패턴).
+RETENTION_DAYS = 30
 
 
 async def schedule(scheduled_at: datetime, prompt_text: str) -> dict:
@@ -9,6 +14,19 @@ async def schedule(scheduled_at: datetime, prompt_text: str) -> dict:
         {"scheduled_at": scheduled_at.isoformat(), "prompt_text": prompt_text},
     )
     return rows[0]
+
+
+async def get_scheduled_between(start: datetime, end: datetime) -> list[dict]:
+    """`[start, end)` 구간에 예약된 이벤트 전부(게시 여부 무관), 시각 순 — /사용
+    햄미 일정표(2026-09-08 신규) 전용. PostgREST에서 같은 컬럼에 두 조건(gte+lt)을
+    걸려면 쿼리 파라미터를 두 번 보내야 하는데 db/client.py::select()가 단순 dict라
+    이를 못 표현해서, 하한만 서버에 걸고 상한은 여기서 파이썬으로 자른다(하루치라
+    많아야 몇십 행 — 성능 문제 없음)."""
+    rows = await select(
+        "global_call_events",
+        {"scheduled_at": f"gte.{start.isoformat()}", "select": "*", "order": "scheduled_at.asc"},
+    )
+    return [row for row in rows if datetime.fromisoformat(row["scheduled_at"]) < end]
 
 
 async def get_due_unposted() -> list[dict]:
@@ -132,3 +150,18 @@ async def delete_unposted_after(now: datetime) -> list[dict]:
         "global_call_events",
         {"scheduled_at": f"gt.{now.isoformat()}", "posted_at": "is.null"},
     )
+
+
+async def purge_old() -> None:
+    """`RETENTION_DAYS`(30일)보다 오래된 `global_call_events` 행을 실제로 삭제한다 —
+    매일 00:00(취침 시작, core/dispatcher.py)에 스케줄러가 호출한다. `created_at`
+    기준이라 "30일치만 항상 남는" FIFO처럼 동작한다 — 매일 3~5개씩 꾸준히 쌓이는
+    구조라, 이 컷오프가 지난 행은 곧 그만큼씩 밀려나며 지워진다.
+
+    **현재 진행 중인 이벤트와 절대 안 겹친다**: 이벤트는 매일 기상 시각(06:30~07:00)에
+    당일 07:30~22:30 사이로만 예약되고(§3-2), 게시 후 10분 안에 만료되거나 클레임돼
+    끝난다 — 30일 전 컷오프에 걸릴 수 있는 행은 이미 오래전에 결판난 것뿐이라
+    `get_active_events()`/`get_recently_claimed()`(클레임 유예 1분) 등 어떤 조회
+    로직과도 충돌하지 않는다."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+    await delete("global_call_events", {"created_at": f"lt.{cutoff.isoformat()}"})
