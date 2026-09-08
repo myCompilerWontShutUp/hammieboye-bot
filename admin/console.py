@@ -11,6 +11,7 @@ import discord
 import emoji as emoji_lib
 
 import achievements
+import admin.item_codes as item_codes
 from command.info import render_admin_summary
 from config import ADMIN_USER_ID, ALLOWED_GUILD_IDS, CALL_PREFIXES
 from admin.version import (
@@ -56,6 +57,7 @@ from db.daily_stats import ensure_nl_cap, update_daily_stats
 from db.emoji_tags import clear_tags as clear_emoji_tags_row
 from db.emoji_tags import get_all as get_all_emoji_tags
 from db.emoji_tags import set_tags as set_emoji_tags_row
+from db.snacks import add_snack, clear_inventory, remove_snack
 from db.guild_channels import (
     add_sub_channel,
     clear_main_channel,
@@ -66,7 +68,14 @@ from db.guild_channels import (
     set_main_channel,
 )
 from db.users import ensure_user, get_user
-from db.wallet import add_coins, deduct_coins_clamped
+from db.vending_log import clear_purchases, count_purchases, record_purchase, remove_purchases
+from db.wallet import (
+    add_coins,
+    decrease_coin_grant_bonus,
+    deduct_coins_clamped,
+    increase_coin_grant_bonus,
+    reset_coin_grant_bonus,
+)
 from responses.engine import get_admin_command_response
 from core.base import EMBED_COLOR
 
@@ -686,6 +695,132 @@ async def _handle_ach_revoke(args: list[str]) -> str:
     return f"네!! {name}님의 '{achievements.format_name(module)}' 업적을 제거했어요!!"
 
 
+def _itm_line(item, body: str) -> str:
+    return f"[{item_codes.source_label(item)}] {item.name} - {body}"
+
+
+async def _handle_itm_list(args: list[str]) -> str:
+    lines = []
+    for item in item_codes.ALL_ITEMS:
+        if item_codes.is_joke(item):
+            lines.append(_itm_line(item, "가짜 상품(장난용, 실제 효과 없음)"))
+        else:
+            lines.append(f"[{item_codes.source_label(item)}] {item.name}")
+    return "\n".join(lines)
+
+
+async def _handle_itm_help(args: list[str]) -> str:
+    lines = []
+    for item in item_codes.ALL_ITEMS:
+        body = "가짜 상품(장난용, 실제 효과 없음)" if item_codes.is_joke(item) else item_codes.describe(item)
+        lines.append(_itm_line(item, body))
+    return "\n".join(lines)
+
+
+async def _handle_itm_code(args: list[str]) -> str:
+    lines = []
+    for item in item_codes.ALL_ITEMS:
+        body = "코드 없음(장난 상품)" if item.code is None else item.code
+        lines.append(_itm_line(item, body))
+    return "\n".join(lines)
+
+
+def _find_item_by_code(code: str):
+    return item_codes.CODE_REGISTRY.get(code)
+
+
+async def _handle_itm_get(args: list[str]) -> str:
+    if len(args) != 3:
+        raise _AdminError("사용법: itm get : {user_id} {code} {count} {boolean}")
+    user_id = _parse_user_id(args[0])
+    code = args[1]
+    count = _parse_int(args[2], "count")
+    if count <= 0:
+        raise _AdminError("count는 1 이상이어야 해!!")
+    item = _find_item_by_code(code)
+    if item is None:
+        return f"그런 아이템 코드는 없어요!!\n{await _handle_itm_code([])}"
+    await _require_registered(user_id)
+    name = await _resolve_name(user_id)
+
+    # "1회만 구매 가능한 획득성 아이템"(is_one_time) 전용 — count를 무시하고 항상 1개만
+    # 지급한다. 지금은 이 플래그를 쓰는 품목이 없어 항상 그대로 count가 쓰인다.
+    actual_count = 1 if item.is_one_time else count
+    one_time_note = ""
+    if item.is_one_time and count != 1:
+        one_time_note = " (1회 한정 품목이라 count는 무시하고 1개만 지급했어요!!)"
+
+    if item_codes.is_coin_item(item):
+        bonus_delta = item.effect * actual_count
+        new_bonus = await increase_coin_grant_bonus(user_id, bonus_delta)
+        effect_note = f" (`/동전` 획득량 보너스 +{bonus_delta}, 현재 {new_bonus})"
+    else:
+        new_qty = await add_snack(user_id, item.id, actual_count)
+        effect_note = f" (보유: {new_qty}개)"
+
+    await record_purchase(user_id, item.id, item.price, actual_count)
+    await log_command("itm get", f"{user_id} {code} {actual_count}", "-", item.id)
+    return (
+        f"네!! {name}님에게 '{item.name}' 아이템을 {actual_count}개 지급했어요!!"
+        f"{one_time_note}{effect_note}"
+    )
+
+
+async def _handle_itm_remove(args: list[str]) -> str:
+    if len(args) != 3:
+        raise _AdminError("사용법: itm remove : {user_id} {code} {count} {boolean}")
+    user_id = _parse_user_id(args[0])
+    code = args[1]
+    count = _parse_int(args[2], "count")
+    if count <= 0:
+        raise _AdminError("count는 1 이상이어야 해!!")
+    item = _find_item_by_code(code)
+    if item is None:
+        return f"그런 아이템 코드는 없어요!!\n{await _handle_itm_code([])}"
+    await _require_registered(user_id)
+    name = await _resolve_name(user_id)
+
+    if item_codes.is_coin_item(item):
+        # coin_grant_bonus는 모든 투자 품목이 공유하는 단일 누적값이라, "이 품목의 몫"은
+        # 그 품목의 구매 로그(vending_purchases, itm get도 함께 남김)로만 알 수 있다 —
+        # 로그상 보유 단위 수만큼만 빼야 다른 투자 품목의 보너스까지 잘못 뺏기지 않는다.
+        owned = await count_purchases(user_id, item.id)
+        actual = min(count, owned)
+        if actual == 0:
+            return f"{name}님은 '{item.name}' 아이템을 가지고 있지 않아요!!"
+        result = await decrease_coin_grant_bonus(user_id, item.effect * actual)
+        await remove_purchases(user_id, item.id, actual)
+        await log_command("itm remove", f"{user_id} {code} {count}", item.id, "-")
+        return (
+            f"네!! {name}님의 '{item.name}' 아이템을 {actual}개 제거했어요!! "
+            f"(`/동전` 획득량 보너스 -{result['removed']}, 현재 {result['new_bonus']})"
+        )
+
+    result = await remove_snack(user_id, item.id, count)
+    removed = result["removed"]
+    if removed == 0:
+        return f"{name}님은 '{item.name}' 아이템을 가지고 있지 않아요!!"
+    await remove_purchases(user_id, item.id, removed)
+    await log_command("itm remove", f"{user_id} {code} {count}", item.id, "-")
+    return (
+        f"네!! {name}님의 '{item.name}' 아이템을 {removed}개 제거했어요!! "
+        f"(남은 개수: {result['new_quantity']})"
+    )
+
+
+async def _handle_itm_clear(args: list[str]) -> str:
+    if len(args) != 1:
+        raise _AdminError("사용법: itm clear : {user_id} {boolean}")
+    user_id = _parse_user_id(args[0])
+    await _require_registered(user_id)
+    name = await _resolve_name(user_id)
+    await clear_inventory(user_id)
+    await reset_coin_grant_bonus(user_id)
+    await clear_purchases(user_id)
+    await log_command("itm clear", str(user_id), "-", "전부 제거")
+    return f"네!! {name}님이 보유중이던 모든 아이템을 제거했어요!!"
+
+
 _NO_MATCH_MESSAGE = "일치하는 명령어가 없어요!!"
 
 # "*"는 전체(기본값) — string을 생략하면(콜론 자체를 안 쓰면) 자동으로 "*"로 취급되어
@@ -1103,6 +1238,12 @@ _COMMAND_LIST = (
     _CommandSpec("ach code", 0, "{boolean}", "업적 이름 + 코드 표시", _handle_ach_code),
     _CommandSpec("ach grant", 2, "{user_id} {code} {boolean}", "해당 유저에게 코드로 업적을 부여", _handle_ach_grant),
     _CommandSpec("ach revoke", 2, "{user_id} {code} {boolean}", "해당 유저의 업적을 코드로 제거", _handle_ach_revoke),
+    _CommandSpec("itm list", 0, "{boolean}", "모든 아이템(자판기+암시장) 목록 표시 (장난 상품은 가짜임을 표시)", _handle_itm_list),
+    _CommandSpec("itm help", 0, "{boolean}", "모든 아이템 이름 + 간단한 효과 설명 표시", _handle_itm_help),
+    _CommandSpec("itm code", 0, "{boolean}", "모든 아이템 이름 + 코드 표시 (장난 상품은 코드 없음)", _handle_itm_code),
+    _CommandSpec("itm get", 3, "{user_id} {code} {count} {boolean}", "해당 유저에게 코드로 아이템을 count개 지급 (구매 횟수도 함께 증가, 1회 한정 품목은 count 무시하고 1개 고정)", _handle_itm_get),
+    _CommandSpec("itm remove", 3, "{user_id} {code} {count} {boolean}", "해당 유저의 아이템을 코드로 count개만큼 제거 (실제로 뺀 만큼 구매 횟수도 차감)", _handle_itm_remove),
+    _CommandSpec("itm clear", 1, "{user_id} {boolean}", "해당 유저가 보유중인 모든 아이템(간식/도구/투자 보너스) 제거", _handle_itm_clear),
     _CommandSpec("op grant", 1, "{user_id} {boolean}", "해당 유저에게 관리자 권한을 부여 (최초 주인 전용)", _handle_op_grant, requires_prime=True),
     _CommandSpec("op revoke", 1, "{user_id} {boolean}", "해당 유저의 관리자 권한을 제거 (최초 주인 전용)", _handle_op_revoke, requires_prime=True),
     _CommandSpec("op list", 0, "{boolean}", "권한을 가진 사용자 전부 표시 (최초 주인 전용)", _handle_op_list, requires_prime=True),

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import achievements
 from db.achievements import award as award_achievement
-from db.client import rpc
+from db.client import rpc, update
 from events.scheduler import KST
 from events.special_days import get_multiplier
 
@@ -94,3 +94,16 @@ async def increase_coin_grant_bonus(user_id: int, amount: int) -> int:
     """/동전 기본 지급량(1개)에 더해지는 보너스를 늘린다 (자판기 그랜트 부스터 품목
     전용, 반복 가능)."""
     return await rpc("increase_coin_grant_bonus", {"p_user_id": user_id, "p_amount": amount})
+
+
+async def decrease_coin_grant_bonus(user_id: int, amount: int) -> dict:
+    """coin_grant_bonus를 최대 amount만큼 원자적으로 줄인다 — 관리자 itm remove 전용
+    (투자 품목 회수). 0 밑으로 안 내려가며, 보유량보다 많이 빼려 하면 있는 만큼만
+    뺀다. 반환값은 {removed, new_bonus}."""
+    rows = await rpc("decrease_coin_grant_bonus", {"p_user_id": user_id, "p_amount": amount})
+    return rows[0]
+
+
+async def reset_coin_grant_bonus(user_id: int) -> None:
+    """coin_grant_bonus를 0으로 리셋한다 — 관리자 itm clear 전용."""
+    await update("users", {"user_id": f"eq.{user_id}"}, {"coin_grant_bonus": 0})

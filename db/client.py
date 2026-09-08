@@ -31,7 +31,9 @@ async def select(table: str, params: dict[str, str]) -> list[dict]:
         return await resp.json()
 
 
-async def insert(table: str, data: dict) -> list[dict]:
+async def insert(table: str, data: dict | list[dict]) -> list[dict]:
+    """data가 list[dict]면 PostgREST 벌크 삽입(한 요청에 여러 행) — 관리자 itm get처럼
+    같은 값을 여러 행 남겨야 할 때 왕복 횟수를 줄이는 용도."""
     session = _get_session()
     headers = {"Prefer": "return=representation"}
     async with session.post(f"{_BASE_URL}/{table}", json=data, headers=headers) as resp:

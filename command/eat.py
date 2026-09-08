@@ -1,19 +1,30 @@
 import random
 
-import discord
-from discord import app_commands
-
 import achievements
-from command.vending_catalog import BY_ID, BY_NAME
+from command.black_market_catalog import BlackMarketItem
+from command.black_market_catalog import BY_ID as _BLACK_MARKET_BY_ID
+from command.black_market_catalog import BY_NAME as _BLACK_MARKET_BY_NAME
+from command.vending_catalog import BY_ID as _VENDING_BY_ID
+from command.vending_catalog import BY_NAME as _VENDING_BY_NAME
 from events.dessert_time import current_slot
 from db.achievements import award as award_achievement
-from db.affection import add_affection, format_affection_notice
+from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.daily_stats import claim_dessert_slot, dessert_snack_id, ensure_daily_stats
-from db.snacks import add_snack, consume_snack, get_inventory
-from db.users import increment_snacks_given
+from db.snacks import add_snack, consume_snack
+from db.users import get_user, increment_snacks_given
 
 _METHOD = "dessert_feed"
-_MAX_AUTOCOMPLETE = 25
+
+
+def find_by_id(snack_id: str):
+    """/자판기·/암시장 두 카탈로그를 합쳐서 조회한다 — user_snacks의 snack_id는 어느
+    카탈로그 것이든 그냥 문자열이라 출처를 구분해서 저장하지 않는다. command/use.py도
+    아이템 종류 판별에 그대로 재사용한다(밑줄 없는 공개 이름으로 통일)."""
+    return _VENDING_BY_ID.get(snack_id) or _BLACK_MARKET_BY_ID.get(snack_id)
+
+
+def find_by_name(snack_name: str):
+    return _VENDING_BY_NAME.get(snack_name) or _BLACK_MARKET_BY_NAME.get(snack_name)
 
 _NOT_DESSERT_TIME_LINES = (
     "지금은 디저트 타임이 아니야!! 하루 3번(아침/점심/저녁) 열려!! _(갸웃)_",
@@ -105,22 +116,6 @@ _FEED_SUCCESS_LINES = (
 )
 
 
-async def autocomplete_간식(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    """호출한 본인의 간식 인벤토리 기준으로만 제안한다(/먹어는 항상 자기 자신에게만
-    먹이므로 /니정보류와 달리 대상자 조회가 필요 없다)."""
-    inventory = await get_inventory(interaction.user.id)
-    query = current.strip().lower()
-    choices: list[app_commands.Choice[str]] = []
-    for row in inventory:
-        item = BY_ID.get(row["snack_id"])
-        if item is None or query and query not in item.name.lower():
-            continue
-        choices.append(app_commands.Choice(name=f"{item.name} ({row['quantity']}개)", value=item.name))
-        if len(choices) >= _MAX_AUTOCOMPLETE:
-            break
-    return choices
 
 
 async def handle(user_id: int, snack_name: str) -> str:
@@ -133,7 +128,7 @@ async def handle(user_id: int, snack_name: str) -> str:
     if slot in fed_today:
         return random.choice(_ALREADY_FED_LINES)
 
-    item = BY_NAME.get(snack_name)
+    item = find_by_name(snack_name)
     if item is None or item.kind != "snack":
         return random.choice(_NO_SNACK_LINES)
     if not await consume_snack(user_id, item.id):
@@ -150,11 +145,37 @@ async def handle(user_id: int, snack_name: str) -> str:
     fed_today[slot] = item.id
     await increment_snacks_given(user_id)
 
-    result = await add_affection(user_id, item.effect, _METHOD)
-    text = random.choice(_FEED_SUCCESS_LINES).format(snack=item.name)
+    if isinstance(item, BlackMarketItem):
+        # 암시장 확률적 간식(2026-09-08 신규) — 정확히 50/50으로 굴려서 결과를 정한다.
+        # 악마의 씨앗(double_or_halve)만 예외로, 고정 델타 대신 "지금 호감도의 2배"
+        # 또는 "지금 호감도의 절반으로 감소"를 적용한다(최초 설계는 "0으로 리셋"이었으나
+        # 너무 가혹하다는 피드백으로 완화). uncapped + 배율 미적용(add_affection의
+        # 일일 +100 상한/주말·생일 배율은 이런 극단적인 도박성 결과와 안 어울려
+        # 건너뛴다) — 업적 달성 보너스와 동일한 원칙.
+        good = random.random() < 0.5
+        if item.double_or_halve:
+            current_user = await get_user(user_id)
+            current_affection_before = current_user["affection"] if current_user is not None else 0
+            # 호감도가 음수일 때 current_affection_before를 그대로 쓰면 "2배"(좋음)가
+            # 오히려 더 나빠지고 "절반"(나쁨)이 오히려 좋아지는 부호 역전 버그가 있었다
+            # (예: -30에서 좋음 결과가 -60, 나쁨 결과가 -15) — 2026-09-08 발견/수정.
+            # abs()로 크기만 취해 방향은 항상 good=개선/bad=악화가 되도록 고정한다.
+            # 호감도가 0 이상일 때는 abs(x) == x라 기존 동작(정확히 2배/절반)과 완전히
+            # 동일하다.
+            magnitude = abs(current_affection_before)
+            delta = magnitude if good else -(magnitude // 2)
+        else:
+            delta = item.good_delta if good else item.bad_delta
+        result = await add_affection_uncapped(user_id, delta, _METHOD, apply_day_multiplier=False)
+        reaction = item.good_reaction if good else item.bad_reaction
+        text = f"{item.name} 냠냠... {reaction}"
+        multiplier_eligible = False
+    else:
+        result = await add_affection(user_id, item.effect, _METHOD)
+        text = random.choice(_FEED_SUCCESS_LINES).format(snack=item.name)
+        multiplier_eligible = True
 
     total_delta = result["applied_amount"]
-    multiplier_eligible = True
     current_affection = result["new_affection"]
     achievement_notices: list[str] = []
     if result["achievement_notice"]:

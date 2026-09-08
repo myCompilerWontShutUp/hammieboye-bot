@@ -13,6 +13,8 @@ from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import is_allowed_channel, touch
 from db.guild_sleep_state import any_triggered_tonight
 from db.admin_history import purge_old as purge_old_admin_chat_history
+from db.call_events import purge_old as purge_old_call_events
+from db.forbidden_books import purge_old as purge_old_forbidden_books
 from db.history import purge_old as purge_old_chat_history
 from db.users import increment_chat_count
 from events import dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
@@ -144,11 +146,18 @@ def setup_dispatcher(client: discord.Client) -> None:
         start_daily(6, 30, _run_wake_sequence)
         # 00:00 정각 — 내부에서 "어제" 날짜를 명시적으로 계산하므로 자정 직후에 돌아도 정확하다.
         start_daily(0, 0, sleep_event.announce_and_reward)
+        # 헬프 미 이벤트 기록을 30일치만 남긴다(디버깅 목적, 2026-09-08 신규) — 취침
+        # 시작 순간(00:00)에 실행. 이벤트는 항상 그날 07:30~22:30에만 예약되고 10분
+        # 안에 끝나므로, 30일 전 컷오프가 지금 진행 중인 이벤트와 겹칠 일은 없다.
+        start_daily(0, 0, purge_old_call_events)
         start_interval(_TICK_INTERVAL_SECONDS, help_me_event.tick)
         # 취침 시간대(한산한 새벽) 중에 30일 지난 채팅 원문을 지운다(2026-09-08 신규) —
         # 일반 자연어(chat_history)와 관리자 콘솔 자연어(admin_chat_history) 둘 다.
         start_daily(4, 0, purge_old_chat_history)
         start_daily(4, 0, purge_old_admin_chat_history)
+        # 금서(§/암시장)는 7일 뒤 조용히 완전히 잊혀진다(2026-09-08 신규) — 같은
+        # 한산한 시간대에 정리.
+        start_daily(4, 0, purge_old_forbidden_books)
 
         # 디저트 타임 하루 3슬롯 x (여는 방송 + 닫는 방송) = 6개 독립 등록. 헬프 미 이벤트
         # 쪽이 schedule_today()에서 이 슬롯들과 안 겹치게 스스로 피해간다(§4-3). 닫는

@@ -15,8 +15,9 @@ from events.scheduler import KST, broadcast_to_guilds, format_footer_time
 
 _client: discord.Client | None = None
 
-# 하루 3번, 각 30분짜리 디저트 타임 — /먹어는 이 윈도우 안에서만, 슬롯당 1번만 통한다
-# (daily_stats.dessert_fed_today가 실제 "이미 먹였는지" 판정, 이 모듈은 순수 시간 계산만).
+# 하루 3번, 각 30분짜리 디저트 타임 — /사용(간식)은 이 윈도우 안에서만, 슬롯당 1번만
+# 통한다(daily_stats.dessert_fed_today가 실제 "이미 먹였는지" 판정, 이 모듈은 순수
+# 시간 계산만).
 SLOTS: dict[str, time] = {
     "morning": time(8, 0),
     "noon": time(12, 30),
@@ -26,7 +27,7 @@ WINDOW = timedelta(minutes=30)
 
 _OPEN_LINES = (
     "배가 출출해!! 간식 먹여줄래?? _(기대)_",
-    "냠냠 하고 싶은 기분이야!! `/먹어`로 간식 줘봐!! _(설렘)_",
+    "냠냠 하고 싶은 기분이야!! `/사용`으로 간식 줘봐!! _(설렘)_",
     "간식 생각이 간절해!! _(칭얼)_",
     "출출한데 간식 좀 줄래?? _(두근)_",
     "간식 먹고 싶어!! 뭐 줄 거야?? _(기대)_",
@@ -73,7 +74,7 @@ _CLOSE_LINES = (
 # 피드백으로, 방송 밑에 항상 이 고정 임베드를 붙여 참여 방법을 명확히 한다. 햄미의
 # 말투(반말/오타)는 위 문구에만 쓰고, 이 안내는 시스템 라벨이라 정중체로 고정한다.
 _ANNOUNCE_TITLE = "🍪 햄미의 디저트 타임"
-_ANNOUNCE_DESCRIPTION = "`/먹어`를 이용해 햄미에게 음식을 가져다 주세요! 음식은 자판기에서 구매 가능합니다."
+_ANNOUNCE_DESCRIPTION = "`/사용`을 이용해 햄미에게 음식을 가져다 주세요! 음식은 자판기에서 구매 가능합니다."
 
 
 def _build_announce_embed() -> discord.Embed:
@@ -140,8 +141,9 @@ def slot_end(start: time) -> time:
 
 
 def current_slot(now: datetime | None = None) -> str | None:
-    """지금이 어느 디저트 타임 슬롯(30분 윈도우) 안인지 — 아니면 None. /먹어의 시간대
-    유효성 검사는 이 함수 하나로 충분하다(슬롯당 1회 제한은 daily_stats로 별도 판정)."""
+    """지금이 어느 디저트 타임 슬롯(30분 윈도우) 안인지 — 아니면 None. /사용(간식)의
+    시간대 유효성 검사는 이 함수 하나로 충분하다(슬롯당 1회 제한은 daily_stats로
+    별도 판정)."""
     current_dt = (now or datetime.now(timezone.utc)).astimezone(KST)
     for name, start in SLOTS.items():
         window_start = datetime.combine(current_dt.date(), start, tzinfo=KST)
