@@ -33,11 +33,8 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
-        # commit_hash는 이 커밋 자체를 가리켜야 해서 커밋 직후에 별도 소규모 커밋으로
-        # 채워 넣는다(2026-09-08, PR #29) — 커밋이 자기 자신의 해시를 미리 알 수는
-        # 없어서, 이 항목만 예외적으로 두 커밋에 걸쳐 완성된다.
         version="1.2.1",
-        commit_hash=None,
+        commit_hash="3d45627",
         date="2026-09-08",
         changes=(
             "이제 별도 가입 절차 없이, 햄미와 처음 대화하거나 아무 명령어나 사용하는 "
