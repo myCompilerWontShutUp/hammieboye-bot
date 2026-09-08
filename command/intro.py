@@ -94,8 +94,10 @@ async def _resolve_target(interaction: discord.Interaction, 이름: str) -> disc
         return None
 
     target = await get_user(member.id)
-    if target is None or not target["consent_given"]:
-        # 찾은 사람이 아직 /가입을 안 한 경우도 "모르는 사람" 취급과 동일하게 안내한다.
+    if target is None:
+        # 찾은 사람이 아직 햄미와 한 번도 상호작용 안 한 경우도 "모르는 사람" 취급과
+        # 동일하게 안내한다(2026-09-08부로 별도 동의 절차가 없어져 "행이 있는지"만
+        # 확인하면 된다).
         await interaction.response.send_message(random.choice(_UNKNOWN_LINES), ephemeral=True)
         return None
 

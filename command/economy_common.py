@@ -72,26 +72,18 @@ REPLAY_TIMEOUT_SECONDS = 10
 
 INVALID_AMOUNT_RESPONSE = f"1~{MAX_BET} 사이의 숫자로 적어줘!! _(갸웃)_"
 
-# reject_if_wrong_user_with_cta의 미가입자용 안내 — 가입자용 안내는 호출부마다 자기
-# 커맨드 이름("/내기"/"/도박")을 끼워 넣어야 해서 own_command 인자로 매번 조립한다.
-_CTA_UNREGISTERED = "너도 `/가입`하면 함께 즐길 수 있어!!"
-
-
 async def reject_if_wrong_user_with_cta(
     interaction: discord.Interaction, user_id: int, own_command: str
 ) -> bool:
     """True면 계속 진행. 공개 메시지(선택 버튼/다시하기)는 누구나 볼 수 있어서, 주인이
-    아닌 사람이 눌렀을 때 기존 거절 문구에 이어 그 사람의 가입 여부에 맞는 안내를
-    덧붙인다 — 가입자는 own_command로 직접 해보라고, 미가입자는 /가입부터 하라고.
-    /내기·/도박이 공유(own_command만 서로 다름)."""
+    아닌 사람이 눌렀을 때 기존 거절 문구에 이어 own_command를 직접 해보라는 안내를
+    덧붙인다. /내기·/도박이 공유(own_command만 서로 다름).
+
+    2026-09-08부로 별도 동의(/가입) 절차가 폐지되어 "미가입자용" 분기가 사라졌다 —
+    누구든 own_command를 실행하면(자동 등록되므로) 그 자리에서 바로 즐길 수 있다."""
     if interaction.user.id == user_id:
         return True
-    clicker = await get_user(interaction.user.id)
-    cta = (
-        f"너도 {own_command}{josa(own_command, '으로', '로')} 직접 해볼 수 있어!!"
-        if (clicker is not None and clicker["consent_given"])
-        else _CTA_UNREGISTERED
-    )
+    cta = f"너도 {own_command}{josa(own_command, '으로', '로')} 직접 해볼 수 있어!!"
     message = f"{random.choice(NOT_YOUR_GAME_LINES)}\n{cta}"
     await interaction.response.send_message(message, ephemeral=True)
     return False

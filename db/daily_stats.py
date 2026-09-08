@@ -142,8 +142,8 @@ async def get_active_users_for(date_str: str) -> list[int]:
     """그날(KST) 자연어 또는 공개 슬래시 커맨드로 최소 한 번이라도 활동한 사용자 id 목록
     (daily_net 필터 없음 — 당일 순증감과 무관하게 활동 자체만 기준). 취침 전 대화왕
     전원 보상에 쓴다. `messages_today`는 자연어와 공개 슬래시 커맨드 양쪽에서 증가하므로
-    이 기준으로 자동 포함되고, ephemeral 전용 커맨드(/가입 등)는 이걸 안 건드려 자연히
-    제외된다.
+    이 기준으로 자동 포함되고, ephemeral 전용 커맨드(/탈퇴·/수집항목 등)는 이걸 안
+    건드려 자연히 제외된다.
     """
     rows = await select(
         "daily_stats",
