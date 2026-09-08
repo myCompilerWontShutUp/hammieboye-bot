@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.3.3",
-        commit_hash="PENDING",  # 다음 커밋(hash-fix)에서 실제 해시로 교체됨.
+        commit_hash="560401f",
         date="2026-09-09",
         changes=(
             "슬롯머신·내기·암시장 확률형 간식의 확률을 확인할 수 있는 "
