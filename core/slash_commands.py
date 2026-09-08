@@ -132,12 +132,11 @@ def register(tree: app_commands.CommandTree) -> None:
         view.message = await interaction.original_response()
 
     @tree.command(name="자판기", description="자판기에서 물건을 산다")
-    @app_commands.describe(품목="살 물건", 개수="살 개수(기본 1개)")
+    @app_commands.describe(품목="살 물건")
     @app_commands.choices(품목=[app_commands.Choice(name=n, value=n) for n in ITEM_NAMES])
     async def vending_command(
         interaction: discord.Interaction,
         품목: app_commands.Choice[str],
-        개수: int = 1,
     ) -> None:
         if interaction.user.bot:
             return
@@ -146,7 +145,7 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
-        result = await vending.handle_purchase(interaction.user.id, 품목.value, 개수)
+        result = await vending.handle_purchase(interaction.user.id, 품목.value)
         if isinstance(result, tuple):
             text, embed = result
             await interaction.edit_original_response(content=text, embed=embed)

@@ -378,6 +378,23 @@ CREATE TABLE user_snacks (
 );
 
 -- ------------------------------------------------------------
+-- 9-2-2. vending_purchases — 자판기 구매 로그 (신규, 2026-09-08)
+--    구매는 항상 1개 단위라 수량 컬럼이 없다. 동전 카테고리 품목의 "살 때마다
+--    가격 2배" 계산과 /자판기-리스트의 "(N회 구매)" 표시가 이 테이블 하나로
+--    처리된다(db/vending_log.py). item_id는 snack_id와 동일한 이유로 자유
+--    텍스트(command/vending_catalog.py의 고정 문자열 ID와 대응).
+-- ------------------------------------------------------------
+
+CREATE TABLE vending_purchases (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id       bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  item_id       text NOT NULL,
+  price         bigint NOT NULL,
+  purchased_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX vending_purchases_user_item_idx ON vending_purchases (user_id, item_id);
+
+-- ------------------------------------------------------------
 -- 9-3. admin_ops — 관리자 콘솔("주인님 가라사대") 권한 (신규)
 --    최초 명령어 제공자(prime=true)는 부팅 시 항상 시드된다. 그 외 행은 prime이 op grant로
 --    부여한 권한자다 — op 명령어(grant/revoke/list) 자체를 뺀 모든 관리자 명령어에서 prime과
@@ -999,3 +1016,4 @@ ALTER TABLE admin_ops ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_chat_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_emoji_tags ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vending_purchases ENABLE ROW LEVEL SECURITY;

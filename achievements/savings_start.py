@@ -1,5 +1,5 @@
 ID = "savings_start"
 NAME = "저축의 시작"
-HOW_TO_EARN = "자판기에서 돼지 저금통을 사면 얻어"
+HOW_TO_EARN = "자판기에서 쪼꼬미 금고 이상의 저금통·계좌 아이템을 사면 얻어"
 RARITY = "일반"
 CODE = "brjg6h2a"
