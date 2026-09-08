@@ -9,6 +9,23 @@ class UpdateEntry:
     # 날짜/버전은 여기에 안 담는다 — "ann update"가 실제로 방송되는 시점의 날짜/버전
     # (admin/version.py::get_version_label())을 그때그때 그대로 보여준다(admin/console.py
     # ::_build_update_embed). 이 항목은 "무엇이 바뀌었는지"만 기록한다.
+    #
+    # 2026-09-08 신규: /업데이트-로그(command/update_log.py)가 "특정 과거 버전"을 그
+    # 버전이 실제로 배포됐던 시점 그대로 조회할 수 있어야 해서, 아래 3개 필드를
+    # 추가했다 — ann update와 달리 이쪽은 "지금 시점"이 아니라 "그 버전 당시"를
+    # 보여주는 게 목적이라 값을 고정으로 박아둔다. 전부 git 커밋 이력(VERSION 파일
+    # 변경 커밋)을 직접 대조해서 채웠다(2026-09-08 감사). 버전 도입 이전(1.0.1보다
+    # 오래된) 항목은 세 값 모두 None으로 남겨둔다 — 그 시절엔 VERSION 파일 자체가
+    # 없었어서 대응시킬 버전이 없다.
+    version: str | None = None  # 예: "1.1.8"
+    commit_hash: str | None = None  # 그 버전으로 올라간 커밋의 짧은 해시
+    date: str | None = None  # 그 커밋의 KST 날짜, "YYYY-MM-DD"
+
+    # 2026-09-08 신규: /업데이트-로그가 op 권한자에게만 그 버전의 관리자 전용 변경사항
+    # 실제 내용을 추가로 보여주기 위한 필드 — 위 changes와 달리 이 필드는 관리자 명령어
+    # 이름/내부 구조를 그대로 적어도 된다(어차피 op 권한자에게만 노출됨). 일반 사용자
+    # 응답에는 절대 안 쓰인다. 특별히 관리자 전용 변경이 없던 버전은 빈 튜플로 둔다.
+    admin_changes: tuple[str, ...] = ()
 
 
 # 최신 항목이 맨 앞. 앞으로 "푸시해주세요" 요청이 있을 때마다 이 튜플 맨 앞에 새 항목을
@@ -16,6 +33,27 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.2.1",
+        commit_hash="3d45627",
+        date="2026-09-08",
+        changes=(
+            "이제 별도 가입 절차 없이, 햄미와 처음 대화하거나 아무 명령어나 사용하는 "
+            "순간 바로 이용할 수 있습니다.",
+            "/가입과 /가입-수집항목이 사라지고, 햄미가 어떤 정보를 저장하는지 안내하는 "
+            "/수집항목이 새로 생겼습니다.",
+            "/탈퇴 후 다시 대화할 수 있게 되기까지의 대기 시간이 24시간에서 30일로 "
+            "늘어났습니다. 30일이 지나면 별도 절차 없이 다시 말을 걸기만 하면 됩니다.",
+            "대화 기록은 30일이 지나면 자동으로 삭제됩니다.",
+            "/업데이트-로그가 추가되었습니다. 지난 업데이트 내역을 버전별로 확인할 수 "
+            "있습니다.",
+            "헬프 미 이벤트에서 답장이 상황과 관련은 있지만 완벽한 해결책이 아니어도 "
+            "너무 엄격하게 페널티를 주지 않도록 개선되었습니다.",
+        ),
+    ),
+    UpdateEntry(
+        version="1.1.8",
+        commit_hash="4bcf0ee",
+        date="2026-09-08",
         changes=(
             "/자판기에서 이제 한 번에 1개씩만 구매할 수 있습니다.",
             "자판기 동전 카테고리가 5종으로 늘었습니다: 동전 지갑, 쪼꼬미 금고, "
@@ -28,12 +66,18 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        version="1.1.7",
+        commit_hash="68ea804",
+        date="2026-09-08",
         changes=(
             "/내기·/도박 진행 중인 판에 도전자 이름이 표시됩니다.",
             "햄미의 성능이 향상되었습니다.",
         ),
     ),
     UpdateEntry(
+        version="1.1.6",
+        commit_hash="2639158",
+        date="2026-09-07",
         changes=(
             "/내기·/도박에서 다시하기를 누르면 새 메시지로 이어지고, 이전 판은 그대로 "
             "기록으로 남습니다.",
@@ -47,12 +91,18 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        version="1.1.5",
+        commit_hash="0c70173",
+        date="2026-09-06",
         changes=(
             "/자판기 구매 완료 화면에 기존 금액·사용 금액·현재 금액이 함께 표시됩니다.",
             "헬프 미 이벤트·디저트 타임 안내 임베드의 색상이 다듬어졌습니다.",
         ),
     ),
     UpdateEntry(
+        version="1.1.4",
+        commit_hash="c3dfd1f",
+        date="2026-09-06",
         changes=(
             "/내정보·/니정보가 모두에게 보이는 형태로 바뀌었습니다. 버튼으로 카테고리를 "
             "바로 전환해서 볼 수 있습니다.",
@@ -60,6 +110,9 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        version="1.1.3",
+        commit_hash="61a5d07",
+        date="2026-09-06",
         changes=(
             "명령어 사용법과 설명이 더 간결해지는 등, 명령어 사용자 편의성이 대폭 "
             "향상되었습니다.",
@@ -71,6 +124,24 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        # 2026-09-08 감사로 신규 발굴 — ENTRIES에 별도 항목이 없었지만
+        # 34fd90b 커밋(1.1.3 배포 직전, PR #28 머지 직후)에 실제 사용자 대상
+        # 변경이 있어 새로 채워 넣었다.
+        version="1.1.2",
+        commit_hash="67df104",
+        date="2026-09-06",
+        changes=(
+            "/업적-리스트에서 전설 업적 이름의 별표가 겹쳐 보이던 표시 오류를 "
+            "수정했습니다.",
+            "/업적-리스트의 페이지 번호 표시 방식이 개선되었습니다.",
+            "/내정보·/니정보의 '전체 기록'과 '오늘 기록' 항목 이름이 통일되고, "
+            "'평생 획득한 동전'이 '획득한 동전'으로 간결해졌습니다.",
+        ),
+    ),
+    UpdateEntry(
+        version="1.1.1",
+        commit_hash="12824ef",
+        date="2026-09-06",
         changes=(
             "호감도와 동전이 바뀔 때 변화 전후 값을 화살표로 함께 보여줍니다.",
             "/업적-리스트가 여러 페이지로 나뉘어 더 보기 편해졌습니다.",
@@ -78,10 +149,6 @@ ENTRIES: tuple[UpdateEntry, ...] = (
             "기록을 카테고리별로 골라볼 수 있습니다(/내업적·/니업적·/내가방·/니가방은 "
             "이 안으로 합쳐졌습니다).",
             "햄미의 성능이 향상되었습니다.",
-        ),
-    ),
-    UpdateEntry(
-        changes=(
             "동전 보유 상한이 완전히 사라졌습니다. 이제 얼마든지 모을 수 있습니다.",
             "/동전으로 받는 양이 고정되었고(자판기에서 늘릴 수 있음), 하루 3번까지만 "
             "받을 수 있습니다.",
@@ -90,8 +157,15 @@ ENTRIES: tuple[UpdateEntry, ...] = (
             "자판기 가격과 /내가방·/니가방 표시에서 '원' 단위 표기가 사라지고 동전 "
             "개수만 보여줍니다.",
         ),
+        admin_changes=(
+            "동전 보유 상한 개념 자체가 폐지되며 vol up/down/set/reset 명령어 그룹이 "
+            "완전히 삭제됨(1.0.3에서 추가됐던 것).",
+        ),
     ),
     UpdateEntry(
+        version="1.0.7",
+        commit_hash="ed144e1",
+        date="2026-09-04",
         changes=(
             "/내기-홀짝과 /내기-가위바위보가 /내기 하나로 합쳐졌습니다. 배팅 금액은 이제 "
             "입력창에 직접 입력합니다.",
@@ -102,18 +176,27 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        version="1.0.6",
+        commit_hash="df076d2",
+        date="2026-09-04",
         changes=(
             "/랭킹이 /랭킹-호감도로 이름이 바뀌었습니다.",
             "/랭킹-동전이 추가되었습니다. 동전을 가장 많이 모은 순위를 확인할 수 있습니다.",
         ),
     ),
     UpdateEntry(
+        version="1.0.5",
+        commit_hash="bb6184f",
+        date="2026-09-04",
         changes=(
             "/슬롯머신 그림이 9종에서 7종으로 줄어 당첨 확률이 올라갔습니다.",
             "/슬롯머신 결과 화면이 더 크고 잘 보이게 개선되었습니다.",
         ),
     ),
     UpdateEntry(
+        version="1.0.4",
+        commit_hash="05bc199",
+        date="2026-09-04",
         changes=(
             "/슬롯머신이 개선되었습니다. 버튼으로 한 줄씩 직접 돌리면서 즐길 수 있습니다.",
             "/내기-홀짝·/내기-가위바위보가 개선되었습니다. 내기에서 지면 동전을 얼마나 "
@@ -123,6 +206,36 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        # 관리자 콘솔 개편(메인/서브 채널, 동전 관리 명령어, 접두어 정리 등) — 실제
+        # 변경은 있었지만 전부 관리자 전용이라, 일반 사용자에게는 구체적인 내용 대신
+        # "버그 제거 및 기능 향상"류의 뭉뚱그린 한 줄만 보여주고, 실제 내용은
+        # admin_changes로 옮겨 op 권한자에게만 노출한다(2026-09-08 감사로 신규 등재 +
+        # 사용자 지시로 문구 방침 확정).
+        version="1.0.3",
+        commit_hash="5e96f9a",
+        date="2026-09-04",
+        changes=("버그 제거 및 기능 향상이 있었습니다.",),
+        admin_changes=(
+            "지정 채널 1개(ds here/ds reset) 방식이 메인/서브 채널 체계로 전면 개편됨 "
+            "(des main/sub/list/void).",
+            "동전 조작 명령어 co up/down/set/reset과 최대 보유량 조작 명령어 vol "
+            "up/down/set/reset이 추가됨(vol 그룹은 이후 1.1.1에서 보유 상한 폐지와 함께 "
+            "삭제됨).",
+            "명령어 접두어가 정리됨: ej→emj, ac→ach, tc→cnt, an→ann.",
+        ),
+    ),
+    UpdateEntry(
+        # 순수 버전 표기 정책 변경(0.27.x → 1.x) 커밋 — 코드 변경 자체가 없어
+        # 관리자 대상으로도 실제 변경이 전혀 없었다(2026-09-08 감사로 신규 등재).
+        version="1.0.2",
+        commit_hash="ac6552b",
+        date="2026-09-04",
+        changes=(),
+    ),
+    UpdateEntry(
+        version="1.0.1",
+        commit_hash="81811c2",
+        date="2026-09-04",
         changes=(
             "동전이라는 새로운 재화가 생겼습니다.",
             "/동전이 추가되었습니다. 매시간 동전을 얻을 수 있습니다.",
@@ -147,6 +260,9 @@ ENTRIES: tuple[UpdateEntry, ...] = (
         ),
     ),
     UpdateEntry(
+        # 버전 관리(VERSION 파일) 도입 이전 배치 — 대응시킬 버전이 없어 세 필드 모두
+        # None으로 남겨둔다(/업데이트-로그 조회 대상 밖, ann update의 latest()에도
+        # 이제는 절대 안 걸림 — 항상 ENTRIES[0]인 최신 버전만 방송하므로).
         changes=(
             "주말과 기념일에는 호감도를 2배, 햄미 생일에는 3배 받을 수 있게 되었습니다. "
             "부름 이벤트도 이런 날에는 더 자주 발생합니다.",
@@ -163,6 +279,26 @@ ENTRIES: tuple[UpdateEntry, ...] = (
 def latest() -> UpdateEntry | None:
     """admin/console.py의 "ann update" 명령어가 그대로 읽어 보내는 최신 항목(LLM 미개입)."""
     return ENTRIES[0] if ENTRIES else None
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def known_versions() -> list[str]:
+    """버전 태그가 있는 고유 버전 전부를 최신순으로 반환한다(command/update_log.py 전용) —
+    버전 도입 이전(맨 마지막) 항목처럼 version이 None인 건 제외한다."""
+    seen: dict[str, None] = {}
+    for entry in ENTRIES:
+        if entry.version is not None:
+            seen.setdefault(entry.version, None)
+    return sorted(seen, key=_version_key, reverse=True)
+
+
+def find_by_version(version: str) -> list[UpdateEntry]:
+    """주어진 버전과 정확히 일치하는 항목을 원래 순서 그대로 전부 반환한다 — 1.1.1처럼
+    같은 버전에 항목이 여러 개(개편 폭이 커서 두 번에 걸쳐 기록됨) 걸쳐 있을 수 있다."""
+    return [entry for entry in ENTRIES if entry.version == version]
 
 
 def get_text() -> str:

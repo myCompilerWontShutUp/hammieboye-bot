@@ -1,13 +1,15 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from db.client import delete, rpc, select, update, upsert
 
 
 async def ensure_user(user_id: int) -> dict:
-    """유저 레코드가 없으면 만들고, 있으면 그대로 반환한다.
+    """유저 레코드가 없으면 만들고, 있으면 그대로 반환한다(멱등, upsert).
 
-    동의 여부와 무관하게 최소 식별 레코드는 항상 있어야 최초 호출 여부를
-    판별할 수 있다 (CLAUDE.md 1-1 참고, 별도 고지 불필요로 결정됨).
+    2026-09-08부로 별도 동의(/가입) 절차가 폐지되어, 이제 상호작용마다(자연어 호출
+    단어/슬래시 커맨드 전부) `core/onboarding.py::provision()`을 통해 매번 호출된다
+    — 기존 유저는 그대로 조회만 되고, 처음 보는 유저만 이 순간 실제로 행이
+    생긴다(§1-1 "최소 식별 기록" 원칙, 이제는 명시적 동의 없이도 적용).
     """
     rows = await upsert("users", {"user_id": user_id}, on_conflict="user_id")
     return rows[0]
@@ -16,15 +18,6 @@ async def ensure_user(user_id: int) -> dict:
 async def get_user(user_id: int) -> dict | None:
     rows = await select("users", {"user_id": f"eq.{user_id}", "select": "*"})
     return rows[0] if rows else None
-
-
-async def set_consent(user_id: int) -> dict:
-    rows = await update(
-        "users",
-        {"user_id": f"eq.{user_id}"},
-        {"consent_given": True, "consent_at": datetime.now(timezone.utc).isoformat()},
-    )
-    return rows[0]
 
 
 async def increment_chat_count(user_id: int) -> int:
@@ -65,7 +58,7 @@ async def claim_coin_cooldown(user_id: int, until: datetime) -> bool:
 
 
 async def get_created_at_map(user_ids: list[int]) -> dict[int, str]:
-    """주어진 user_id들의 가입 시각(created_at)을 일괄 조회한다 — 디저트 타임 랭킹처럼
+    """주어진 user_id들의 최초 상호작용 시각(created_at)을 일괄 조회한다 — 디저트 타임 랭킹처럼
     여러 후보를 한 번에 타이브레이크해야 할 때 유저 수만큼 왕복하지 않기 위함
     (db/ranking.py가 이미 쓰는 PostgREST "in.()" 필터와 동일한 idiom)."""
     if not user_ids:

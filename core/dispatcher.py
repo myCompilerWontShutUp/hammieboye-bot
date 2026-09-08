@@ -12,7 +12,9 @@ from core.client import create_tree
 from db.daily_stats import increment_messages_today, refresh_conversation_caps
 from db.guild_channels import is_allowed_channel, touch
 from db.guild_sleep_state import any_triggered_tonight
-from db.users import get_user, increment_chat_count
+from db.admin_history import purge_old as purge_old_admin_chat_history
+from db.history import purge_old as purge_old_chat_history
+from db.users import increment_chat_count
 from events import dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
 from events.scheduler import (
     TEST_GUILD_ID,
@@ -143,6 +145,10 @@ def setup_dispatcher(client: discord.Client) -> None:
         # 00:00 정각 — 내부에서 "어제" 날짜를 명시적으로 계산하므로 자정 직후에 돌아도 정확하다.
         start_daily(0, 0, sleep_event.announce_and_reward)
         start_interval(_TICK_INTERVAL_SECONDS, help_me_event.tick)
+        # 취침 시간대(한산한 새벽) 중에 30일 지난 채팅 원문을 지운다(2026-09-08 신규) —
+        # 일반 자연어(chat_history)와 관리자 콘솔 자연어(admin_chat_history) 둘 다.
+        start_daily(4, 0, purge_old_chat_history)
+        start_daily(4, 0, purge_old_admin_chat_history)
 
         # 디저트 타임 하루 3슬롯 x (여는 방송 + 닫는 방송) = 6개 독립 등록. 헬프 미 이벤트
         # 쪽이 schedule_today()에서 이 슬롯들과 안 겹치게 스스로 피해간다(§4-3). 닫는
@@ -202,23 +208,27 @@ def setup_dispatcher(client: discord.Client) -> None:
 
         placeholder = await _send_placeholder(message)
         try:
-            # get_user는 읽기 전용 — ensure_user(쓰기)를 쓰면 미동의 사용자가 말만 걸어도
-            # 행이 생겨버린다. 행 생성은 오직 실제 /가입 성공 시에만 일어나야 한다.
-            _, user = await asyncio.gather(
+            # 2026-09-08부로 별도 동의(/가입) 절차가 폐지되어, 처음 말을 거는 순간
+            # onboarding.provision()이 즉시 유저 행을 만든다. 탈퇴 후 30일 재가입
+            # 쿨타임 중이면 user가 None으로 온다 — 자연어 경로는 이 경우 안내 문구조차
+            # 쓰지 않고 완전히 무응답 처리한다(응답도 chat_count/messages_today 집계도
+            # chat_history 저장도 전혀 없음) — 공개 채널에 탈퇴 사실이 반복 노출되는 걸
+            # 막기 위함. 슬래시 커맨드 경로(core/slash_commands.py::_prepare)는 ephemeral
+            # 응답이라 그대로 안내 문구를 보여준다.
+            _, (user, _block_message) = await asyncio.gather(
                 touch(message.guild.id, message.channel.id),
-                get_user(message.author.id),
+                onboarding.provision(message.author.id),
             )
-            if user is None or not user["consent_given"]:
-                response = onboarding.random_guide()
-            else:
-                await asyncio.gather(
-                    increment_chat_count(message.author.id),
-                    increment_messages_today(message.author.id),
-                )
+            if user is None:
+                return
 
-                response = await handle_natural_language(
-                    message.author.id, message.guild.id, user_message, user["affection"]
-                )
+            await asyncio.gather(
+                increment_chat_count(message.author.id),
+                increment_messages_today(message.author.id),
+            )
+            response = await handle_natural_language(
+                message.author.id, message.guild.id, user_message, user["affection"]
+            )
         finally:
             await _delete_placeholder(placeholder)
 

@@ -3,6 +3,7 @@ import asyncio
 import discord
 from discord import app_commands
 
+from admin import console as admin
 import command.achievements as achievements_view
 import command.bet as bet
 import command.coin as coin
@@ -11,23 +12,28 @@ import command.intro as intro
 import command.ranking as ranking
 import command.slot as slot
 import command.vending as vending
+from command.collection_info import handle as collection_info_handle
 from command.info import handle_self as info_handle_self
-from command.join import handle as join_handle
-from command.join_info import handle as join_info_handle
 from command.leave import handle as leave_handle
 from command.plastic import handle as plastic_handle
+from command.update_log import autocomplete_버전, handle as update_log_handle
 from command.vending_catalog import ITEM_NAMES
 from core import onboarding
 from core.base import touch_channel
 from db.daily_stats import increment_messages_today
-from db.users import get_user
 from events import sleep_guard
 
 
 async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -> bool:
-    """동의 게이트 + 채팅 횟수 집계. 명령어 실행을 진행해도 되면 True.
+    """자동 등록 + 채팅 횟수 집계. 명령어 실행을 진행해도 되면 True.
 
-    deferred=True(기본값)면 호출 시점에 이미 defer()가 끝났다고 가정하고 미동의 안내를
+    2026-09-08부로 별도 동의(/가입) 절차가 폐지되어, 처음 시도하는 순간
+    onboarding.provision()이 즉시 유저 행을 만든다 — 유일하게 막히는 경우는 /탈퇴
+    직후 30일 쿨타임(provision()이 (None, 안내 문구)를 돌려준다). 슬래시 커맨드
+    경로는 자연어 경로(core/dispatcher.py::on_message, 이쪽은 완전 무응답으로 처리)와
+    달리 이 안내 문구를 그대로 보여준다.
+
+    deferred=True(기본값)면 호출 시점에 이미 defer()가 끝났다고 가정하고 차단 안내를
     edit_original_response로 보낸다. deferred=False면 아직 defer 전(예: /니정보처럼 응답
     공개 범위가 갈려서 무거운 작업 직전에야 defer 여부를 결정하는 경우)이라
     response.send_message를 그대로 쓴다.
@@ -35,20 +41,16 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
     if interaction.user.bot:
         return False
 
-    # get_user는 읽기 전용 — ensure_user(쓰기)를 쓰면 미동의 사용자가 시도만 해도
-    # 행이 생겨버린다. 행 생성은 오직 실제 /가입 성공 시에만 일어나야 한다.
-    _, user = await asyncio.gather(
+    _, (user, block_message) = await asyncio.gather(
         touch_channel(interaction),
-        get_user(interaction.user.id),
+        onboarding.provision(interaction.user.id),
     )
 
-    if user is None or not user["consent_given"]:
-        # 자연어 경로(개인화 불가)와 경험을 통일하기 위해 공개로 응답한다.
-        guide = onboarding.random_guide()
+    if user is None:
         if deferred:
-            await interaction.edit_original_response(content=guide)
+            await interaction.edit_original_response(content=block_message)
         else:
-            await interaction.response.send_message(guide)
+            await interaction.response.send_message(block_message)
         return False
 
     # chat_count(총 대화 횟수)는 슬래시 명령어를 제외하므로 여기선 messages_today만 집계한다.
@@ -57,15 +59,11 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
 
 
 def register(tree: app_commands.CommandTree) -> None:
-    @tree.command(name="가입", description="햄미에게 가입한다")
-    async def join_command(interaction: discord.Interaction) -> None:
-        await join_handle(interaction)
+    @tree.command(name="수집항목", description="햄미가 저장하는 정보를 안내한다")
+    async def collection_info_command(interaction: discord.Interaction) -> None:
+        await collection_info_handle(interaction)
 
-    @tree.command(name="가입-수집항목", description="가입 시 수집되는 정보를 안내한다")
-    async def join_info_command(interaction: discord.Interaction) -> None:
-        await join_info_handle(interaction)
-
-    @tree.command(name="탈퇴", description="햄미와 탈퇴한다")
+    @tree.command(name="탈퇴", description="햄미가 모은 내 정보를 삭제한다")
     async def leave_command(interaction: discord.Interaction) -> None:
         await leave_handle(interaction)
 
@@ -233,3 +231,19 @@ def register(tree: app_commands.CommandTree) -> None:
         text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.message = await interaction.original_response()
+
+    @tree.command(name="업데이트-로그", description="지난 업데이트 내역을 버전별로 확인한다")
+    @app_commands.describe(버전="확인할 버전(예: v1.0.1), 생략하면 최신 버전")
+    @app_commands.autocomplete(버전=autocomplete_버전)
+    async def update_log_command(
+        interaction: discord.Interaction, 버전: str | None = None
+    ) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not await _prepare(interaction):
+            return
+        # op 권한자는 기존 내용에 이어 관리자 전용 변경사항 섹션을 추가로 본다
+        # (command/update_log.py::build_response, 2026-09-08 신규 — 일반 사용자는
+        # 이 섹션 자체가 안 붙는다).
+        await update_log_handle(interaction, 버전, is_op=admin.is_authorized(interaction.user.id))

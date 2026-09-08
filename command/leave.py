@@ -20,20 +20,22 @@ _LEAVE_COMPLETE_LINES = (
     "안녕... 다음에 또 만날 수 있으면 좋겠어. _(그리움)_",
     "잘 가!! 모든 기록이 삭제됐어. 고마웠어!! _(슬픔)_",
     "탈퇴됐어... 그동안 놀아줘서 고마웠어!! _(뭉클)_",
-    "안녕히 가!! 언제든 다시 가입할 수 이써!! _(위로)_",
+    "안녕히 가!! 30일 뒤엔 그냥 말만 걸어도 자동으로 다시 등록돼!! _(위로)_",
     "이제 헤어지는구나... 잘 지내!! _(아쉬움)_",
     "탈퇴 완료. 데이터는 전부 지워졌어... 잘 가!! _(먹먹)_",
     "그동안 고마웠어!! 안녕... _(서운)_",
-    "잘 가!! 다시 오고 시프면 언제든 `/가입`해줘!! _(위로)_",
+    "잘 가!! 다시 오고 시프면 언제든 말 걸어줘!! _(위로)_",
     "안녕... 우리 인연은 여기까지네. _(슬픔)_",
     "탈퇴됐어. 그동안 함께해서 행복했어!! 잘 가!! _(먹먹)_",
 )
 
 _LEAVE_CONFIRM_PROMPT = (
     "정말 탈퇴할 거야?? 탈퇴하면 호감도·채팅 기록 등 모든 데이터가 즉시 삭제되고, "
-    "24시간 동안은 다시 가입할 수 없어. 아래 버튼을 누르면 탈퇴가 진행돼... _(훌쩍)_"
+    "30일 동안은 다시 말을 걸어도 정보가 안 쌓여. 30일이 지난 뒤엔 따로 뭘 하지 않아도 "
+    "그냥 다시 말을 걸거나 명령어를 쓰기만 하면 자동으로 다시 등록돼. "
+    "아래 버튼을 누르면 탈퇴가 진행돼... _(훌쩍)_"
 )
-_NOT_JOINED_LEAVE_MESSAGE = "어라, 아직 가입도 안 했잖아!! 탈퇴할 게 없어~ _(갸웃)_"
+_NOT_JOINED_LEAVE_MESSAGE = "어라, 아직 아무 정보도 없는데?? 지울 게 없어~ _(갸웃)_"
 _WRONG_USER_MESSAGE = "이건 다른 사람의 탈퇴 확인이에요!! _(단호)_"
 
 
@@ -68,8 +70,10 @@ async def handle(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     await touch_channel(interaction)
 
+    # 2026-09-08부로 별도 동의(/가입) 절차가 폐지돼, 유저 행이 존재하는지만 확인한다
+    # (한 번이라도 상호작용했으면 행이 있음 — core/onboarding.py::provision() 참고).
     user = await get_user(interaction.user.id)
-    if user is None or not user["consent_given"]:
+    if user is None:
         await interaction.edit_original_response(content=_NOT_JOINED_LEAVE_MESSAGE)
         return
 

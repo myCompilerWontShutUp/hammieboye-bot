@@ -103,8 +103,9 @@ CREATE TABLE users (
   help_count                bigint NOT NULL DEFAULT 0,    -- 도와준 횟수 (누적)
   affection                 bigint NOT NULL DEFAULT 10,   -- 호감도 (하한 없음, 시작값 10)
 
-  consent_given              boolean NOT NULL DEFAULT false,
-  consent_at                 timestamptz,
+  -- 舊 consent_given/consent_at(가입 동의 여부·시각)은 2026-09-08 별도 동의(/가입)
+  -- 절차 폐지(CLAUDE.md §5)와 함께 완전히 삭제됐다 — 최초 상호작용 시점에 곧바로
+  -- 등록되므로 더 이상 의미가 없는 컬럼이었다.
 
   -- 병 던지기(3-1) 쿨타임은 날짜 경계를 넘나들 수 있어 daily_stats가 아닌
   -- 여기(영구 테이블)에 둔다. 실패했을 때만 값이 채워진다.

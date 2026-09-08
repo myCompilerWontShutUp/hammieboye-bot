@@ -1,6 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from db.client import insert, select, update
+from db.client import delete, insert, select, update
+
+# 자연어 채팅 원문(content)을 무기한 보관하지 않기 위한 보존 기간(2026-09-08 신규) —
+# 그동안은 30분/50개 조회 범위(get_recent/get_recent_turns)만 있고 실제 삭제는 전혀
+# 없어서, 탈퇴하지 않는 한 원문이 DB에 영구히 남아있었다. 이제 하루 한 번(dispatcher의
+# 스케줄러) purge_old()가 이 기준보다 오래된 행을 실제로 지운다.
+RETENTION_DAYS = 30
 
 
 async def log(user_id: int, guild_id: int, content: str, role: str = "user") -> dict:
@@ -57,3 +63,11 @@ async def get_recent_turns(user_id: int, since: datetime, limit: int = 5) -> lis
         },
     )
     return list(reversed(rows))
+
+
+async def purge_old() -> None:
+    """`RETENTION_DAYS`보다 오래된 chat_history 행을 실제로 삭제한다 — 매일 한 번
+    스케줄러(core/dispatcher.py)가 호출한다. role(user/assistant) 구분 없이 전부
+    대상이다."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+    await delete("chat_history", {"created_at": f"lt.{cutoff.isoformat()}"})
