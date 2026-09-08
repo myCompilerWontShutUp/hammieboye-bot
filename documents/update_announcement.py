@@ -33,6 +33,18 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.3.2",
+        commit_hash="PENDING",  # 다음 커밋(hash-fix)에서 실제 해시로 교체됨.
+        date="2026-09-09",
+        changes=(
+            "`/자판기`·`/암시장`의 구매 확인 창에 '구매' 체크박스가 추가되었습니다. "
+            "체크해야만 구매가 진행됩니다.",
+            "'금서'를 가르칠 때 지켜야 할 규칙이 추가되었습니다. 규칙을 어기면 등록한 "
+            "내용이 삭제되거나 계정이 정지될 수 있습니다.",
+            "`/자판기`·`/암시장`의 아이템 목록이 더 읽기 편하게 정리되었습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.3.1",
         commit_hash="12433e3",
         date="2026-09-08",
