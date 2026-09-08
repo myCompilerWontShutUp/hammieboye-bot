@@ -9,6 +9,10 @@ from responses.engine import NEGATIVE_EMOTIONS, POSITIVE_EMOTIONS
 
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+# responses/engine.py와 동일한 이유(2026-09-08) — 타임아웃 없이는 네트워크 지연이
+# 무한정 늘어질 수 있다.
+_REQUEST_TIMEOUT_SECONDS = 20.0
+
 _ALL_EMOTIONS = POSITIVE_EMOTIONS + NEGATIVE_EMOTIONS
 _CATEGORIES = (
     "profile",
@@ -88,6 +92,7 @@ async def classify(text: str) -> ClassifyResult:
             input=text,
             max_output_tokens=150,
             reasoning={"effort": "none"},
+            timeout=_REQUEST_TIMEOUT_SECONDS,
             **openai_service_tier_kwargs(),
             text={
                 "format": {

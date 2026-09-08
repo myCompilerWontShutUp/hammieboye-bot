@@ -12,6 +12,12 @@ from config import (
 
 _client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+# 네트워크/API 지연이 무한정 늘어지지 않도록 요청 하나당 명시적 상한을 둔다(2026-09-08
+# 신규) — 타임아웃 없이는 SDK 기본값(수 분 단위)까지 마냥 기다릴 수 있어, 헬프 미
+# 이벤트 응답 시간 안에 다른 사용자들의 자연어 처리까지 덩달아 오래 걸리는 것처럼
+# 보이는 상황을 줄이기 위함. 실패하면 기존처럼 _FALLBACK_RESPONSE로 빠진다.
+_REQUEST_TIMEOUT_SECONDS = 20.0
+
 # "none"은 현재 OPENAI_MODEL(gpt-5.6-luna) 기준 — 이걸 지원 안 하는 모델로 바꾸면
 # "minimal"로 올려야 한다(안 그러면 추론 토큰이 max_output_tokens 예산을 갉아먹는다).
 _REASONING = {"effort": "none"}
@@ -131,6 +137,7 @@ async def _generate(
     max_output_tokens: int = OPENAI_MAX_OUTPUT_TOKENS,
     prompt_cache_key: str | None = OPENAI_PROMPT_CACHE_KEY,
     service_tier: str | None = _DEFAULT_SERVICE_TIER,
+    timeout: float = _REQUEST_TIMEOUT_SECONDS,
 ) -> str | None:
     # None이면 인자 자체를 생략한다 — SDK에 명시적 None을 넘기는 것과 안 넘기는 것이
     # 항상 동일하게 처리된다는 보장이 없어서다.
@@ -146,6 +153,7 @@ async def _generate(
             input=input_payload,
             max_output_tokens=max_output_tokens,
             reasoning=_REASONING,
+            timeout=timeout,
             **kwargs,
         )
         return result.output_text.strip()
@@ -257,5 +265,7 @@ async def get_admin_command_response(
         max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS * 10,
         prompt_cache_key=None,
         service_tier=None,
+        # 최대 1900자까지 나올 수 있어(§14-5) 일반 대화보다 여유를 더 둔다.
+        timeout=_REQUEST_TIMEOUT_SECONDS * 2,
     )
     return draft if draft is not None else _FALLBACK_RESPONSE

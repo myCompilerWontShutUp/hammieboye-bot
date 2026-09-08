@@ -269,20 +269,24 @@ def _build_embed(grid: list[str | None]) -> discord.Embed:
     return embed
 
 
-async def _settle(user_id: int, bet: int, before_coins: int, grid: list[str]) -> tuple[str, discord.Embed]:
+async def _settle(
+    user_id: int, bet: int, before_coins: int, challenger_name: str, grid: list[str]
+) -> tuple[str, discord.Embed]:
     """세 줄이 모두 채워진 뒤 정산 — 배율/보상 로직 자체는 커맨드 개편과 무관하게
     그대로 유지된다. before_coins는 판이 시작될 때 역산해둔 배팅 전 잔액 —
     format_bet_receipt로 "기존/배팅/현재 금액" 3줄을 채워 보여준다(2026-09-07,
-    기존 format_coin_notice의 화살표 한 줄을 대체)."""
+    기존 format_coin_notice의 화살표 한 줄을 대체). challenger_name은 공개
+    메시지에 누구의 판인지 보여주기 위한 도전자 이름(맨 위 한 줄)."""
     multiplier, hamster_hit, capped = evaluate(grid)
     embed = _build_embed(grid)
+    challenger_line = f"🎯 도전자: {challenger_name}\n"
 
     if hamster_hit:
         penalty = await deduct_coins_clamped(user_id, bet)
         # 햄스터 라인이 뜨면 동전은 잃지만, 그래도 놀아준 성의는 인정해 호감도 +1을
         # 정확히 한 번만 지급한다(햄스터 줄이 몇 개든 penalty처럼 한 번만).
         affection_result = await add_affection(user_id, 1, "slot_hamster_penalty")
-        text = random.choice(_HAMSTER_PENALTY_LINES)
+        text = challenger_line + random.choice(_HAMSTER_PENALTY_LINES)
         text += "\n\n" + format_bet_receipt(before_coins, bet, penalty["new_coins"])
         if affection_result["achievement_notice"]:
             text += f"\n{affection_result['achievement_notice']}"
@@ -294,12 +298,12 @@ async def _settle(user_id: int, bet: int, before_coins: int, grid: list[str]) ->
 
     if multiplier == 1:
         user = await get_user(user_id)
-        text = random.choice(_LOSE_LINES)
+        text = challenger_line + random.choice(_LOSE_LINES)
         text += "\n\n" + format_bet_receipt(before_coins, bet, user["coins"])
         return text, embed
 
     result = await add_coins(user_id, bet * multiplier, method="slot_win")
-    text = random.choice(_WIN_LINES).format(multiplier=multiplier)
+    text = challenger_line + random.choice(_WIN_LINES).format(multiplier=multiplier)
     if capped:
         text += f"\n{_MAX_MULTIPLIER_NOTICE}"
     text += "\n\n" + format_bet_receipt(before_coins, bet, result["new_coins"])
@@ -361,11 +365,12 @@ class _SlotView(discord.ui.View):
     """가위바위보/홀짝과 동일한 결의 버튼 게임 — 다만 승부를 "고르는" 게 아니라 세 줄을
     각자 돌려서 "채우는" 방식이라 버튼이 3개 다 눌려야 결과가 나온다(순서는 자유)."""
 
-    def __init__(self, user_id: int, bet: int, before_coins: int) -> None:
+    def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
+        self.challenger_name = challenger_name
         self.grid: list[str | None] = [None] * 9
         self._spun: set[int] = set()
         self.message: discord.Message | None = None
@@ -381,7 +386,9 @@ class _SlotView(discord.ui.View):
             if row not in self._spun:
                 self._spun.add(row)
                 self.grid[row * 3 : row * 3 + 3] = random.choices(SYMBOLS, k=3)
-        text, embed = await _settle(self.user_id, self.bet, self.before_coins, self.grid)
+        text, embed = await _settle(
+            self.user_id, self.bet, self.before_coins, self.challenger_name, self.grid
+        )
         replay_view = _build_replay_view(self.user_id)
         try:
             await self.message.edit(content=text, embed=embed, view=replay_view)
@@ -411,7 +418,9 @@ class _SlotView(discord.ui.View):
             return
 
         self.stop()
-        text, embed = await _settle(self.user_id, self.bet, self.before_coins, self.grid)
+        text, embed = await _settle(
+            self.user_id, self.bet, self.before_coins, self.challenger_name, self.grid
+        )
         replay_view = _build_replay_view(self.user_id)
         await interaction.response.edit_message(content=text, embed=embed, view=replay_view)
         replay_view.message = await interaction.original_response()
@@ -442,9 +451,17 @@ async def _start_round(interaction: discord.Interaction, user_id: int, bet: int)
     # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
     user = await get_user(user_id)
     before_coins = user["coins"] + bet
+    # 공개 메시지라 누구의 판인지 한눈에 보이게 도전자 이름을 맨 위에 적는다
+    # (2026-09-07 신규) — interaction.user는 항상 이 판을 시작한 본인.
+    challenger_name = interaction.user.display_name
 
-    view = _SlotView(user_id, bet, before_coins)
-    content = random.choice(_SPIN_PROMPT_LINES) + "\n\n" + format_bet_receipt(before_coins, bet, None)
+    view = _SlotView(user_id, bet, before_coins, challenger_name)
+    content = (
+        f"🎯 도전자: {challenger_name}\n"
+        + random.choice(_SPIN_PROMPT_LINES)
+        + "\n\n"
+        + format_bet_receipt(before_coins, bet, None)
+    )
     embed = _build_embed(view.grid)
 
     await interaction.response.send_message(content=content, embed=embed, view=view)

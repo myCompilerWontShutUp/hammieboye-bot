@@ -451,7 +451,7 @@ async def handle_potential_response(
     event = events[0]
     active_prompt_text = event["prompt_text"]
 
-    classification = await _classify_response(event["prompt_text"], text)
+    classification = await _classify_or_default(event["prompt_text"], text)
 
     if classification == "negative":
         result = await add_affection(user_id, -5)
@@ -527,7 +527,7 @@ async def _handle_grace_period(
     event = recently_claimed[0]
     if event.get("claimed_by") == user_id:
         return 0, True, None, True, None, None
-    classification = await _classify_response(event["prompt_text"], text)
+    classification = await _classify_or_default(event["prompt_text"], text)
     if classification != "relevant":
         return 0, True, None, False, None, None
     return await _grant_already_helped(user_id, event["prompt_text"])
@@ -541,28 +541,60 @@ async def _try_increment_help_count(user_id: int) -> None:
         logging.exception("Failed to increment help_count for user %s", user_id)
 
 
+_CLASSIFY_TIMEOUT_SECONDS = 20.0
+_CLASSIFY_MAX_ATTEMPTS = 2
+
+
 async def _classify_response(prompt_text: str, reply_text: str) -> str | None:
-    try:
-        result = await _openai_client.responses.create(
-            model=OPENAI_JUDGE_MODEL,
-            instructions=_RESPONSE_JUDGE_INSTRUCTIONS,
-            input=f"Hammie가 올린 메시지: {prompt_text}\n사용자 답장: {reply_text}",
-            max_output_tokens=100,
-            reasoning={"effort": "none"},
-            **openai_service_tier_kwargs(),
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "call_event_response",
-                    "schema": _RESPONSE_JUDGE_SCHEMA,
-                    "strict": True,
-                }
-            },
+    """OpenAI 판정 호출 — 응답이 없거나(네트워크 지연) 실패하면 한 번 더 재시도한다
+    (2026-09-08 신규 — 타임아웃/일시적 오류 하나 때문에 진짜 도와준 사용자가 판정
+    자체를 못 받는 사고를 줄이기 위함). 재시도까지 전부 실패하면 None을 반환하고,
+    최종 판단(실패 시 기본값)은 호출부(_classify_or_default)가 담당한다."""
+    for attempt in range(1, _CLASSIFY_MAX_ATTEMPTS + 1):
+        try:
+            result = await _openai_client.responses.create(
+                model=OPENAI_JUDGE_MODEL,
+                instructions=_RESPONSE_JUDGE_INSTRUCTIONS,
+                input=f"Hammie가 올린 메시지: {prompt_text}\n사용자 답장: {reply_text}",
+                max_output_tokens=100,
+                reasoning={"effort": "none"},
+                timeout=_CLASSIFY_TIMEOUT_SECONDS,
+                **openai_service_tier_kwargs(),
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "call_event_response",
+                        "schema": _RESPONSE_JUDGE_SCHEMA,
+                        "strict": True,
+                    }
+                },
+            )
+            return json.loads(result.output_text)["classification"]
+        except Exception:
+            logging.exception(
+                "Help me event response classification failed (attempt %d/%d)",
+                attempt, _CLASSIFY_MAX_ATTEMPTS,
+            )
+    return None
+
+
+async def _classify_or_default(prompt_text: str, reply_text: str) -> str:
+    """_classify_response()가 재시도까지 전부 실패하면(None) "relevant"로 취급한다.
+
+    실제로 사용자가 "쳇바퀴 돌려줄게"처럼 명백히 도와주는 반응을 보냈는데, 판정 API
+    호출이 실패해 classification이 None이 되면서 "도와준 걸로도, 무시한 걸로도"
+    처리되지 않고 그냥 0 보상 + 일반 생성으로 새는 사고가 있었다(2026-09-07 실제
+    재현 — 판정 없이 정상 생성으로 넘어가 버려 문맥을 어설프게 되묻는 답이 나가고
+    보상은 지급되지 않았다). claim()은 이벤트당 1명만 원자적으로 허용하므로, 판정
+    실패를 relevant로 기본 처리해도 이중 지급 등 악용 위험은 없다 — 오히려
+    "애매하면 relevant"라는 기존 판정 원칙과도 일관된다."""
+    classification = await _classify_response(prompt_text, reply_text)
+    if classification is None:
+        logging.warning(
+            "Help me event classification unavailable after retries — defaulting to relevant"
         )
-        return json.loads(result.output_text)["classification"]
-    except Exception:
-        logging.exception("Help me event response classification failed")
-        return None
+        return "relevant"
+    return classification
 
 
 async def _announce_winner(event: dict, winner_id: int, winner_guild_id: int) -> None:

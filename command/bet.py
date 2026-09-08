@@ -296,24 +296,29 @@ async def _start_round(
     user = await get_user(user_id)
     before_coins = user["coins"] + bet
     receipt = format_bet_receipt(before_coins, bet, None)
+    # 공개 메시지라 누구의 판인지 한눈에 보이게 도전자 이름을 맨 위에 적는다(2026-09-07
+    # 신규) — 서버 안이면 그 서버 별명, 아니면 실제 이름(discord.py의 display_name이
+    # 알아서 골라줌). interaction.user는 항상 이 판을 시작한 본인(모달을 연 사람)이다.
+    challenger_line = f"🎯 도전자: {interaction.user.display_name}"
 
     if game_kind == _ODD_EVEN:
-        view: discord.ui.View = _OddEvenView(user_id, bet, before_coins)
-        content = f"홀?? 짝?? 골라봐!! (배팅: {bet}동전) _(두근)_\n\n{receipt}"
+        view: discord.ui.View = _OddEvenView(user_id, bet, before_coins, interaction.user.display_name)
+        content = f"{challenger_line}\n홀?? 짝?? 골라봐!! (배팅: {bet}동전) _(두근)_\n\n{receipt}"
     else:
-        view = _RPSView(user_id, bet, before_coins)
-        content = f"가위?? 바위?? 보?? 골라봐!! (배팅: {bet}동전) _(긴장)_\n\n{receipt}"
+        view = _RPSView(user_id, bet, before_coins, interaction.user.display_name)
+        content = f"{challenger_line}\n가위?? 바위?? 보?? 골라봐!! (배팅: {bet}동전) _(긴장)_\n\n{receipt}"
 
     await interaction.response.send_message(content=content, view=view)
     view.message = await interaction.original_response()
 
 
 class _OddEvenView(discord.ui.View):
-    def __init__(self, user_id: int, bet: int, before_coins: int) -> None:
+    def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
+        self.challenger_name = challenger_name
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
@@ -340,6 +345,7 @@ class _OddEvenView(discord.ui.View):
             user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
+        text = f"🎯 도전자: {self.challenger_name}\n{text}"
 
         replay_view = _build_replay_view(self.user_id, _ODD_EVEN)
         await interaction.response.edit_message(content=text, view=replay_view)
@@ -358,11 +364,12 @@ class _RPSView(discord.ui.View):
     # key가 value를 이긴다 (가위는 보를 이기고, 바위는 가위를 이기고, 보는 바위를 이긴다).
     _BEATS = {"가위": "보", "바위": "가위", "보": "바위"}
 
-    def __init__(self, user_id: int, bet: int, before_coins: int) -> None:
+    def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
+        self.challenger_name = challenger_name
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
@@ -394,6 +401,7 @@ class _RPSView(discord.ui.View):
             user = await get_user(self.user_id)
             text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
+        text = f"🎯 도전자: {self.challenger_name}\n{text}"
 
         replay_view = _build_replay_view(self.user_id, _RPS)
         await interaction.response.edit_message(content=text, view=replay_view)

@@ -17,6 +17,12 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         changes=(
+            "/내기·/도박 진행 중인 판에 도전자 이름이 표시됩니다.",
+            "햄미의 성능이 향상되었습니다.",
+        ),
+    ),
+    UpdateEntry(
+        changes=(
             "/내기·/도박에서 다시하기를 누르면 새 메시지로 이어지고, 이전 판은 그대로 "
             "기록으로 남습니다.",
             "/내기·/도박 결과가 자판기 구매처럼 기존 금액·배팅 금액·현재 금액으로 "
