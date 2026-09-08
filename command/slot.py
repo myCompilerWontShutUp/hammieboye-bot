@@ -78,36 +78,38 @@ _RULES_INTRO_LINES = (
     "도박 가이드 여기 있어!! _(안내)_",
 )
 
+# RulesView가 embed.description으로 그대로 보여주는 문구라 시스템 정중체로 고정한다
+# (2026-09-09 — 페르소나 말투 정정, command/black_market.py와 동일한 원칙).
 _RULES_OVERVIEW_TEXT = (
-    "위험한 게임들을 모아둔 곳이야!! 지금은 슬롯머신 하나가 있어(앞으로 더 늘어날 "
-    "수도 있어!!) — 아래 버튼에서 궁금한 게임을 골라봐!!\n\n"
-    "한 번에 아주 크게 벌 수도 있지만, 패배하면 배팅액을 몽땅 잃을 수도 있으니 "
-    "조심해!!"
+    "위험한 게임들을 모아둔 곳입니다. 지금은 슬롯머신 하나가 있으며(앞으로 더 늘어날 "
+    "수도 있습니다) 아래 버튼에서 원하는 게임을 골라주세요.\n\n"
+    "한 번에 아주 크게 벌 수도 있지만, 패배하면 배팅액을 모두 잃을 수 있으니 "
+    "주의하시기 바랍니다."
 )
 
-_GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _CHEESE, _HAMSTER, _DIAMOND, _STAR, _SEVEN = (
-    "🍇", "🥜", "🍓", "🌰", "🧀", "🐹", "💎", "⭐", "7️⃣",
+_GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _HAMSTER, _DIAMOND, _STAR, _SEVEN = (
+    "🍇", "🥜", "🍓", "🌰", "🐹", "💎", "⭐", "7️⃣",
 )
 SYMBOLS: tuple[str, ...] = (
-    _GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _CHEESE, _HAMSTER, _DIAMOND, _STAR, _SEVEN,
+    _GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _HAMSTER, _DIAMOND, _STAR, _SEVEN,
 )
 
 # 햄스터(🐹)는 배율표에 없다 — 한 줄이라도 걸리면 배율 무관하게 전액 페널티로 분기.
 # 심볼을 7종으로 줄였다가(밤/치즈 제거, 2026-09-04) 확률이 너무 높아졌다는 피드백으로
-# 2026-09-07 다시 9종으로 복원 — 칸당 적중 확률이 1/7 -> 1/9로 낮아진다. 밤/치즈는
-# 포도/땅콩/딸기와 동일한 x2 등급.
+# 2026-09-07 9종으로 복원했었으나(밤/치즈 다시 추가), 2026-09-09 치즈만 다시
+# 제거해 최종 8종으로 확정 — 칸당 적중 확률은 1/8. 밤은 포도/땅콩/딸기와 동일한 x2 등급.
 _MULTIPLIERS: dict[str, int] = {
-    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _CHESTNUT: 2, _CHEESE: 2,
+    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _CHESTNUT: 2,
     _STAR: 3, _DIAMOND: 10, _SEVEN: 77,
 }
 _SYMBOL_NAMES: dict[str, str] = {
-    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기", _CHESTNUT: "밤", _CHEESE: "치즈",
+    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기", _CHESTNUT: "밤",
     _DIAMOND: "다이아", _STAR: "별", _SEVEN: "세븐", _HAMSTER: "햄스터",
 }
 
 # 세븐 8라인 동시 완성(77^8) 등 배율이 지나치게 커지는 것을 막는 하드 상한
 # (2026-09-07) — 이 이상은 절대 안 올라간다.
-_MAX_MULTIPLIER = 77
+MAX_MULTIPLIER = 77
 _MAX_MULTIPLIER_NOTICE = "🏆 최대 배수에 도달했어!! 이 이상은 더 안 올라가!! _(경악)_"
 
 # 3x3 인덱스 0~8 기준 가로 3 + 세로 3 + 대각선 2 = 8라인.
@@ -123,15 +125,15 @@ _LINES: tuple[tuple[int, int, int], ...] = (
 _LEGENDARY_MULTIPLIER_THRESHOLD = 16
 
 _SLOT_MACHINE_RULE_TEXT = (
-    "3x3 칸을 채워서 가로 3줄 + 세로 3줄 + 대각선 2줄, 총 8줄을 확인해!! "
+    "3x3 칸을 채워서 가로 3줄 + 세로 3줄 + 대각선 2줄, 총 8줄을 확인합니다. "
     "한 줄에 같은 그림이 3개 모이면 그 그림의 배율이 곱해지고, 여러 줄이 동시에 완성되면 "
-    "배율끼리 전부 곱해져!! (배팅액 x 최종 배율을 돌려받아)\n\n"
-    "그림별 배율은 이래:\n"
-    "🍇 포도 x2 · 🥜 땅콩 x2 · 🍓 딸기 x2 · 🌰 밤 x2 · 🧀 치즈 x2\n"
+    "배율끼리 전부 곱해집니다(배팅액 x 최종 배율을 돌려받습니다).\n\n"
+    "그림별 배율은 다음과 같습니다:\n"
+    "🍇 포도 x2 · 🥜 땅콩 x2 · 🍓 딸기 x2 · 🌰 밤 x2\n"
     "⭐ 별 x3 · 💎 다이아 x10 · 7️⃣ 세븐 x77\n\n"
-    f"여러 줄이 동시에 완성돼도 최종 배율은 최대 x{_MAX_MULTIPLIER}를 넘지 않아!!\n\n"
-    "그런데 🐹 햄스터가 한 줄이라도 걸리면 다른 배율은 몽땅 무시되고, 배팅액만큼 "
-    "추가로 더 잃어버려!! 조심해!! _(경고)_"
+    f"여러 줄이 동시에 완성돼도 최종 배율은 최대 x{MAX_MULTIPLIER}를 넘지 않습니다.\n\n"
+    "🐹 햄스터가 한 줄이라도 걸리면 다른 배율은 모두 무시되고, 배팅액만큼 "
+    "추가로 잃게 되니 주의하시기 바랍니다."
 )
 
 _HAMSTER_PENALTY_LINES = (
@@ -201,10 +203,26 @@ _WIN_LINES = (
     "완전 좋았어!! 배율 x{multiplier}!! _(뿌듯)_",
 )
 
+def probability_summary() -> str:
+    """`/봇정보-확률공개` 전용 — 심볼별 등장 확률·배율을 사람이 읽을 문자열로 만든다.
+    SYMBOLS/_MULTIPLIERS/_SYMBOL_NAMES를 그대로 참조해서 만들기 때문에, 나중에
+    심볼 구성이 또 바뀌어도(예: 다른 심볼 추가/제거) 이 문구가 별도 수정 없이
+    자동으로 맞게 갱신된다 — 하드코딩된 확률 문구를 따로 관리하지 않기 위함."""
+    cell_count = len(SYMBOLS)
+    chance = 100 / cell_count
+    lines = []
+    for symbol in SYMBOLS:
+        name = _SYMBOL_NAMES[symbol]
+        multiplier = _MULTIPLIERS.get(symbol)
+        detail = f"배율 x{multiplier}" if multiplier is not None else "배율 없음(햄스터 페널티, 배팅액 추가 손실)"
+        lines.append(f"{symbol} {name} — 칸당 {chance:.1f}% ({detail})")
+    return "\n".join(lines)
+
+
 def evaluate(grid: list[str]) -> tuple[int, bool, bool]:
     """고정 그리드를 받아 (최종 배율, 햄스터 발동 여부, 상한 클램프 여부)를 반환하는
     순수 함수 — 랜덤 추출과 분리해서 오프라인 테스트에서 특정 그리드를 그대로 넣어
-    검증할 수 있게 한다. capped는 클램프 전 원래 배율이 _MAX_MULTIPLIER를 넘었는지."""
+    검증할 수 있게 한다. capped는 클램프 전 원래 배율이 MAX_MULTIPLIER를 넘었는지."""
     multiplier = 1
     hamster_hit = False
     for a, b, c in _LINES:
@@ -214,9 +232,9 @@ def evaluate(grid: list[str]) -> tuple[int, bool, bool]:
                 hamster_hit = True
             else:
                 multiplier *= _MULTIPLIERS[symbol]
-    capped = multiplier > _MAX_MULTIPLIER
+    capped = multiplier > MAX_MULTIPLIER
     if capped:
-        multiplier = _MAX_MULTIPLIER
+        multiplier = MAX_MULTIPLIER
     return multiplier, hamster_hit, capped
 
 

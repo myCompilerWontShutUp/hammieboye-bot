@@ -68,12 +68,12 @@ SNACK_ITEMS: tuple[BlackMarketItem, ...] = (
 TOOL_ITEMS: tuple[BlackMarketItem, ...] = (
     BlackMarketItem(
         "forbidden_book", "금서", 100, "tool",
-        description="`/사용 금서`로 키워드와 내용을 가르칠 수 있어(1인당 5개, 일주일 뒤 소멸).",
+        description="`/사용 금서`로 키워드와 내용을 가르칠 수 있습니다(1인당 5개, 일주일 뒤 소멸).",
         code="tn5bz7mg",
     ),
     BlackMarketItem(
         "hammie_schedule", "햄미 일정표", 100, "tool",
-        description="`/사용 햄미 일정표`로 오늘 하루 일과를 확인할 수 있어(본인에게만 보임).",
+        description="`/사용 햄미 일정표`로 오늘 하루 일과를 확인할 수 있습니다(본인에게만 보임).",
         code="2fqm19jl",
     ),
     BlackMarketItem(

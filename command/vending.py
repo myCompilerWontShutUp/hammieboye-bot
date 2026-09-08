@@ -125,13 +125,17 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
     if not await spend_coins(user_id, total_cost):
         return random.choice(INSUFFICIENT_FUNDS_LINES)
 
+    # embed.description에 들어가는 문구라 시스템 정중체로 고정한다(2026-09-09 —
+    # "받았어!!"/"벌 수 있어!!" 같은 페르소나 말투가 섞여 있던 걸 발견해 정정,
+    # command/black_market.py와 동일한 원칙).
     if item.kind == "snack":
         new_qty = await add_snack(user_id, item.id, 1)
-        effect_summary = f"{item.name}{josa(item.name, '을', '를')} 받았어!! (보유: {new_qty}개)"
+        effect_summary = f"{item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
     else:  # "coin"("투자") — /동전 그랜트 보너스 증가
         new_bonus = await increase_coin_grant_bonus(user_id, item.effect)
         effect_summary = (
-            f"`/동전` 획득량이 {item.effect}만큼 늘어서 이제 한 번에 {1 + new_bonus}개씩 벌 수 있어!!"
+            f"`/동전` 획득량이 {item.effect}만큼 늘어나 이제 한 번에 {1 + new_bonus}개씩 "
+            "받을 수 있습니다."
         )
 
     await record_purchase(user_id, item.id, total_cost)

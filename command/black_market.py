@@ -50,15 +50,19 @@ _CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "tool": "도구"}
 _CATEGORY_ORDER: tuple[str, ...] = ("snack", "tool")
 _DEFAULT_CATEGORY = "snack"
 
+# 임베드는 시스템 요소라 햄미의 반말/오타 페르소나를 쓰지 않고 정중체로 고정한다
+# (2026-09-09 — 이 카테고리 안내와 아래 구매 완료 embed가 "~이야!!"/"~있어!!" 같은
+# 페르소나 말투로 새 있던 걸 발견해 정정. 페르소나는 embed 밖 content= 플레이버
+# 텍스트(_INTRO_LINES 등)에서만 쓴다).
 _CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "snack": (
-        "위험한 확률 음식이야!! 운이 좋으면 크게 오르지만 나쁘면 오히려 깎일 수 있어!! "
-        "결과는 디저트 타임에 `/사용`으로 먹여야 알 수 있어!!"
+        "위험한 확률 음식입니다. 운이 좋으면 크게 오르지만 나쁘면 오히려 깎일 수 있습니다. "
+        "결과는 디저트 타임에 `/사용`으로 먹여야 알 수 있습니다."
     ),
-    "tool": "산 물건은 `/사용`으로 직접 써봐!! 한 번에 하나씩만 쓸 수 있어!!",
+    "tool": "산 물건은 `/사용`으로 직접 사용해보세요. 한 번에 하나씩만 사용할 수 있습니다.",
 }
 
-_EMPTY_CATEGORY_PLACEHOLDER = "(아직 아무것도 없어)"
+_EMPTY_CATEGORY_PLACEHOLDER = "(아직 없음)"
 
 # 관리자 권한 장난 품목 전용 — /자판기의 舊 op_permission과 동일한 컨셉(2026-09-08
 # /암시장으로 이전). 구매 가능 여부·잔액과 무관하게 항상 이 문구로 대체하고 결제 자체를
@@ -129,7 +133,7 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
         f"- 기존 금액: {before_coins:,}코인\n"
         f"- 사용 금액: {item.price:,}코인\n"
         f"- 현재 금액: {current_coins:,}코인\n"
-        f"- {item.name}{josa(item.name, '을', '를')} 받았어!! (보유: {new_qty}개)"
+        f"- {item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return random.choice(_INTRO_LINES), embed

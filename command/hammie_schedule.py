@@ -15,9 +15,11 @@ _NO_ITEM_MESSAGE = "어라, 햄미 일정표를 안 가지고 있는데?? `/암�
 
 _SLOT_LABELS: dict[str, str] = {"morning": "아침", "noon": "점심", "evening": "저녁"}
 
+# embed.description에 들어가는 문구라 시스템 정중체로 고정한다(2026-09-09, 페르소나
+# 말투 정정 — command/black_market.py와 동일한 원칙).
 _RECOMMENDATION = (
-    "암시장은 저녁 시간대(밤)에만 열리니까, 사자마자 바로 써서 그날 일과를 전부 "
-    "확인해보는 걸 추천해!!"
+    "암시장은 저녁 시간대(밤)에만 열리니, 구매 즉시 사용해 그날 일과를 확인하는 "
+    "것을 권장합니다."
 )
 
 

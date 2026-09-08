@@ -9,6 +9,7 @@ import command.bet as bet
 import command.black_market as black_market
 import command.coin as coin
 import command.intro as intro
+import command.probability_info as probability_info
 import command.ranking as ranking
 import command.slot as slot
 import command.use as use_item
@@ -59,9 +60,17 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
 
 
 def register(tree: app_commands.CommandTree) -> None:
-    @tree.command(name="수집항목", description="햄미가 저장하는 정보를 안내한다")
+    @tree.command(name="봇정보-수집항목", description="햄미가 저장하는 정보를 안내한다")
     async def collection_info_command(interaction: discord.Interaction) -> None:
         await collection_info_handle(interaction)
+
+    @tree.command(name="봇정보-확률공개", description="확률형 콘텐츠의 확률을 안내한다")
+    async def probability_info_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer(ephemeral=True)
+        await touch_channel(interaction)
+        await interaction.edit_original_response(embed=probability_info.build_embed())
 
     @tree.command(name="탈퇴", description="햄미가 모은 내 정보를 삭제한다")
     async def leave_command(interaction: discord.Interaction) -> None:
