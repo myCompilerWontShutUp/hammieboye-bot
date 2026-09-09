@@ -1,0 +1,5 @@
+ID = "wild_owner"
+NAME = "와일드한 주인님"
+HOW_TO_EARN = "레벨 4(와일드)에 도달하면 얻습니다."
+RARITY = "일반"
+CODE = "u0fec7nw"

@@ -1,8 +1,6 @@
 import random
 from datetime import datetime, timedelta, timezone
 
-import achievements
-from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.users import get_user, set_plastic_cooldown
@@ -270,14 +268,6 @@ async def handle(user_id: int) -> str:
     else:
         already_claimed_today = True
 
-    # 전체 기간 기준 최초 1회만(award()가 멱등이라 매일 초기화되는 플래그와 무관하게 판정).
-    achievement_result = await award_achievement(user_id, achievements.plastic_dance.ID)
-    if achievement_result["earned"]:
-        total_delta += achievement_result["applied_amount"]
-        current_affection = achievement_result["new_affection"]
-        multiplier_eligible = False
-        achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance.NAME}!!")
-
     # 하루 최대 획득량은 4(성공 +1, 연속 3회 보너스 +3) — 4회차 이상은 보너스 미지급.
     if new_streak >= _STREAK_TARGET and not stats["plastic_streak_bonus_claimed"]:
         result = await add_affection(user_id, 3, _METHOD)
@@ -290,14 +280,6 @@ async def handle(user_id: int) -> str:
             achievement_notices.append(result["achievement_notice"])
     elif new_streak >= _STREAK_TARGET:
         already_claimed_today = True
-
-    if new_streak >= _STREAK_TARGET:
-        god_result = await award_achievement(user_id, achievements.plastic_dance_god.ID)
-        if god_result["earned"]:
-            total_delta += god_result["applied_amount"]
-            current_affection = god_result["new_affection"]
-            multiplier_eligible = False
-            achievement_notices.append(f"🏆 업적 달성: {achievements.plastic_dance_god.NAME}!!")
 
     await update_daily_stats(user_id, update_fields)
     # 같은 던지기에서 다른 마일스톤으로 새 호감도를 받았다면 "이미 획득함" 노트는 모순돼 보이므로 생략.

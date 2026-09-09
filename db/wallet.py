@@ -68,13 +68,14 @@ async def add_coins(
     return result
 
 
-async def _maybe_award_penny_pincher(user_id: int, new_lifetime_coins_earned: int) -> str | None:
+async def _maybe_award_penny_pincher(user_id: int, new_lifetime_coins_earned: int) -> None:
+    """2026-09-10부로 achievement_notice는 항상 None을 반환한다 — award()가 XP 지급과
+    글로벌 방송을 내부에서 전부 처리하므로, 여기서는 조건이 맞을 때 award()를
+    호출하기만 하면 된다(호출부의 "if achievement_notice:" 분기는 자연히 no-op)."""
     if new_lifetime_coins_earned < _PENNY_PINCHER_THRESHOLD:
         return None
-    result = await award_achievement(user_id, achievements.penny_pincher.ID)
-    if not result["earned"]:
-        return None
-    return f"🏆 업적 달성: {achievements.format_name(achievements.penny_pincher)}!!"
+    await award_achievement(user_id, achievements.penny_pincher.ID)
+    return None
 
 
 async def spend_coins(user_id: int, amount: int) -> bool:

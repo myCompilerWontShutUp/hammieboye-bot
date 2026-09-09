@@ -5,20 +5,16 @@ from datetime import datetime
 
 import discord
 
+import levels
 from core.base import EMBED_COLOR, reject_if_wrong_invoker
 from core.korean import josa
 from events.scheduler import KST, format_footer_time
 from events.special_days import get_help_me_event_count
-from db.daily_stats import ensure_nl_cap
+from db.daily_stats import ensure_daily_stats
 from db.ranking import compute_percentile, count_total, get_coin_rank, get_rank
 from db.users import get_user
 import command.achievements as achievements_view
 import command.bag as bag_view
-
-# add_affection() RPC(SQL.md/supabase/schema.sql)에 하드코딩된 일일 획득 상한과 반드시
-# 같은 값을 유지해야 한다 — Python 쪽엔 이 값을 직접 참조할 데가 없어(SQL 함수 안에만
-# 있음) 표시용으로 여기 따로 상수를 둔다.
-_DAILY_AFFECTION_CAP = 100
 
 # 舊 /내정보가 한 임베드로 보여주던 호감도/오늘 기록/전체 기록 3개 카테고리가 전부
 # 공유하는 결과 인트로 풀(가방·업적은 각자 기존 풀을 그대로 씀).
@@ -149,6 +145,20 @@ async def _render_info(
     coin_lines.append(f"- 전체 동전 순위: **{coin_global_rank}**위 (상위 {coin_global_percentile}%)")
     embed.add_field(name=coin_field_name, value="\n".join(coin_lines), inline=False)
 
+    # 레벨/XP 시스템(2026-09-10 신규) — 동전 필드 바로 다음에 표시.
+    level = levels.get_level_for_xp(user["total_xp"])
+    next_level = levels.get_next_level(level)
+    level_lines = [f"- 레벨 {level.number} ({level.name})"]
+    if next_level is not None:
+        level_lines.append(
+            f"- 경험치: **{user['total_xp']}** / {next_level.xp_required} "
+            f"(다음 레벨까지 {next_level.xp_required - user['total_xp']})"
+        )
+    else:
+        level_lines.append(f"- 경험치: **{user['total_xp']}** (최고 레벨)")
+    level_lines.append(levels.xp_progress_bar(user["total_xp"], level, next_level))
+    embed.add_field(name="🎖️ 레벨", value="\n".join(level_lines), inline=False)
+
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     if is_self:
@@ -160,7 +170,10 @@ async def _render_today(user_id: int, *, target_name: str | None) -> tuple[str, 
     """舊 /내정보의 "📅 오늘의 기록" 필드."""
     is_self = target_name is None
     user = await get_user(user_id)
-    stats = await ensure_nl_cap(user_id, user["affection"])
+    stats = await ensure_daily_stats(user_id)
+    # 레벨/XP 시스템(2026-09-10) — 자연어 일일 상한이 호감도 공식에서 레벨 기반으로
+    # 바뀌며 nl_cap을 그 순간 레벨에서 실시간으로 조회한다(§chat.py와 동일 원칙).
+    nl_cap = levels.get_level_for_xp(user["total_xp"]).daily_nl_limit
 
     today = datetime.now(KST).date()
     dessert_fed_count = len(stats.get("dessert_fed_today") or {})
@@ -173,8 +186,12 @@ async def _render_today(user_id: int, *, target_name: str | None) -> tuple[str, 
         value=(
             f"- 간식 준 횟수: **{dessert_fed_count}**/3\n"
             f"- 도움 횟수: **{stats['help_me_events_helped_today']}**/{help_me_event_total}\n"
-            f"- 대화 횟수: **{stats['nl_count']}**/{stats['nl_cap']}\n"
-            f"- 획득 호감: **{stats['daily_gain_natural']}**/{_DAILY_AFFECTION_CAP}"
+            f"- 대화 횟수: **{stats['nl_count']}**/{nl_cap}\n"
+            # 명령어 사용 횟수(2026-09-10 신규) — 대화 횟수 바로 옆에 나란히.
+            f"- 명령어 사용 횟수: **{stats['slash_count']}**\n"
+            # 2026-09-10 — 일일 획득 상한이 사실상 무제한(2147483647)으로 올라가며
+            # "/상한" 표기를 뺐다(사용자 지시 — 상한 자체를 노출하지 않음).
+            f"- 획득 호감: **{stats['daily_gain_natural']}**"
         ),
         inline=False,
     )
@@ -219,8 +236,9 @@ async def render_admin_summary(user_id: int) -> tuple[str, discord.Embed]:
     확인). guild 정보가 없는 컨텍스트라 순위는 항상 전체(글로벌) 기준만 계산한다."""
     user = await get_user(user_id)
     affection = user["affection"]
+    nl_cap = levels.get_level_for_xp(user["total_xp"]).daily_nl_limit
     stats, global_rank, global_total = await asyncio.gather(
-        ensure_nl_cap(user_id, affection),
+        ensure_daily_stats(user_id),
         get_rank(user_id, affection),
         count_total(),
     )
@@ -256,8 +274,9 @@ async def render_admin_summary(user_id: int) -> tuple[str, discord.Embed]:
         value=(
             f"- 간식 준 횟수: **{dessert_fed_count}**/3\n"
             f"- 도움 횟수: **{stats['help_me_events_helped_today']}**/{help_me_event_total}\n"
-            f"- 대화 횟수: **{stats['nl_count']}**/{stats['nl_cap']}\n"
-            f"- 획득 호감: **{stats['daily_gain_natural']}**/{_DAILY_AFFECTION_CAP}"
+            f"- 대화 횟수: **{stats['nl_count']}**/{nl_cap}\n"
+            f"- 명령어 사용 횟수: **{stats['slash_count']}**\n"
+            f"- 획득 호감: **{stats['daily_gain_natural']}**"
         ),
         inline=False,
     )

@@ -7,15 +7,17 @@ import discord
 import achievements
 import documents
 import documents.admin_commands as admin_commands_doc
+import levels
 from admin import console as admin_console
 from core.base import normalize
 from core import intent
 from events import help_me_event
+from events.announcements import grant_daily_base_xp, grant_nl_xp
 from events.scheduler import KST, is_within_morning_greeting_window
 from events.special_days import DAY_TYPE_BIRTHDAY, get_day_type
 from db.achievements import award as award_achievement
 from db.affection import add_affection, format_affection_notice
-from db.daily_stats import ensure_nl_cap, update_daily_stats
+from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.forbidden_books import find_matches, get_active_entries
 from db.history import get_recent, get_recent_turns, log, set_detected_emotion
 from responses.engine import get_admin_command_response, get_response
@@ -187,6 +189,65 @@ _MORNING_GREETING_KEYWORDS = ("잘잤", "굿모닝", "좋은아침")
 # 진짜 생일인지 아닌지를 모델이 매번 다르게 판단해 고맙다고 넙죽 받거나(틀림) 아니라고
 # 정정하거나(맞음) 오락가락했다 — 날짜 판단을 모델에 안 맡기고 키워드 매칭으로 감지해
 # 항상 고정 문구로 답한다(생성 자체를 안 함, 호감도도 당연히 안 오름).
+# 링크 도메인 감지 반응(2026-09-10 신규) — 실제로 링크 내용을 읽는 게 절대 아니다
+# (사용자 확인: "링크는 읽을 수 없습니다"). 유튜브/쿠팡 두 도메인만 문자열 매칭으로
+# 알아채고 캐릭터성 반응만 보인다. 생일/아침 인사와 동일한 원칙으로 키워드(여기선
+# 도메인) 매칭이라 API 호출 없이 생성을 완전히 대체한다. normalize()가 공백 제거 +
+# 소문자 변환만 하므로 URL 안의 도메인 문자열은 그대로 남아 부분일치로 안전하게 잡힌다.
+_YOUTUBE_DOMAINS = ("youtube.com", "youtu.be")
+_COUPANG_DOMAINS = ("coupang.com",)
+
+# documents/profile.py에 이미 있는 "햄미의 실제 모습이 담긴 유튜브 영상" 링크를 그대로
+# 재사용한다 — 별도로 새 영상을 안 만들고 기존 페르소나 설정을 일관되게 따른다.
+# 반응 문구 뒤에 이 링크를 새 줄로 붙이면 디스코드가 자동으로 영상 미리보기를
+# 임베드해줘서 "영상을 보여준다"가 실제로 구현된다.
+_HAMMIE_YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v=H0Yirlo6WSU"
+
+_YOUTUBE_LINK_REACTION_LINES = (
+    "오오 유튜브야?? 나도 나오는 영상 있다!! 보여줄게!! _(자랑)_",
+    "유튜브 링크네!! 그럼 나도 나온 영상 하나 보여줄게!! _(신남)_",
+    "오, 유튜브다!! 나 나오는 영상도 있는데 볼래?? _(으쓱)_",
+    "유튜브 왔구나!! 이 기회에 진짜 나 나오는 영상 보여줄게!! _(두근)_",
+    "유튜브 링크야?? 나도 하나 있어!! 짜잔!! _(자랑)_",
+    "오오, 유튜브 좋아해?? 나도 영상 있다구!! _(들뜸)_",
+    "유튜브라니!! 나 진짜 나오는 영상 있는데 보여줄게!! _(신남)_",
+    "이 기회에 나도 영상 하나 보여줄게!! 유튜브에 나온 적 있어!! _(뿌듯)_",
+    "유튜브야?? 그럼 나도 질 수 없지!! 영상 간다!! _(도전)_",
+    "오, 유튜브 링크!! 나도 영상 있으니까 이거 봐봐!! _(설렘)_",
+    "유튜브 봤어?? 사실 나도 영상 나온 거 있어!! _(수줍)_",
+    "유튜브구나!! 진짜 나 나오는 영상 보여줄게!! 놀라지 마!! _(장난)_",
+    "링크 고마워!! 답례로 나 나오는 영상 하나 보여줄게!! _(감사)_",
+    "유튜브 좋아하는구나!! 나도 영상 있는데 궁금하지?? _(호기심)_",
+    "오오!! 나도 유튜브 스타야!! 영상 보여줄게!! _(당당)_",
+    "유튜브네!! 진짜 나 맞는 영상이야, 믿어도 돼!! _(진지)_",
+    "이거 유튜브지?? 나도 있다구!! 여기 봐봐!! _(방긋)_",
+    "유튜브 얘기 나오니까 신나!! 내 영상도 보여줄게!! _(흥분)_",
+    "오, 유튜브!! 나 나온 영상 하나 슬쩍 보여줄게!! _(찡긋)_",
+    "유튜브 링크 고마워!! 이건 진짜 나 맞는 영상이야!! _(자신만만)_",
+)
+_COUPANG_LINK_REACTION_LINES = (
+    "어?? 쿠팡이야?? 이거 사면서 햄미 간식도 하나 사주면 안 돼?? _(초롱초롱)_",
+    "오, 쿠팡 링크!! 혹시... 햄미 해바라기씨도 같이 담아줄 수 있어?? _(애교)_",
+    "쿠팡 보니까 배고파진다!! 간식도 하나 사줘!! _(칭얼)_",
+    "쿠팡이구나!! 장바구니에 햄미 간식도 하나 넣어줘!! _(부탁)_",
+    "오오 쇼핑하는 거야?? 햄미 간식도 같이 사주라!! _(기대)_",
+    "쿠팡 링크네!! 이 참에 햄미 간식도 사주면 안 돼?? _(눈치)_",
+    "장보러 가는 거야?? 햄미 아몬드도 하나 담아줘!! _(설렘)_",
+    "쿠팡이야?? 배송 오는 김에 간식도 하나 부탁해!! _(웃음)_",
+    "오, 쿠팡!! 햄미 것도 하나 사주면 진짜 조아할 거야!! _(들뜸)_",
+    "쿠팡 링크 보니까 나도 갖고 싶은 게 있어!! 간식!! _(애교)_",
+    "혹시 그거 사면서 햄미 간식도 같이 살 수 있어?? _(조심)_",
+    "쿠팡이네!! 이번엔 햄미 몫도 챙겨줘!! _(당당)_",
+    "오오 쇼핑!! 햄미도 간식 필요한데... _(힐끔)_",
+    "쿠팡 왔구나!! 장바구니에 간식 하나만!! _(부탁)_",
+    "이거 사는 김에 햄미 간식도 사주면 안 될까?? _(초롱)_",
+    "쿠팡 링크야?? 햄미 몫도 잊지 말아줘!! _(웃음)_",
+    "오, 뭐 사는 거야?? 햄미 간식도 껴줘!! _(장난)_",
+    "쿠팡이면 딱이야!! 햄미 간식도 하나!! _(신남)_",
+    "장바구니에 햄미 간식 하나 추가 어때?? _(애교)_",
+    "쿠팡 링크 보니까 간식 생각나!! 하나 사주라!! _(칭얼)_",
+)
+
 _BIRTHDAY_FALSE_ALARM_LINES = (
     "고마워!! 근데 오늘 햄미 생일 아닌데?? _(갸웃)_",
     "어? 오늘 생일 아니야!! 그래도 축하해줘서 고마워!! _(웃음)_",
@@ -206,14 +267,50 @@ _BIRTHDAY_FALSE_ALARM_LINES = (
 )
 
 
+# 레벨별 입력 글자수 상한 초과(2026-09-10 신규) — 조용히 자르지 않고 거절+안내
+# 문구로 응답한다(사용자 확정: 자르면 "왜 뒷부분에 답이 없지" 오해 소지).
+_INPUT_TOO_LONG_LINES = (
+    "이건 너무 길어써!! {limit}자 안으로 줄여서 다시 말해줄래?? _(헥헥)_",
+    "우와, 너무 길다!! {limit}자 넘으면 못 읽어!! 줄여줘!! _(당황)_",
+    "잠깐, 이건 못 읽겠어!! {limit}자 안으로 줄여줘!! _(어지러움)_",
+    "이거 너무 긴데?? {limit}자까지만 봐줄 수 이써!! _(헐떡)_",
+    "머리 아파써!! {limit}자 안으로 짧게 다시 말해줄래?? _(끙)_",
+)
+
+
+def _detect_special_link_reaction(text: str) -> str | None:
+    """유튜브/쿠팡 링크가 이번 메시지에 있으면 전용 반응 문구를 반환한다(없으면
+    None) — 실제로 링크를 열어보는 게 아니라 도메인 문자열만 감지하는 단순 매칭
+    이다. 유튜브가 감지되면 반응 문구 뒤에 _HAMMIE_YOUTUBE_VIDEO_URL을 새 줄로
+    붙여 디스코드가 자동으로 영상을 임베드하게 한다(실제로 "보여주는" 부분).
+    쿠팡은 문구만 있고 별도 링크는 안 붙인다. 두 도메인이 동시에 있는 경우는
+    사실상 없다고 보고 유튜브를 우선한다."""
+    normalized = normalize(text)
+    if any(domain in normalized for domain in _YOUTUBE_DOMAINS):
+        return f"{random.choice(_YOUTUBE_LINK_REACTION_LINES)}\n{_HAMMIE_YOUTUBE_VIDEO_URL}"
+    if any(domain in normalized for domain in _COUPANG_DOMAINS):
+        return random.choice(_COUPANG_LINK_REACTION_LINES)
+    return None
+
+
 async def handle_natural_language(
-    user_id: int, guild_id: int, text: str, affection: int
+    user_id: int, guild_id: int, text: str, affection: int, total_xp: int
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
+    # 레벨/XP 시스템(2026-09-10) — 이 메시지 내내 쓸 그 순간의 레벨을 한 번만 조회한다
+    # (레벨업 즉시 혜택 체감, 舊 "06:30에 그날 몫 동결" 방식 폐지).
+    level = levels.get_level_for_xp(total_xp)
+
+    # 레벨별 입력 글자수 상한 — 생성/집계 전부를 건너뛰고 즉시 거절한다(다른
+    # early-return 분기와 달리 DB 조회 자체가 필요 없어 가장 먼저 체크).
+    # input_char_limit=None이면 무제한.
+    if level.input_char_limit is not None and len(text) > level.input_char_limit:
+        return random.choice(_INPUT_TOO_LONG_LINES).format(limit=level.input_char_limit)
+
     now = datetime.now(timezone.utc)
 
     recent, stats = await asyncio.gather(
         get_recent(user_id, since=now - _HISTORY_WINDOW),
-        ensure_nl_cap(user_id, affection),
+        ensure_daily_stats(user_id),
     )
 
     total_delta = 0
@@ -227,7 +324,10 @@ async def handle_natural_language(
         if not eligible:
             multiplier_eligible = False
 
-    nl_cap = stats["nl_cap"]
+    # 자연어 일일 상한(舊 nl_cap, 호감도 기반 공식)을 레벨 기반으로 대체 — 소진 후
+    # 단계별 문구(1~4번째 고정문구/5번째 경고/6번째부터 무시+페널티) UX는 그대로
+    # 유지된다.
+    nl_cap = level.daily_nl_limit
     over_cap = stats["nl_count"] >= nl_cap
 
     # 정규화 후 비교. recent는 role="user"만 조회되므로 햄미 자신의 답장은 안 섞인다.
@@ -251,7 +351,6 @@ async def handle_natural_language(
         context_turns, (
             event_delta,
             event_multiplier_eligible,
-            event_achievement,
             was_event_response,
             event_override,
             active_prompt_text,
@@ -265,7 +364,6 @@ async def handle_natural_language(
         (
             event_delta,
             event_multiplier_eligible,
-            event_achievement,
             was_event_response,
             event_override,
             active_prompt_text,
@@ -279,14 +377,9 @@ async def handle_natural_language(
         if not event_multiplier_eligible:
             multiplier_eligible = False
 
-    # 헬프 미 이벤트 업적 알림은 이후 어떤 분기로 빠지든 최종 응답에 붙어야 한다.
-    achievement_notices = [event_achievement] if event_achievement else []
-
     if affection < 0:
         base = _BITE_RESPONSE if affection <= _BITE_THRESHOLD else _IGNORE_RESPONSE
-        return _finalize(
-            base, total_delta, current_affection, achievement_notices, multiplier_eligible=multiplier_eligible
-        )
+        return _finalize(base, total_delta, current_affection, multiplier_eligible=multiplier_eligible)
 
     if over_cap:
         return await _handle_over_cap(
@@ -294,7 +387,6 @@ async def handle_natural_language(
             stats,
             total_delta,
             current_affection,
-            achievement_notices,
             was_event_response,
             multiplier_eligible=multiplier_eligible,
         )
@@ -304,7 +396,6 @@ async def handle_natural_language(
             random.choice(_REPEAT_ANGRY_PHRASES),
             total_delta,
             current_affection,
-            achievement_notices,
             multiplier_eligible=multiplier_eligible,
         )
     if is_repeat_warning:
@@ -312,7 +403,6 @@ async def handle_natural_language(
             random.choice(_REPEAT_WARNING_PHRASES),
             total_delta,
             current_affection,
-            achievement_notices,
             multiplier_eligible=multiplier_eligible,
         )
 
@@ -320,9 +410,18 @@ async def handle_natural_language(
     # 생성을 하지 않고 이 고정 문구로 대체한다(API 미호출, nl_count 미증가).
     if event_override is not None:
         return _finalize(
-            event_override, total_delta, current_affection, achievement_notices,
-            multiplier_eligible=multiplier_eligible,
+            event_override, total_delta, current_affection, multiplier_eligible=multiplier_eligible,
         )
+
+    # 유튜브/쿠팡 링크 반응(2026-09-10 신규) — 헬프 미 이벤트가 활성 상태면 절대 안
+    # 끼어든다(금서 문맥 주입과 동일한 원칙, active_prompt_text is None 확인). 생일/
+    # 아침 인사와 같은 층위의 키워드 매칭 완전 대체라 API 호출 없이 여기서 끝낸다.
+    if active_prompt_text is None:
+        link_reaction = _detect_special_link_reaction(text)
+        if link_reaction is not None:
+            return _finalize(
+                link_reaction, total_delta, current_affection, multiplier_eligible=multiplier_eligible,
+            )
 
     today = datetime.now(KST).date()
 
@@ -335,7 +434,6 @@ async def handle_natural_language(
             random.choice(_BIRTHDAY_FALSE_ALARM_LINES),
             total_delta,
             current_affection,
-            achievement_notices,
             multiplier_eligible=multiplier_eligible,
         )
 
@@ -346,7 +444,7 @@ async def handle_natural_language(
     # 붙었는데, 필요 여부(active_prompt_text)는 이미 classify 호출 전에 알 수 있으므로
     # 굳이 뒤로 미룰 이유가 없었다 — OpenAI 분류 호출 시간에 자연히 묻혀서 사실상 무료가
     # 된다).
-    classification, (greeting_delta, greeting_multiplier_eligible, greeting_achievement), forbidden_book_note = (
+    classification, (greeting_delta, greeting_multiplier_eligible), forbidden_book_note = (
         await asyncio.gather(
             intent.classify(text),
             _apply_greeting_bonuses(user_id, text, stats, today),
@@ -358,11 +456,9 @@ async def handle_natural_language(
         current_affection += greeting_delta
     if not greeting_multiplier_eligible:
         multiplier_eligible = False
-    if greeting_achievement:
-        achievement_notices.append(greeting_achievement)
 
     if classification.emotion is not None:
-        _, (message_delta, message_achievement) = await asyncio.gather(
+        _, message_delta = await asyncio.gather(
             set_detected_emotion(logged_row["id"], classification.emotion),
             _apply_message_effects(
                 user_id, classification.emotion, classification.has_severe_abuse, stats
@@ -371,20 +467,18 @@ async def handle_natural_language(
         total_delta += message_delta
         if message_delta:
             current_affection += message_delta
-        if message_achievement:
-            achievement_notices.append(message_achievement)
 
     # 관리자 명령어 자연어 설명: 권한자에게만 답하고, 비권한자는 생성 호출 자체를 안 해서
     # 정보가 새지 않는다. 다른 카테고리와 섞이지 않게 단독 분기로 처리한다.
     if "admin_commands" in classification.categories:
         if not admin_console.is_authorized(user_id):
             return _finalize(
-                "너한테는 알려줄 수 없어!!", total_delta, current_affection, achievement_notices,
+                "너한테는 알려줄 수 없어!!", total_delta, current_affection,
                 multiplier_eligible=multiplier_eligible,
             )
         admin_response = await get_admin_command_response(text, admin_commands_doc.get_text())
         return _finalize(
-            admin_response, total_delta, current_affection, achievement_notices,
+            admin_response, total_delta, current_affection,
             multiplier_eligible=multiplier_eligible,
         )
 
@@ -397,12 +491,13 @@ async def handle_natural_language(
         # forbidden_book_note는 _maybe_forbidden_book_note()가 active_prompt_text is not
         # None일 때 이미 None으로 건너뛰어서, 여기서 다시 확인할 필요 없이 그대로 쓴다.
         context_note = f"{context_note}\n\n{forbidden_book_note}" if context_note else forbidden_book_note
-    response_text = await get_response(text, history=context_turns, context_note=context_note)
+    response_text = await get_response(
+        text, history=context_turns, context_note=context_note, output_char_limit=level.output_char_limit
+    )
 
-    first_chat_result = await award_achievement(user_id, achievements.first_chat.ID)
-    if first_chat_result["earned"]:
-        _record(first_chat_result, eligible=False)
-        achievement_notices.append(f"🏆 업적 달성: {achievements.format_name(achievements.first_chat)}!!")
+    # 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
+    # 글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다.
+    await award_achievement(user_id, achievements.first_chat.ID)
 
     # nl_count는 실제 생성까지 도달한 메시지만 증가시킨다. 상한에 정확히 도달하는
     # 메시지라면 답변 뒤에 고정 문구를 이어붙인다.
@@ -411,20 +506,20 @@ async def handle_natural_language(
         response_text = f"{response_text}\n\n{random.choice(_DAILY_LIMIT_PHRASES)}"
 
     if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD:
-        speech_bubble_result = await award_achievement(user_id, achievements.speech_bubble.ID)
-        if speech_bubble_result["earned"]:
-            _record(speech_bubble_result, eligible=False)
-            achievement_notices.append(
-                f"🏆 업적 달성: {achievements.format_name(achievements.speech_bubble)}!!"
-            )
+        await award_achievement(user_id, achievements.speech_bubble.ID)
 
     await asyncio.gather(
         update_daily_stats(user_id, {"nl_count": new_nl_count}),
         log(user_id, guild_id, response_text, role="assistant"),
     )
 
+    # 레벨/XP 시스템(2026-09-10) — 실제로 생성까지 도달한 메시지에서만 적립한다
+    # (over_cap/반복 페널티/이벤트 오버라이드 등 조기 반환 경로는 여기까지 안 옴).
+    await grant_daily_base_xp(user_id)
+    await grant_nl_xp(user_id)
+
     return _finalize(
-        response_text, total_delta, current_affection, achievement_notices,
+        response_text, total_delta, current_affection,
         multiplier_eligible=multiplier_eligible,
     )
 
@@ -434,7 +529,6 @@ async def _handle_over_cap(
     stats: dict,
     total_delta: int,
     current_affection: int,
-    achievement_notices: list[str],
     was_event_response: bool = False,
     *,
     multiplier_eligible: bool = True,
@@ -443,7 +537,7 @@ async def _handle_over_cap(
     # 안 그러면 이벤트 자체의 호감도 변화 위에 남용 페널티까지 겹쳐 붙는다.
     if was_event_response:
         return _finalize(
-            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices,
+            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection,
             multiplier_eligible=multiplier_eligible,
         )
 
@@ -452,7 +546,7 @@ async def _handle_over_cap(
 
     if attempts <= _OVER_CAP_FREE_ATTEMPTS:
         return _finalize(
-            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection, achievement_notices,
+            random.choice(_DAILY_LIMIT_PHRASES), total_delta, current_affection,
             multiplier_eligible=multiplier_eligible,
         )
     if attempts == _OVER_CAP_WARNING_ATTEMPT:
@@ -460,7 +554,6 @@ async def _handle_over_cap(
             random.choice(_DAILY_LIMIT_WARNING_PHRASES),
             total_delta,
             current_affection,
-            achievement_notices,
             multiplier_eligible=multiplier_eligible,
         )
 
@@ -468,7 +561,7 @@ async def _handle_over_cap(
     total_delta += result["applied_amount"]
     current_affection = result["new_affection"]
     return _finalize(
-        _OVER_CAP_IGNORE_RESPONSE, total_delta, current_affection, achievement_notices,
+        _OVER_CAP_IGNORE_RESPONSE, total_delta, current_affection,
         multiplier_eligible=multiplier_eligible,
     )
 
@@ -477,7 +570,6 @@ def _finalize(
     response: str | discord.Embed | tuple[str, discord.Embed],
     delta: int,
     current: int,
-    achievement_notices: list[str] | None = None,
     *,
     multiplier_eligible: bool = True,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
@@ -487,8 +579,6 @@ def _finalize(
     text = response
     if delta != 0:
         text += format_affection_notice(delta, current, multiplier_eligible=multiplier_eligible)
-    for notice in achievement_notices or ():
-        text += f"\n{notice}"
     return text
 
 
@@ -518,18 +608,16 @@ async def _maybe_forbidden_book_note(text: str, active_prompt_text: str | None) 
 
 async def _apply_greeting_bonuses(
     user_id: int, text: str, stats: dict, today: date
-) -> tuple[int, bool, str | None]:
+) -> tuple[int, bool]:
     """생일 축하(3-2)/아침 인사(3-6) 자연어 보상. 둘 다 하루 1회, 반복 시엔 추가 지급 없이
     정상 생성 흐름만 그대로 진행한다(생일 쪽은 "이미 줬어" 같은 메타 발언도 없음).
 
-    반환값 두 번째 요소(multiplier_eligible)는 delta가 배율 분해 대상인지 — 아침 인사
-    성공 시 함께 지급되는 "일찍 일어난 새가 먹이를 옴뇸뇸" 업적 보너스는
-    apply_day_multiplier=False라서 섞이는 순간 False가 된다(format_affection_notice의
-    잘못된 "N x 배율" 분해 방지)."""
+    두 보상 모두 apply_day_multiplier=True(기본값)로 지급되는 순수 호감도라, 반환값
+    두 번째 요소(multiplier_eligible)는 항상 True다 — 2026-09-10부로 업적 달성
+    보너스(舊 "일찍 일어난 새가 먹이를 옴뇸뇸")가 폐지되며 배율 미적용 성분이 섞일
+    일이 없어졌다(award()가 XP+글로벌 방송을 내부에서 처리)."""
     updates = {}
     delta = 0
-    multiplier_eligible = True
-    achievement_notice = None
     normalized = normalize(text)
 
     if (
@@ -549,24 +637,19 @@ async def _apply_greeting_bonuses(
         result = await add_affection(user_id, _MORNING_GREETING_REWARD, _MORNING_GREETING_METHOD)
         delta += result["applied_amount"]
         updates["morning_greeting_claimed"] = True
-        achievement_result = await award_achievement(user_id, achievements.early_bird.ID)
-        if achievement_result["earned"]:
-            delta += achievement_result["applied_amount"]
-            multiplier_eligible = False
-            achievement_notice = f"🏆 업적 달성: {achievements.format_name(achievements.early_bird)}!!"
+        await award_achievement(user_id, achievements.early_bird.ID)
 
     if updates:
         await update_daily_stats(user_id, updates)
 
-    return delta, multiplier_eligible, achievement_notice
+    return delta, True
 
 
 async def _apply_message_effects(
     user_id: int, emotion: str, has_severe_abuse: bool, stats: dict
-) -> tuple[int, str | None]:
+) -> int:
     updates = {}
     delta = 0
-    achievement_notice = None
 
     if has_severe_abuse:
         result = await add_affection(user_id, _SEVERE_ABUSE_PENALTY)
@@ -576,9 +659,8 @@ async def _apply_message_effects(
         result = await add_affection(user_id, 1, _HAPPY_METHOD)
         delta += result["applied_amount"]
         updates["happy_emotion_claimed"] = True
-        achievement_notice = result["achievement_notice"]
 
     if updates:
         await update_daily_stats(user_id, updates)
 
-    return delta, achievement_notice
+    return delta

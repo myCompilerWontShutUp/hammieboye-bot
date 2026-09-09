@@ -306,19 +306,28 @@ class PurchaseConfirmModal(discord.ui.Modal):
 
 class _RuleButton(discord.ui.Button):
     """RulesView 안의 게임별 규칙 버튼 — 누르면 그 게임의 상세 규칙으로 임베드만
-    바꿔치기한다(다른 버튼도 그대로 남아 있어 자유롭게 오갈 수 있다)."""
+    바꿔치기한다(다른 버튼도 그대로 남아 있어 자유롭게 오갈 수 있다). 2026-09-10 —
+    지금 보고 있는 게임은 초록(success), 나머지는 회색(secondary)으로 칠한다
+    (/자판기·/암시장·/내정보·/랭킹의 카테고리 탭과 동일한 배색 원칙으로 통일 —
+    舊 전부 primary 고정이라 "지금 뭘 보고 있는지" 구분이 안 됐다). 개요 화면
+    (아직 아무 버튼도 안 누른 상태)에서는 전부 회색으로 시작한다."""
 
-    def __init__(self, label: str, text: str, embed_title: str, color: int) -> None:
-        super().__init__(label=label, style=discord.ButtonStyle.primary)
+    def __init__(self, label: str, text: str, embed_title: str, color: int, *, active: bool) -> None:
+        style = discord.ButtonStyle.success if active else discord.ButtonStyle.secondary
+        super().__init__(label=label, style=style)
         self._text = text
         self._embed_title = embed_title
         self._color = color
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        self.view.bump()
+        view: RulesView = self.view
+        view.bump()
+        for child in view.children:
+            if isinstance(child, _RuleButton):
+                child.style = discord.ButtonStyle.success if child is self else discord.ButtonStyle.secondary
         embed = discord.Embed(title=self._embed_title, description=self._text, color=self._color)
         embed.set_footer(text=format_footer_time(datetime.now(KST)))
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 class RulesView(EphemeralAutoDeleteView):
@@ -331,7 +340,7 @@ class RulesView(EphemeralAutoDeleteView):
     def __init__(self, embed_title: str, game_rules: dict[str, str], *, color: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         for label, text in game_rules.items():
-            self.add_item(_RuleButton(label, text, embed_title, color))
+            self.add_item(_RuleButton(label, text, embed_title, color, active=False))
 
 
 # 잔액 부족 안내 — /자판기·/내기·/도박이 전부 공유(다들 spend_coins 실패 시 이
@@ -379,14 +388,13 @@ LEGENDARY_MULTIPLIER_THRESHOLD = 64
 
 async def maybe_award_legendary_multiplier(user_id: int, multiplier: int) -> dict | None:
     """실현된 배율이 LEGENDARY_MULTIPLIER_THRESHOLD 이상이면 전설 업적 지급을
-    시도하고 db/achievements.py::award()의 원본 결과 dict({earned, applied_amount,
-    new_affection})를 그대로 반환한다 — 미달이면 None. earned가 False일 수도
-    있다(이미 보유 중이라 멱등하게 무시된 경우). 알림 문구 조립은 호출부가 직접
-    한다 — 슬롯머신은 다른 업적(gambling_hotline_1336)과 호감도 델타를 한 줄로
-    합쳐서 보여주는 기존 방식이 있어 원시 결과가 필요하고, 승부예측·더블오어낫띵은
-    단독으로 보여주면 되기 때문이다. 실제 지급이 확정된 시점에서만 호출해야
-    한다(폭탄으로 잃거나 무응답으로 몰수된 판은 "실제로 딴 게 없다"는 원칙상
-    대상이 아니다)."""
+    시도하고 db/achievements.py::award()의 원본 결과 dict({earned})를 그대로
+    반환한다 — 미달이면 None. earned가 False일 수도 있다(이미 보유 중이라 멱등하게
+    무시된 경우). 2026-09-10부로 award()가 XP 지급+글로벌 방송을 전부 내부에서
+    처리하므로(호감도 보너스는 폐지), 호출부는 알림 문구를 더 이상 조립하지 않고
+    이 함수를 그냥 fire-and-forget으로 호출하면 된다. 실제 지급이 확정된
+    시점에서만 호출해야 한다(폭탄으로 잃거나 무응답으로 몰수된 판은 "실제로 딴 게
+    없다"는 원칙상 대상이 아니다)."""
     if multiplier < LEGENDARY_MULTIPLIER_THRESHOLD:
         return None
     return await award_achievement(user_id, achievements.dev_never_tested_this.ID)

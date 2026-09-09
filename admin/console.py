@@ -12,6 +12,7 @@ import emoji as emoji_lib
 
 import achievements
 import admin.item_codes as item_codes
+import levels
 from command.info import render_admin_summary
 from config import ADMIN_USER_ID, ALLOWED_GUILD_IDS, CALL_PREFIXES
 from admin.version import (
@@ -30,6 +31,7 @@ from events.scheduler import (
     format_footer_time,
     is_sleep_time_for,
 )
+from events.announcements import apply_xp_and_check_levelup, broadcast_level_up_batch
 from events.sleep_guard import SLEEP_REPLY
 from db.achievements import award as award_achievement
 from db.achievements import revoke as revoke_achievement
@@ -53,7 +55,7 @@ from db.admin_ops import seed_prime
 from db.admin_sessions import clear_session as clear_session_row
 from db.admin_sessions import save_session as save_session_row
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
-from db.daily_stats import ensure_nl_cap, update_daily_stats
+from db.daily_stats import ensure_daily_stats, update_daily_stats
 from db.emoji_tags import clear_tags as clear_emoji_tags_row
 from db.emoji_tags import get_all as get_all_emoji_tags
 from db.emoji_tags import set_tags as set_emoji_tags_row
@@ -67,7 +69,7 @@ from db.guild_channels import (
     remove_sub_channel,
     set_main_channel,
 )
-from db.users import ensure_user, get_user
+from db.users import ensure_user, get_user, list_all_user_ids
 from db.vending_log import clear_purchases, count_purchases, record_purchase, remove_purchases
 from db.wallet import (
     add_coins,
@@ -335,7 +337,13 @@ def _parse_int(token: str, label: str) -> int:
 _HAMMIE_USER_ID = 1541339665708228648
 _SELF_TARGET_MESSAGE = "그건 저라서 진행할 수 없어요!!"
 
-_SELF_ALIAS = "me"  # {user_id}에 "me"를 넣으면 관리자 본인(ADMIN_USER_ID)을 가리킨다.
+# 2026-09-10 — 舊 "me"를 "*me"로 리네임(전체 {user_id} 명령어 공통, 위험 없는 단순
+# 변경). "*all"은 신설 — 등록된 모든 유저를 대상으로 지정하는데, 관리자 권한 부여
+# (op grant) 같은 민감한 명령어에 실수로 전체 적용되면 위험해서 fl/co/exp/itm
+# 그룹에서만 허용한다(_resolve_targets의 allow_all 참고, 그 외 그룹은 여전히
+# _parse_user_id만 써서 *all을 만나면 숫자 파싱 실패로 자연히 거부된다).
+_SELF_ALIAS = "*me"
+_ALL_ALIAS = "*all"
 
 
 def _parse_user_id(token: str) -> int:
@@ -346,6 +354,48 @@ def _parse_user_id(token: str) -> int:
     if user_id == _HAMMIE_USER_ID:
         raise _AdminError(_SELF_TARGET_MESSAGE)
     return user_id
+
+
+async def _resolve_targets(token: str, *, allow_all: bool) -> list[int]:
+    """{user_id} 토큰을 유저 ID 리스트로 통일해서 해석한다(2026-09-10 신규,
+    CLAUDE.md §23) — allow_all=True인 그룹(fl/co/exp/itm)에서만 "*all"(등록된 모든
+    유저, 서버 무관 통합 레코드 기준 고유 user_id 정확히 1번씩)을 인식하고, 그 외
+    그룹에서 "*all"을 만나면 명시적으로 거부한다. "*me"는 항상 _parse_user_id가
+    처리한다."""
+    stripped = token.strip()
+    if stripped == _ALL_ALIAS:
+        if not allow_all:
+            raise _AdminError("*all은 이 명령어에서는 못 써요!! (fl/co/exp/itm 전용)")
+        return await list_all_user_ids()
+    return [_parse_user_id(stripped)]
+
+
+async def _apply_to_targets(targets: list[int], apply_fn: Callable[[int], Awaitable[str]]) -> str:
+    """targets가 1명이면 apply_fn의 결과 문자열을 그대로 반환한다(기존 단일 대상
+    동작과 100% 동일 — *all이 아닌 모든 기존 사용 방식은 이 함수를 거쳐도 겉보기
+    동작이 안 바뀐다). 2명 이상(*all)이면 한 명씩 순서대로 적용하되(한 명이
+    실패해도 나머지는 계속 진행) 개별 문구 대신 성공/실패 인원 수로 요약해서
+    응답한다 — 응답이 무한정 길어지는 걸 피하기 위함(2000자 초과 시 기존 .txt
+    첨부 인프라가 있긴 하지만, 애초에 사람 수만큼 줄이 느는 걸 원치 않음)."""
+    if len(targets) == 1:
+        return await apply_fn(targets[0])
+
+    success = 0
+    failures: list[int] = []
+    for user_id in targets:
+        try:
+            await apply_fn(user_id)
+            success += 1
+        except _AdminError:
+            failures.append(user_id)
+        except Exception:
+            logging.exception("Bulk admin command failed for user %s", user_id)
+            failures.append(user_id)
+
+    summary = f"네!! 총 {len(targets)}명 중 {success}명에게 적용했어요!!"
+    if failures:
+        summary += f" (실패 {len(failures)}명)"
+    return summary
 
 
 def _format_event_time(iso_str: str) -> str:
@@ -364,51 +414,67 @@ async def _require_registered(user_id: int) -> dict:
 async def _handle_fl_up(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: fl up : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     amount = _parse_int(args[1], "amount")
-    user = await _require_registered(user_id)
-    # 관리자의 직접 수치 조작으로는 업적이 달성되면 안 된다(fl set/reset은 별도 RPC라 원래 안전).
-    result = await add_affection_uncapped(user_id, amount, "admin_fl_up", check_achievements=False)
-    new_affection = result["new_affection"]
-    await log_command("fl up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 호감도를 +{amount} 올려드렸어요!! ({user['affection']} → {new_affection})"
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        # 관리자의 직접 수치 조작으로는 업적이 달성되면 안 된다(fl set/reset은 별도 RPC라 원래 안전).
+        result = await add_affection_uncapped(user_id, amount, "admin_fl_up", check_achievements=False)
+        new_affection = result["new_affection"]
+        await log_command("fl up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 호감도를 +{amount} 올려드렸어요!! ({user['affection']} → {new_affection})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_fl_down(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: fl down : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     amount = _parse_int(args[1], "amount")
-    user = await _require_registered(user_id)
-    result = await add_affection_uncapped(user_id, -amount, "admin_fl_down", check_achievements=False)
-    new_affection = result["new_affection"]
-    await log_command("fl down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 호감도를 -{amount} 내렸어요!! ({user['affection']} → {new_affection})"
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        result = await add_affection_uncapped(user_id, -amount, "admin_fl_down", check_achievements=False)
+        new_affection = result["new_affection"]
+        await log_command("fl down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 호감도를 -{amount} 내렸어요!! ({user['affection']} → {new_affection})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_fl_set(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: fl set : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     amount = _parse_int(args[1], "amount")
-    user = await _require_registered(user_id)
-    new_affection = await set_affection(user_id, amount)
-    await log_command("fl set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 호감도를 {amount}로 맞춰드렸어요!! ({user['affection']} → {new_affection})"
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        new_affection = await set_affection(user_id, amount)
+        await log_command("fl set", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 호감도를 {amount}로 맞춰드렸어요!! ({user['affection']} → {new_affection})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_fl_reset(args: list[str]) -> str:
     if len(args) != 1:
         raise _AdminError("사용법: fl reset : {user_id} {boolean}")
-    user_id = _parse_user_id(args[0])
-    user = await _require_registered(user_id)
-    await set_affection(user_id, _INITIAL_AFFECTION)
-    await log_command("fl reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
+    targets = await _resolve_targets(args[0], allow_all=True)
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        await set_affection(user_id, _INITIAL_AFFECTION)
+        await log_command("fl reset", str(user_id), str(user["affection"]), str(_INITIAL_AFFECTION))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 호감도를 초기값으로 되돌려드렸어요!! ({user['affection']} → {_INITIAL_AFFECTION})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 _INITIAL_COINS = 0
@@ -417,63 +483,164 @@ _INITIAL_COINS = 0
 async def _handle_co_up(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: co up : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     amount = _parse_int(args[1], "amount")
     if amount <= 0:
         raise _AdminError("amount는 1 이상이어야 해!!")
-    user = await _require_registered(user_id)
-    # 관리자 지급은 "번 것"이 아니므로 count_as_earned=False — lifetime_coins_earned를
-    # 안 늘려서 "티끌 모아 티끌" 업적이 관리자 조작으로 달성되지 않게 막는다(fl up/down이
-    # check_achievements=False로 막는 것과 동일한 원칙). 2026-09-05부로 보유 상한
-    # 자체가 폐지돼 늘 요청한 만큼 그대로 들어간다.
-    result = await add_coins(user_id, amount, method="admin_co_up", count_as_earned=False)
-    new_coins = result["new_coins"]
-    await log_command("co up", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 동전을 +{amount} 드렸어요!! ({user['coins']} → {new_coins})"
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        # 관리자 지급은 "번 것"이 아니므로 count_as_earned=False — lifetime_coins_earned를
+        # 안 늘려서 "티끌 모아 티끌" 업적이 관리자 조작으로 달성되지 않게 막는다(fl up/down이
+        # check_achievements=False로 막는 것과 동일한 원칙). 2026-09-05부로 보유 상한
+        # 자체가 폐지돼 늘 요청한 만큼 그대로 들어간다.
+        result = await add_coins(user_id, amount, method="admin_co_up", count_as_earned=False)
+        new_coins = result["new_coins"]
+        await log_command("co up", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 동전을 +{amount} 드렸어요!! ({user['coins']} → {new_coins})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_co_down(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: co down : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     amount = _parse_int(args[1], "amount")
     if amount <= 0:
         raise _AdminError("amount는 1 이상이어야 해!!")
-    user = await _require_registered(user_id)
-    result = await deduct_coins_clamped(user_id, amount)
-    new_coins = result["new_coins"]
-    await log_command("co down", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
-    name = await _resolve_name(user_id)
-    if result["deducted"] < amount:
-        return (
-            f"네!! {name}님의 동전을 -{result['deducted']} 내렸어요!! "
-            f"({user['coins']} → {new_coins}) (원래 {amount}만큼 없어서 있는 만큼만 뗐어요!!)"
-        )
-    return f"네!! {name}님의 동전을 -{amount} 내렸어요!! ({user['coins']} → {new_coins})"
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        result = await deduct_coins_clamped(user_id, amount)
+        new_coins = result["new_coins"]
+        await log_command("co down", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
+        name = await _resolve_name(user_id)
+        if result["deducted"] < amount:
+            return (
+                f"네!! {name}님의 동전을 -{result['deducted']} 내렸어요!! "
+                f"({user['coins']} → {new_coins}) (원래 {amount}만큼 없어서 있는 만큼만 뗐어요!!)"
+            )
+        return f"네!! {name}님의 동전을 -{amount} 내렸어요!! ({user['coins']} → {new_coins})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_co_set(args: list[str]) -> str:
     if len(args) != 2:
         raise _AdminError("사용법: co set : {user_id} {amount} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     amount = _parse_int(args[1], "amount")
-    user = await _require_registered(user_id)
-    new_coins = await set_coins(user_id, amount)
-    await log_command("co set", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 동전을 {amount}로 맞춰드렸어요!! ({user['coins']} → {new_coins})"
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        new_coins = await set_coins(user_id, amount)
+        await log_command("co set", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 동전을 {amount}로 맞춰드렸어요!! ({user['coins']} → {new_coins})"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_co_reset(args: list[str]) -> str:
     if len(args) != 1:
         raise _AdminError("사용법: co reset : {user_id} {boolean}")
-    user_id = _parse_user_id(args[0])
-    user = await _require_registered(user_id)
-    new_coins = await set_coins(user_id, _INITIAL_COINS)
-    await log_command("co reset", str(user_id), str(user["coins"]), str(_INITIAL_COINS))
-    name = await _resolve_name(user_id)
-    return f"네!! {name}님의 동전을 0으로 리셋했어요!! ({user['coins']} → {_INITIAL_COINS})"
+    targets = await _resolve_targets(args[0], allow_all=True)
+
+    async def _apply(user_id: int) -> str:
+        user = await _require_registered(user_id)
+        new_coins = await set_coins(user_id, _INITIAL_COINS)
+        await log_command("co reset", str(user_id), str(user["coins"]), str(_INITIAL_COINS))
+        name = await _resolve_name(user_id)
+        return f"네!! {name}님의 동전을 0으로 리셋했어요!! ({user['coins']} → {_INITIAL_COINS})"
+
+    return await _apply_to_targets(targets, _apply)
+
+
+# 레벨/XP 시스템 관리자 명령어(2026-09-10 신규, CLAUDE.md §23) — fl/co와 동일한
+# 골격이지만 레벨업 판정이 섞여 있어 공용 헬퍼를 따로 둔다. 대상이 1명이면 기존
+# fl/co류와 동일하게 그 자리에서 즉시 방송(apply_xp_and_check_levelup의 기본
+# broadcast=True)하고, *all(여러 명)이면 개별 방송 대신 루프 종료 후 레벨업 발생자
+# 전원을 모아 서버당 요약 메시지 하나로 배치 방송한다(대량 조작 시 레벨업 메시지가
+# 서버마다 우수수 올라오는 스팸을 방지 — CLAUDE.md §23 "시나리오 6" 참고).
+async def _bulk_apply_xp(
+    targets: list[int],
+    compute_delta: Callable[[dict], int],
+    command_name: str,
+    args_repr: str,
+) -> str:
+    is_bulk = len(targets) > 1
+    level_up_events: list[tuple[int, "levels.Level"]] = []
+    success = 0
+    failures: list[int] = []
+    last_message = ""
+
+    for user_id in targets:
+        try:
+            user = await _require_registered(user_id)
+            before_xp = user["total_xp"]
+            delta = compute_delta(user)
+            new_level = await apply_xp_and_check_levelup(user_id, delta, broadcast=not is_bulk)
+            updated_user = await get_user(user_id)
+            new_xp = updated_user["total_xp"]
+            await log_command(command_name, f"{user_id} {args_repr}", str(before_xp), str(new_xp))
+            name = await _resolve_name(user_id)
+            sign = "+" if delta >= 0 else ""
+            last_message = f"네!! {name}님의 경험치를 {sign}{delta}만큼 조정했어요!! ({before_xp} → {new_xp})"
+            if new_level is not None and is_bulk:
+                level_up_events.append((user_id, new_level))
+            success += 1
+        except _AdminError:
+            failures.append(user_id)
+        except Exception:
+            logging.exception("Bulk exp command failed for user %s", user_id)
+            failures.append(user_id)
+
+    if not is_bulk:
+        return last_message
+
+    if level_up_events:
+        await broadcast_level_up_batch(level_up_events)
+    summary = f"네!! 총 {len(targets)}명 중 {success}명의 경험치를 조정했어요!!"
+    if failures:
+        summary += f" (실패 {len(failures)}명)"
+    if level_up_events:
+        summary += f" (레벨업 {len(level_up_events)}명, 방송 완료)"
+    return summary
+
+
+async def _handle_exp_up(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: exp up : {user_id} {amount} {boolean}")
+    targets = await _resolve_targets(args[0], allow_all=True)
+    amount = _parse_int(args[1], "amount")
+    return await _bulk_apply_xp(targets, lambda user: amount, "exp up", str(amount))
+
+
+async def _handle_exp_down(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: exp down : {user_id} {amount} {boolean}")
+    targets = await _resolve_targets(args[0], allow_all=True)
+    amount = _parse_int(args[1], "amount")
+    return await _bulk_apply_xp(targets, lambda user: -amount, "exp down", str(amount))
+
+
+async def _handle_exp_set(args: list[str]) -> str:
+    if len(args) != 2:
+        raise _AdminError("사용법: exp set : {user_id} {amount} {boolean}")
+    targets = await _resolve_targets(args[0], allow_all=True)
+    amount = _parse_int(args[1], "amount")
+    return await _bulk_apply_xp(
+        targets, lambda user: amount - user["total_xp"], "exp set", str(amount)
+    )
+
+
+async def _handle_exp_reset(args: list[str]) -> str:
+    if len(args) != 1:
+        raise _AdminError("사용법: exp reset : {user_id} {boolean}")
+    targets = await _resolve_targets(args[0], allow_all=True)
+    return await _bulk_apply_xp(targets, lambda user: -user["total_xp"], "exp reset", "")
 
 
 async def _handle_cnt_up(args: list[str]) -> str:
@@ -482,13 +649,14 @@ async def _handle_cnt_up(args: list[str]) -> str:
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    stats = await ensure_nl_cap(user_id, user["affection"])
+    nl_cap = levels.get_level_for_xp(user["total_xp"]).daily_nl_limit
+    stats = await ensure_daily_stats(user_id)
     before = stats["nl_count"]
-    new_count = min(max(before + amount, 0), stats["nl_cap"])
-    await _update_nl_count(user_id, new_count, stats["nl_cap"])
+    new_count = min(max(before + amount, 0), nl_cap)
+    await _update_nl_count(user_id, new_count, nl_cap)
     await log_command("cnt up", f"{user_id} {amount}", str(before), str(new_count))
     name = await _resolve_name(user_id)
-    return f"네!! {name}님의 오늘 대화 횟수를 +{amount} 올려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
+    return f"네!! {name}님의 오늘 대화 횟수를 +{amount} 올려드렸어요!! ({before} → {new_count}/{nl_cap})"
 
 
 async def _handle_cnt_down(args: list[str]) -> str:
@@ -497,13 +665,14 @@ async def _handle_cnt_down(args: list[str]) -> str:
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    stats = await ensure_nl_cap(user_id, user["affection"])
+    nl_cap = levels.get_level_for_xp(user["total_xp"]).daily_nl_limit
+    stats = await ensure_daily_stats(user_id)
     before = stats["nl_count"]
     new_count = max(before - amount, 0)
-    await _update_nl_count(user_id, new_count, stats["nl_cap"])
+    await _update_nl_count(user_id, new_count, nl_cap)
     await log_command("cnt down", f"{user_id} {amount}", str(before), str(new_count))
     name = await _resolve_name(user_id)
-    return f"네!! {name}님의 오늘 대화 횟수를 -{amount} 내려드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
+    return f"네!! {name}님의 오늘 대화 횟수를 -{amount} 내려드렸어요!! ({before} → {new_count}/{nl_cap})"
 
 
 async def _handle_cnt_set(args: list[str]) -> str:
@@ -512,13 +681,14 @@ async def _handle_cnt_set(args: list[str]) -> str:
     user_id = _parse_user_id(args[0])
     amount = _parse_int(args[1], "amount")
     user = await _require_registered(user_id)
-    stats = await ensure_nl_cap(user_id, user["affection"])
+    nl_cap = levels.get_level_for_xp(user["total_xp"]).daily_nl_limit
+    stats = await ensure_daily_stats(user_id)
     before = stats["nl_count"]
-    new_count = min(max(amount, 0), stats["nl_cap"])
-    await _update_nl_count(user_id, new_count, stats["nl_cap"])
+    new_count = min(max(amount, 0), nl_cap)
+    await _update_nl_count(user_id, new_count, nl_cap)
     await log_command("cnt set", f"{user_id} {amount}", str(before), str(new_count))
     name = await _resolve_name(user_id)
-    return f"네!! {name}님의 오늘 대화 횟수를 {amount}로 맞춰드렸어요!! ({before} → {new_count}/{stats['nl_cap']})"
+    return f"네!! {name}님의 오늘 대화 횟수를 {amount}로 맞춰드렸어요!! ({before} → {new_count}/{nl_cap})"
 
 
 async def _handle_cnt_reset(args: list[str]) -> str:
@@ -526,12 +696,13 @@ async def _handle_cnt_reset(args: list[str]) -> str:
         raise _AdminError("사용법: cnt reset : {user_id} {boolean}")
     user_id = _parse_user_id(args[0])
     user = await _require_registered(user_id)
-    stats = await ensure_nl_cap(user_id, user["affection"])
+    nl_cap = levels.get_level_for_xp(user["total_xp"]).daily_nl_limit
+    stats = await ensure_daily_stats(user_id)
     before = stats["nl_count"]
-    await _update_nl_count(user_id, 0, stats["nl_cap"])
+    await _update_nl_count(user_id, 0, nl_cap)
     await log_command("cnt reset", str(user_id), str(before), "0")
     name = await _resolve_name(user_id)
-    return f"네!! {name}님의 오늘 대화 횟수를 0으로 되돌려드렸어요!! ({before} → 0/{stats['nl_cap']})"
+    return f"네!! {name}님의 오늘 대화 횟수를 0으로 되돌려드렸어요!! ({before} → 0/{nl_cap})"
 
 
 async def _update_nl_count(user_id: int, new_count: int, nl_cap: int) -> None:
@@ -672,10 +843,7 @@ async def _handle_ach_grant(args: list[str]) -> str:
     if not result["earned"]:
         return f"{name}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
     await log_command("ach grant", f"{user_id} {code}", "미보유", module.ID)
-    return (
-        f"네!! {name}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!! "
-        f"(호감도 +{result['applied_amount']}, 현재 {result['new_affection']})"
-    )
+    return f"네!! {name}님에게 '{achievements.format_name(module)}' 업적을 부여했어요!!"
 
 
 async def _handle_ach_revoke(args: list[str]) -> str:
@@ -732,7 +900,7 @@ def _find_item_by_code(code: str):
 async def _handle_itm_get(args: list[str]) -> str:
     if len(args) != 3:
         raise _AdminError("사용법: itm get : {user_id} {code} {count} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     code = args[1]
     count = _parse_int(args[2], "count")
     if count <= 0:
@@ -740,36 +908,40 @@ async def _handle_itm_get(args: list[str]) -> str:
     item = _find_item_by_code(code)
     if item is None:
         return f"그런 아이템 코드는 없어요!!\n{await _handle_itm_code([])}"
-    await _require_registered(user_id)
-    name = await _resolve_name(user_id)
 
-    # "1회만 구매 가능한 획득성 아이템"(is_one_time) 전용 — count를 무시하고 항상 1개만
-    # 지급한다. 지금은 이 플래그를 쓰는 품목이 없어 항상 그대로 count가 쓰인다.
-    actual_count = 1 if item.is_one_time else count
-    one_time_note = ""
-    if item.is_one_time and count != 1:
-        one_time_note = " (1회 한정 품목이라 count는 무시하고 1개만 지급했어요!!)"
+    async def _apply(user_id: int) -> str:
+        await _require_registered(user_id)
+        name = await _resolve_name(user_id)
 
-    if item_codes.is_coin_item(item):
-        bonus_delta = item.effect * actual_count
-        new_bonus = await increase_coin_grant_bonus(user_id, bonus_delta)
-        effect_note = f" (`/동전` 획득량 보너스 +{bonus_delta}, 현재 {new_bonus})"
-    else:
-        new_qty = await add_snack(user_id, item.id, actual_count)
-        effect_note = f" (보유: {new_qty}개)"
+        # "1회만 구매 가능한 획득성 아이템"(is_one_time) 전용 — count를 무시하고 항상 1개만
+        # 지급한다. 지금은 이 플래그를 쓰는 품목이 없어 항상 그대로 count가 쓰인다.
+        actual_count = 1 if item.is_one_time else count
+        one_time_note = ""
+        if item.is_one_time and count != 1:
+            one_time_note = " (1회 한정 품목이라 count는 무시하고 1개만 지급했어요!!)"
 
-    await record_purchase(user_id, item.id, item.price, actual_count)
-    await log_command("itm get", f"{user_id} {code} {actual_count}", "-", item.id)
-    return (
-        f"네!! {name}님에게 '{item.name}' 아이템을 {actual_count}개 지급했어요!!"
-        f"{one_time_note}{effect_note}"
-    )
+        if item_codes.is_coin_item(item):
+            bonus_delta = item.effect * actual_count
+            new_bonus = await increase_coin_grant_bonus(user_id, bonus_delta)
+            effect_note = f" (`/동전` 획득량 보너스 +{bonus_delta}, 현재 {new_bonus})"
+        else:
+            new_qty = await add_snack(user_id, item.id, actual_count)
+            effect_note = f" (보유: {new_qty}개)"
+
+        await record_purchase(user_id, item.id, item.price, actual_count)
+        await log_command("itm get", f"{user_id} {code} {actual_count}", "-", item.id)
+        return (
+            f"네!! {name}님에게 '{item.name}' 아이템을 {actual_count}개 지급했어요!!"
+            f"{one_time_note}{effect_note}"
+        )
+
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_itm_remove(args: list[str]) -> str:
     if len(args) != 3:
         raise _AdminError("사용법: itm remove : {user_id} {code} {count} {boolean}")
-    user_id = _parse_user_id(args[0])
+    targets = await _resolve_targets(args[0], allow_all=True)
     code = args[1]
     count = _parse_int(args[2], "count")
     if count <= 0:
@@ -777,48 +949,56 @@ async def _handle_itm_remove(args: list[str]) -> str:
     item = _find_item_by_code(code)
     if item is None:
         return f"그런 아이템 코드는 없어요!!\n{await _handle_itm_code([])}"
-    await _require_registered(user_id)
-    name = await _resolve_name(user_id)
 
-    if item_codes.is_coin_item(item):
-        # coin_grant_bonus는 모든 투자 품목이 공유하는 단일 누적값이라, "이 품목의 몫"은
-        # 그 품목의 구매 로그(vending_purchases, itm get도 함께 남김)로만 알 수 있다 —
-        # 로그상 보유 단위 수만큼만 빼야 다른 투자 품목의 보너스까지 잘못 뺏기지 않는다.
-        owned = await count_purchases(user_id, item.id)
-        actual = min(count, owned)
-        if actual == 0:
+    async def _apply(user_id: int) -> str:
+        await _require_registered(user_id)
+        name = await _resolve_name(user_id)
+
+        if item_codes.is_coin_item(item):
+            # coin_grant_bonus는 모든 투자 품목이 공유하는 단일 누적값이라, "이 품목의 몫"은
+            # 그 품목의 구매 로그(vending_purchases, itm get도 함께 남김)로만 알 수 있다 —
+            # 로그상 보유 단위 수만큼만 빼야 다른 투자 품목의 보너스까지 잘못 뺏기지 않는다.
+            owned = await count_purchases(user_id, item.id)
+            actual = min(count, owned)
+            if actual == 0:
+                return f"{name}님은 '{item.name}' 아이템을 가지고 있지 않아요!!"
+            result = await decrease_coin_grant_bonus(user_id, item.effect * actual)
+            await remove_purchases(user_id, item.id, actual)
+            await log_command("itm remove", f"{user_id} {code} {count}", item.id, "-")
+            return (
+                f"네!! {name}님의 '{item.name}' 아이템을 {actual}개 제거했어요!! "
+                f"(`/동전` 획득량 보너스 -{result['removed']}, 현재 {result['new_bonus']})"
+            )
+
+        result = await remove_snack(user_id, item.id, count)
+        removed = result["removed"]
+        if removed == 0:
             return f"{name}님은 '{item.name}' 아이템을 가지고 있지 않아요!!"
-        result = await decrease_coin_grant_bonus(user_id, item.effect * actual)
-        await remove_purchases(user_id, item.id, actual)
+        await remove_purchases(user_id, item.id, removed)
         await log_command("itm remove", f"{user_id} {code} {count}", item.id, "-")
         return (
-            f"네!! {name}님의 '{item.name}' 아이템을 {actual}개 제거했어요!! "
-            f"(`/동전` 획득량 보너스 -{result['removed']}, 현재 {result['new_bonus']})"
+            f"네!! {name}님의 '{item.name}' 아이템을 {removed}개 제거했어요!! "
+            f"(남은 개수: {result['new_quantity']})"
         )
 
-    result = await remove_snack(user_id, item.id, count)
-    removed = result["removed"]
-    if removed == 0:
-        return f"{name}님은 '{item.name}' 아이템을 가지고 있지 않아요!!"
-    await remove_purchases(user_id, item.id, removed)
-    await log_command("itm remove", f"{user_id} {code} {count}", item.id, "-")
-    return (
-        f"네!! {name}님의 '{item.name}' 아이템을 {removed}개 제거했어요!! "
-        f"(남은 개수: {result['new_quantity']})"
-    )
+    return await _apply_to_targets(targets, _apply)
 
 
 async def _handle_itm_clear(args: list[str]) -> str:
     if len(args) != 1:
         raise _AdminError("사용법: itm clear : {user_id} {boolean}")
-    user_id = _parse_user_id(args[0])
-    await _require_registered(user_id)
-    name = await _resolve_name(user_id)
-    await clear_inventory(user_id)
-    await reset_coin_grant_bonus(user_id)
-    await clear_purchases(user_id)
-    await log_command("itm clear", str(user_id), "-", "전부 제거")
-    return f"네!! {name}님이 보유중이던 모든 아이템을 제거했어요!!"
+    targets = await _resolve_targets(args[0], allow_all=True)
+
+    async def _apply(user_id: int) -> str:
+        await _require_registered(user_id)
+        name = await _resolve_name(user_id)
+        await clear_inventory(user_id)
+        await reset_coin_grant_bonus(user_id)
+        await clear_purchases(user_id)
+        await log_command("itm clear", str(user_id), "-", "전부 제거")
+        return f"네!! {name}님이 보유중이던 모든 아이템을 제거했어요!!"
+
+    return await _apply_to_targets(targets, _apply)
 
 
 _NO_MATCH_MESSAGE = "일치하는 명령어가 없어요!!"
@@ -1219,6 +1399,10 @@ _COMMAND_LIST = (
     _CommandSpec("co down", 2, "{user_id} {amount} {boolean}", "해당 유저 동전 -amount (0 미만 방지)", _handle_co_down),
     _CommandSpec("co set", 2, "{user_id} {amount} {boolean}", "해당 유저 동전을 amount로 절대값 설정 (0 미만 방지, 상한 없음)", _handle_co_set),
     _CommandSpec("co reset", 1, "{user_id} {boolean}", "해당 유저 동전을 0으로 리셋", _handle_co_reset),
+    _CommandSpec("exp up", 2, "{user_id} {amount} {boolean}", "해당 유저 경험치 +amount (*all이면 대량 조작, 레벨업은 배치 방송)", _handle_exp_up),
+    _CommandSpec("exp down", 2, "{user_id} {amount} {boolean}", "해당 유저 경험치 -amount", _handle_exp_down),
+    _CommandSpec("exp set", 2, "{user_id} {amount} {boolean}", "해당 유저 경험치를 amount로 절대값 설정", _handle_exp_set),
+    _CommandSpec("exp reset", 1, "{user_id} {boolean}", "해당 유저 경험치를 0으로 리셋", _handle_exp_reset),
     _CommandSpec("cnt up", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 +amount (0~당일 상한 클램프)", _handle_cnt_up),
     _CommandSpec("cnt down", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수 -amount (0 미만 방지)", _handle_cnt_down),
     _CommandSpec("cnt set", 2, "{user_id} {amount} {boolean}", "해당 유저 오늘 대화 횟수를 amount로 절대값 설정 (0~당일 상한 클램프)", _handle_cnt_set),

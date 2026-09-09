@@ -20,6 +20,16 @@ async def get_user(user_id: int) -> dict | None:
     return rows[0] if rows else None
 
 
+async def list_all_user_ids() -> list[int]:
+    """등록된 모든 유저의 user_id(고유, 서버 무관 통합 레코드라 이 프로젝트에서
+    "전체 유저"는 항상 이 하나의 목록이다) — 관리자 콘솔 `*all` 대상 지정 전용
+    (2026-09-10 신규, CLAUDE.md §23). PostgREST 기본 응답 상한(설정에 따라 보통
+    1,000행)을 넘는 대규모 유저층에서는 별도 페이지네이션이 필요할 수 있으나,
+    현재 서비스 규모에서는 단일 조회로 충분하다."""
+    rows = await select("users", {"select": "user_id"})
+    return [row["user_id"] for row in rows]
+
+
 async def increment_chat_count(user_id: int) -> int:
     return await rpc("increment_chat_count", {"p_user_id": user_id})
 

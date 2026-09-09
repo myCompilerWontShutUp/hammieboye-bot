@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 
 from admin import console as admin
+import levels
 import command.achievements as achievements_view
 import command.bet as bet
 import command.black_market as black_market
@@ -23,8 +24,10 @@ from command.leave import handle as leave_handle
 from command.update_log import autocomplete_버전, handle as update_log_handle
 from core import onboarding
 from core.base import touch_channel
-from db.daily_stats import increment_messages_today
+from db.daily_stats import increment_messages_today, increment_slash_count
+from db.users import get_user
 from events import sleep_guard
+from events.announcements import grant_daily_base_xp, grant_slash_xp
 
 
 async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -> bool:
@@ -58,7 +61,35 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
 
     # chat_count(총 대화 횟수)는 슬래시 명령어를 제외하므로 여기선 messages_today만 집계한다.
     await increment_messages_today(interaction.user.id)
+    # 레벨/XP 시스템(2026-09-10) — 슬래시 명령어 사용 횟수 집계(단순 조회 명령어
+    # 포함, /내정보 "오늘 기록" 표시 + XP 하루 5회 상한 판정용) + 그날 첫 활동 시
+    # 기본 XP.
+    await increment_slash_count(interaction.user.id)
+    await grant_daily_base_xp(interaction.user.id)
+    await grant_slash_xp(interaction.user.id)
     return True
+
+
+# 레벨 게이팅(2026-09-10 신규) — /자판기·/암시장·/도박 진입점 전용. _prepare()가
+# 이미 유저 등록을 보장한 뒤에만 호출한다. 레벨 요건과 기존 취침/암시장 시간대
+# 게이트는 "레벨 먼저 → 시간대 나중" 순서로 체크한다(레벨이 더 근본적인 조건이라는
+# 원칙, sleep_guard.guard*가 이미 _prepare()보다 먼저 실행되므로 이 함수는 그 다음
+# 순서로 자연스럽게 온다).
+_LEVEL_GATE_LINES = "앗, 아직 레벨이 부족해!! 레벨 {level}({name})부터 쓸 수 있어!! _(아쉬움)_"
+
+
+async def _require_level(interaction: discord.Interaction, feature: str) -> bool:
+    """levels.Level의 boolean 필드(feature) 이름을 받아 그 권한이 있는지 확인한다.
+    없으면 거절 문구로 edit_original_response하고 False."""
+    user = await get_user(interaction.user.id)
+    level = levels.get_level_for_xp(user["total_xp"])
+    if getattr(level, feature):
+        return True
+    required = levels.min_level_for(feature)
+    await interaction.edit_original_response(
+        content=_LEVEL_GATE_LINES.format(level=required.number, name=required.name)
+    )
+    return False
 
 
 def register(tree: app_commands.CommandTree) -> None:
@@ -153,6 +184,8 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
         if not await _prepare(interaction):
             return
+        if not await _require_level(interaction, "vending_allowed"):
+            return
         text, embed, view = await vending.handle(interaction.user.id)
         await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.message = await interaction.original_response()
@@ -167,6 +200,8 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         await interaction.response.defer()
         if not await _prepare(interaction):
+            return
+        if not await _require_level(interaction, "black_market_allowed"):
             return
         text, embed, view = await black_market.handle(interaction.user.id)
         await interaction.edit_original_response(content=text, embed=embed, view=view)
@@ -215,6 +250,8 @@ def register(tree: app_commands.CommandTree) -> None:
         # 대신 인트로 문구만 SLEEP_REPLY_GAMBLE로 바꿔치기한다.
         await interaction.response.defer(ephemeral=True)
         if not await _prepare(interaction):
+            return
+        if not await _require_level(interaction, "gambling_allowed"):
             return
         await slot.handle_gamble(interaction)
 

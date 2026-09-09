@@ -17,7 +17,7 @@ from db.call_events import purge_old as purge_old_call_events
 from db.forbidden_books import purge_old as purge_old_forbidden_books
 from db.history import purge_old as purge_old_chat_history
 from db.users import increment_chat_count
-from events import dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
+from events import announcements, dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
 from events.scheduler import (
     TEST_GUILD_ID,
     is_late_wake_today,
@@ -127,6 +127,7 @@ def setup_dispatcher(client: discord.Client) -> None:
         sleep_event.init(client)
         greeting.init(client)
         presence.init(client)
+        announcements.init(client)
         admin.init(client)
         await admin.bootstrap()
 
@@ -236,7 +237,7 @@ def setup_dispatcher(client: discord.Client) -> None:
                 increment_messages_today(message.author.id),
             )
             response = await handle_natural_language(
-                message.author.id, message.guild.id, user_message, user["affection"]
+                message.author.id, message.guild.id, user_message, user["affection"], user["total_xp"]
             )
         finally:
             await _delete_placeholder(placeholder)

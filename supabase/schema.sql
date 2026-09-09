@@ -40,11 +40,17 @@ DROP FUNCTION IF EXISTS spend_coins(bigint, bigint);
 DROP FUNCTION IF EXISTS add_coins(bigint, bigint, text, boolean);
 DROP FUNCTION IF EXISTS increment_help_count(bigint);
 DROP FUNCTION IF EXISTS refresh_daily_conversation_caps();
+DROP FUNCTION IF EXISTS add_xp(bigint, bigint);
+DROP FUNCTION IF EXISTS claim_affection_xp(bigint, integer);
+DROP FUNCTION IF EXISTS claim_nl_xp(bigint);
+DROP FUNCTION IF EXISTS claim_slash_xp(bigint);
+DROP FUNCTION IF EXISTS claim_daily_base_xp(bigint);
 DROP FUNCTION IF EXISTS register_sleep_mention(bigint);
 DROP FUNCTION IF EXISTS add_affection_uncapped(bigint, integer, text);
 DROP FUNCTION IF EXISTS apply_global_penalty(integer);
 DROP FUNCTION IF EXISTS claim_call_event(bigint, bigint, integer);
 DROP FUNCTION IF EXISTS increment_messages_today(bigint);
+DROP FUNCTION IF EXISTS increment_slash_count(bigint);
 DROP FUNCTION IF EXISTS increment_chat_count(bigint);
 DROP FUNCTION IF EXISTS add_affection(bigint, integer, text);
 DROP FUNCTION IF EXISTS set_affection(bigint, bigint);
@@ -125,6 +131,10 @@ CREATE TABLE users (
   total_snacks_given          bigint NOT NULL DEFAULT 0,
   coin_cooldown_until         timestamptz,
 
+  -- 레벨/XP 시스템(2026-09-10 신규, CLAUDE.md §23) — 레벨 자체는 저장하지 않고
+  -- levels.py의 임계값 테이블로 total_xp에서 매번 계산한다(동기화 버그 방지).
+  total_xp                    bigint NOT NULL DEFAULT 0,
+
   -- 동의 전에도 저장되는 최소 식별 기록 (고지 불필요, CLAUDE.md 1-1 참고)
   first_seen_at              timestamptz NOT NULL DEFAULT now(),
 
@@ -147,7 +157,9 @@ CREATE TABLE daily_stats (
   user_id                        bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   stat_date                       date NOT NULL DEFAULT kst_today(),
 
-  -- 당일 획득 호감도. daily_gain은 "얻은 양"만 누적(+20 상한 계산용, 항상 0 이상).
+  -- 당일 획득 호감도. daily_gain은 "얻은 양"만 누적(add_affection의 일일 획득 상한
+  -- 계산용, 항상 0 이상 — 2026-09-10부로 상한 자체를 2147483647(사실상 무제한)로
+  -- 올렸지만, 필요 시 다시 낮출 수 있게 메커니즘은 그대로 유지한다. §2 참고).
   -- daily_net은 하락분까지 반영한 순증감(음수 가능, 3-5의 "당일 획득 호감도 음수" 제외 판정용).
   -- daily_gain_natural은 daily_gain의 부분집합으로, 명령어(예: 플라스틱 병)로 얻은 몫은 제외한
   -- "자연어로 얻은" 몫만 누적한다 (/내정보 "오늘 획득한 호감도" 표시 전용, 신규).
@@ -201,6 +213,18 @@ CREATE TABLE daily_stats (
 
   -- 쿨타임 남용(4-5) 카운터 — 이벤트별로 집계 (예: {"plastic_bottle": 2})
   cooldown_abuse_counts              jsonb NOT NULL DEFAULT '{}'::jsonb,
+
+  -- 레벨/XP 시스템(2026-09-10 신규) — 슬래시 명령어 사용 횟수(신규 추적, /내정보
+  -- "오늘 기록"에도 노출)와 소스별 일일 XP 상한 판정용 누적 컬럼들.
+  -- affection_xp_today: 호감도→XP 전환 누적(하루 200 상한). nl_xp_today/
+  -- slash_xp_today: 자연어/슬래시 사용 XP 누적(각각 하루 5 상한) — nl_count/
+  -- slash_count(원본 횟수, 표시용)와 별개로 "이미 XP로 환산된 만큼"만 추적한다.
+  -- daily_base_xp_claimed: "하루 기본 경험치 +1"을 그날 첫 활동 시 1회만 지급.
+  slash_count                        integer NOT NULL DEFAULT 0,
+  affection_xp_today                 integer NOT NULL DEFAULT 0,
+  nl_xp_today                        integer NOT NULL DEFAULT 0,
+  slash_xp_today                     integer NOT NULL DEFAULT 0,
+  daily_base_xp_claimed              boolean NOT NULL DEFAULT false,
 
   created_at                         timestamptz NOT NULL DEFAULT now(),
   updated_at                         timestamptz NOT NULL DEFAULT now(),
@@ -482,12 +506,17 @@ CREATE TABLE forbidden_book_entries (
 CREATE INDEX idx_forbidden_book_entries_created_at ON forbidden_book_entries (created_at);
 
 -- ------------------------------------------------------------
--- 10. 원자적 호감도 증감 RPC (일일 +100 상한 적용, affection_log 기록)
+-- 10. 원자적 호감도 증감 RPC (일일 획득 상한 적용, affection_log 기록)
 --     상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
 --     이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
---     +100 일일 상한이 절대 뚫리지 않는다. 날짜(주말/기념일/생일)와 무관하게 고정값 —
+--     일일 상한이 절대 뚫리지 않는다. 날짜(주말/기념일/생일)와 무관하게 고정값 —
 --     주말/기념일/생일 배율은 db/affection.py가 이 함수를 부르기 전에 이미 곱해서
 --     넘긴다(§0 참고).
+--     2026-09-10: 기존 +100 상한이 여러 우회 경로(업적 보너스/암시장 확률형 간식 등)와
+--     일관성이 떨어진다는 지적으로 상한값을 2147483647(int4 최댓값, 사실상 무제한)로
+--     올렸다 — 완전 폐지 대신 값만 바꿔서, 필요하면 언제든 다시 낮출 수 있게 메커니즘
+--     자체는 그대로 남겨둔다. 사용자에게는 이 상한을 노출하지 않는다(command/info.py
+--     참고 — "오늘 획득 호감도" 표시에서 "/상한" 부분을 뺐다).
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION add_affection(
@@ -514,7 +543,7 @@ BEGIN
   FOR UPDATE;
 
   IF p_amount > 0 THEN
-    v_applied := LEAST(p_amount, GREATEST(100 - v_current_gain, 0));
+    v_applied := LEAST(p_amount, GREATEST(2147483647 - v_current_gain, 0));
   ELSE
     v_applied := p_amount;
   END IF;
@@ -692,6 +721,26 @@ BEGIN
 END;
 $$;
 
+-- 슬래시 명령어 사용 횟수 원자적 증가 RPC(2026-09-10 신규, 레벨/XP 시스템) —
+-- messages_today와 달리 자연어/슬래시를 합치지 않고 슬래시만 따로 센다(/내정보
+-- "오늘 기록" 표시 + 슬래시 XP 하루 5회 상한 판정용).
+CREATE OR REPLACE FUNCTION increment_slash_count(p_user_id bigint)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_count integer;
+BEGIN
+  INSERT INTO daily_stats (user_id, stat_date, slash_count)
+  VALUES (p_user_id, v_stat_date, 1)
+  ON CONFLICT (user_id, stat_date)
+  DO UPDATE SET slash_count = daily_stats.slash_count + 1
+  RETURNING slash_count INTO v_count;
+  RETURN v_count;
+END;
+$$;
+
 -- ------------------------------------------------------------
 -- 16. 전체 사용자 일괄 호감도 증감 RPC (3-2: 무응답 시 전원 -1)
 -- ------------------------------------------------------------
@@ -717,10 +766,13 @@ END;
 $$;
 
 -- ------------------------------------------------------------
--- 16-1. 자연어 대화 일일 상한 갱신 RPC (신규)
+-- 16-1. 자연어 대화 일일 상한 갱신 RPC
 --     매일 06:30(기상 시각)에 등록된 모든 유저의 그날 daily_stats 행을 만들고
---     nl_cap을 그 순간 호감도 기준(호감도x2, 최대 500, 음수 호감도는 0으로 클램프)으로
---     동결한다. nl_count/over_cap_attempts도 새 날짜 기준으로 0으로 리셋한다.
+--     nl_count/over_cap_attempts를 0으로 리셋한다. 2026-09-10부로 nl_cap을 여기서
+--     동결하지 않는다 — 자연어 일일 횟수 상한이 호감도 공식에서 레벨 시스템으로
+--     교체되며, 매 메시지마다 그 순간의 레벨(levels.py)을 실시간 조회해서 쓰는
+--     방식으로 바뀌었다(레벨업 즉시 혜택 체감). nl_cap 컬럼 자체는 舊 데이터 호환을
+--     위해 당장 안 지우지만 더 이상 쓰지 않는다.
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION refresh_daily_conversation_caps()
@@ -730,16 +782,164 @@ AS $$
 DECLARE
   v_stat_date date := kst_today();
 BEGIN
-  -- 최솟값 20은 호감도가 음수인 사용자에게도 동일하게 적용된다(사용자 확정) — 자연어 자체는
-  -- 음수 호감도 게이트가 먼저 막지만, /내정보 등에 표시되는 "오늘 대화 상한" 수치가 0으로
-  -- 보이면 혼란스러우므로 표시값 자체를 20 밑으로 내려가지 않게 한다.
-  INSERT INTO daily_stats (user_id, stat_date, nl_cap, nl_count, over_cap_attempts)
-  SELECT user_id, v_stat_date, LEAST(GREATEST(affection * 2, 20), 500), 0, 0 FROM users
+  INSERT INTO daily_stats (user_id, stat_date, nl_count, over_cap_attempts)
+  SELECT user_id, v_stat_date, 0, 0 FROM users
   ON CONFLICT (user_id, stat_date)
   DO UPDATE SET
-    nl_cap = EXCLUDED.nl_cap,
     nl_count = 0,
     over_cap_attempts = 0;
+END;
+$$;
+
+-- ------------------------------------------------------------
+-- 16-2. 레벨/XP 시스템 RPC (2026-09-10 신규, CLAUDE.md §23)
+--     add_xp: 무조건 누적(업적/헬프미 이벤트/디저트 타임/관리자 exp 명령어 전용,
+--     일일 상한 없음). claim_affection_xp/claim_nl_xp/claim_slash_xp/
+--     claim_daily_base_xp: 각각 daily_stats의 캡 컬럼을 원자적으로 확인+갱신한
+--     뒤 실제로 적용 가능한 만큼만 total_xp에 반영하고 그 적용량을 반환한다
+--     (claim_coin_daily_use와 동일한 "조건부 UPDATE" idiom, 호감도 add_affection
+--     RPC와 동일한 "행 잠금 후 클램프 계산" idiom).
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION add_xp(p_user_id bigint, p_amount bigint)
+RETURNS bigint
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_new_xp bigint;
+BEGIN
+  UPDATE users
+  SET total_xp = GREATEST(total_xp + p_amount, 0)
+  WHERE user_id = p_user_id
+  RETURNING total_xp INTO v_new_xp;
+  RETURN v_new_xp;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION claim_affection_xp(p_user_id bigint, p_raw_amount integer)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_current integer;
+  v_applied integer;
+BEGIN
+  IF p_raw_amount <= 0 THEN
+    RETURN 0;
+  END IF;
+
+  INSERT INTO daily_stats (user_id, stat_date)
+  VALUES (p_user_id, v_stat_date)
+  ON CONFLICT (user_id, stat_date) DO NOTHING;
+
+  SELECT affection_xp_today INTO v_current
+  FROM daily_stats
+  WHERE user_id = p_user_id AND stat_date = v_stat_date
+  FOR UPDATE;
+
+  v_applied := LEAST(p_raw_amount, GREATEST(200 - v_current, 0));
+
+  IF v_applied > 0 THEN
+    UPDATE daily_stats SET affection_xp_today = affection_xp_today + v_applied
+    WHERE user_id = p_user_id AND stat_date = v_stat_date;
+
+    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;
+  END IF;
+
+  RETURN v_applied;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION claim_nl_xp(p_user_id bigint)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_current integer;
+  v_applied integer;
+BEGIN
+  INSERT INTO daily_stats (user_id, stat_date)
+  VALUES (p_user_id, v_stat_date)
+  ON CONFLICT (user_id, stat_date) DO NOTHING;
+
+  SELECT nl_xp_today INTO v_current
+  FROM daily_stats
+  WHERE user_id = p_user_id AND stat_date = v_stat_date
+  FOR UPDATE;
+
+  v_applied := LEAST(1, GREATEST(5 - v_current, 0));
+
+  IF v_applied > 0 THEN
+    UPDATE daily_stats SET nl_xp_today = nl_xp_today + v_applied
+    WHERE user_id = p_user_id AND stat_date = v_stat_date;
+
+    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;
+  END IF;
+
+  RETURN v_applied;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION claim_slash_xp(p_user_id bigint)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_current integer;
+  v_applied integer;
+BEGIN
+  INSERT INTO daily_stats (user_id, stat_date)
+  VALUES (p_user_id, v_stat_date)
+  ON CONFLICT (user_id, stat_date) DO NOTHING;
+
+  SELECT slash_xp_today INTO v_current
+  FROM daily_stats
+  WHERE user_id = p_user_id AND stat_date = v_stat_date
+  FOR UPDATE;
+
+  v_applied := LEAST(1, GREATEST(5 - v_current, 0));
+
+  IF v_applied > 0 THEN
+    UPDATE daily_stats SET slash_xp_today = slash_xp_today + v_applied
+    WHERE user_id = p_user_id AND stat_date = v_stat_date;
+
+    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;
+  END IF;
+
+  RETURN v_applied;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION claim_daily_base_xp(p_user_id bigint)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_stat_date date := kst_today();
+  v_claimed boolean;
+BEGIN
+  INSERT INTO daily_stats (user_id, stat_date)
+  VALUES (p_user_id, v_stat_date)
+  ON CONFLICT (user_id, stat_date) DO NOTHING;
+
+  SELECT daily_base_xp_claimed INTO v_claimed
+  FROM daily_stats
+  WHERE user_id = p_user_id AND stat_date = v_stat_date
+  FOR UPDATE;
+
+  IF v_claimed THEN
+    RETURN 0;
+  END IF;
+
+  UPDATE daily_stats SET daily_base_xp_claimed = true
+  WHERE user_id = p_user_id AND stat_date = v_stat_date;
+
+  UPDATE users SET total_xp = GREATEST(total_xp + 1, 0) WHERE user_id = p_user_id;
+
+  RETURN 1;
 END;
 $$;
 
