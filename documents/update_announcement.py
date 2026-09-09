@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.3.5",
-        commit_hash="PENDING",
+        commit_hash="bb0505f",
         date="2026-09-10",
         changes=(
             "`/도박`에 새로운 게임 두 가지, 햄스터 경마로 순위를 맞히는 승부예측과 "
