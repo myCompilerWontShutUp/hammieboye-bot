@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from db.achievements import maybe_award_affection_milestones
 from db.client import rpc
+from events.announcements import grant_affection_xp
 from events.scheduler import KST
 from events.special_days import get_event_label, get_multiplier
 
@@ -16,7 +17,9 @@ def _multiplied(amount: int) -> int:
 async def add_affection(
     user_id: int, amount: int, method: str | None = None, *, apply_day_multiplier: bool = True
 ) -> dict:
-    """호감도를 원자적으로 증감시킨다 (일일 +100 상한은 DB 함수가 알아서 처리).
+    """호감도를 원자적으로 증감시킨다 (일일 획득 상한은 DB 함수가 알아서 처리 — 2026-09-10부로
+    상한값 자체가 2147483647(사실상 무제한)로 올라갔지만, 메커니즘은 그대로라 필요하면
+    언제든 값만 다시 낮출 수 있다. supabase/schema.sql의 add_affection RPC 참고).
 
     amount는 양수(획득)/음수(하락) 둘 다 가능. 반환값은
     {applied_amount, new_affection, new_daily_gain, achievement_notice}.
@@ -36,6 +39,11 @@ async def add_affection(
     result["achievement_notice"] = await maybe_award_affection_milestones(
         user_id, result["applied_amount"], result["new_affection"]
     )
+    # 레벨/XP 시스템(2026-09-10) — 호감도가 바뀌는 모든 경로(관리자 fl 조작, 암시장
+    # 확률형 간식 uncapped 경로 포함)를 놓치지 않기 위해 add_affection_uncapped와
+    # 함께 이 성공 경로 끝에서 호출한다. applied_amount<=0이면 grant_affection_xp가
+    # 알아서 아무것도 안 한다.
+    await grant_affection_xp(user_id, result["applied_amount"])
     return result
 
 
@@ -73,6 +81,10 @@ async def add_affection_uncapped(
         if check_achievements
         else None
     )
+    # check_achievements 플래그와 무관하게 항상 호출한다 — 업적 마일스톤 재귀 방지와
+    # XP 적립은 서로 다른 관심사다(관리자 fl 조작도 호감도가 실제로 바뀌었으면 XP는
+    # 받는다, 계획 확정 사항).
+    await grant_affection_xp(user_id, amount)
     return {
         "applied_amount": amount,
         "new_affection": new_affection,

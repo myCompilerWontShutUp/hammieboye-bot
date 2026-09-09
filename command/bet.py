@@ -23,7 +23,6 @@ from command.economy_common import (
     reject_if_wrong_user_with_cta,
 )
 from db.achievements import award as award_achievement
-from db.affection import format_affection_notice
 from db.users import get_user
 from db.wallet import add_coins, spend_coins
 from events.scheduler import KST, format_footer_time
@@ -302,20 +301,10 @@ async def _forfeit_timeout(message: discord.Message, user_id: int, bet: int) -> 
         logging.exception("Failed to edit bet prompt on timeout")
 
 
-async def _maybe_award_win_achievement(user_id: int) -> str:
-    """업적 보너스 호감도(§15)는 add_coins와 별개 경로라, 여기서 벌어도 델타를 놓치지
-    않도록 항상 format_affection_notice까지 같이 붙여서 반환한다(plastic.py/vending.py와
-    동일한 원칙 — 코인 알림과는 완전히 별개로 호감도 알림도 빠짐없이 보여준다)."""
-    result = await award_achievement(user_id, achievements.hammie_ez_noob.ID)
-    if not result["earned"]:
-        return ""
-    notice = f"\n🏆 업적 달성: {achievements.format_name(achievements.hammie_ez_noob)}!!"
-    # 업적 보너스는 항상 배율 미적용(apply_day_multiplier=False)으로 지급되므로,
-    # 우연히 그날 배율로 나누어떨어져도 "N x 배율"로 잘못 분해해 보여주면 안 된다.
-    notice += format_affection_notice(
-        result["applied_amount"], result["new_affection"], multiplier_eligible=False
-    )
-    return notice
+async def _maybe_award_win_achievement(user_id: int) -> None:
+    """2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
+    글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다."""
+    await award_achievement(user_id, achievements.hammie_ez_noob.ID)
 
 
 def _build_replay_view(user_id: int, game_kind: str) -> ReplayView:
@@ -427,7 +416,7 @@ class _OddEvenView(discord.ui.View):
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
-            text += await _maybe_award_win_achievement(self.user_id)
+            await _maybe_award_win_achievement(self.user_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
@@ -490,7 +479,7 @@ class _RPSView(discord.ui.View):
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
-            text += await _maybe_award_win_achievement(self.user_id)
+            await _maybe_award_win_achievement(self.user_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
@@ -582,7 +571,7 @@ class _UpDownView(discord.ui.View):
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
-            text += await _maybe_award_win_achievement(self.user_id)
+            await _maybe_award_win_achievement(self.user_id)
             text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
             replay_view = _build_replay_view(self.user_id, _UP_DOWN)
             try:

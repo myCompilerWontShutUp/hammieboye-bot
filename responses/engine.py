@@ -177,13 +177,55 @@ def _build_input(
     return turns
 
 
+# 레벨별 출력 글자수 상한(2026-09-10 신규, CLAUDE.md §23) — SYSTEM_PROMPT(instructions)는
+# 절대 동적으로 안 바꾼다(프롬프트 캐싱이 이 정적 프리픽스가 매 요청 완전히 동일할 때만
+# 걸리므로, 유저별로 달라지는 내용은 위 주석 원칙대로 반드시 input에만 담는다) — 대신
+# 레벨 0(기본 100자)이 아닐 때만 input 맨 앞에 이번 답변 한정 지침 노트를 끼워 넣는다.
+# max_output_tokens는 instructions와 무관한 별도 API 파라미터라 자유롭게 바꿔도 캐시에
+# 영향이 없다 — 100자 기준 토큰 예산(OPENAI_MAX_OUTPUT_TOKENS)에 비례해 늘린다.
+# "무제한"(output_char_limit=None) 티어도 완전 무제한은 아니고, 관리자 자연어 경로와
+# 동일한 실질 상한(1900자 상당 토큰 예산)을 둬서 비용 폭주를 막는다.
+_DEFAULT_OUTPUT_CHAR_LIMIT = 100
+_UNLIMITED_OUTPUT_TOKEN_MULTIPLIER = 10  # get_admin_command_response와 동일한 배율(≈1900자)
+_OUTPUT_LIMIT_NOTE_TEMPLATE = (
+    "(이번 답변은 평소 100자 제한 대신 최대 {limit}자까지 대사를 늘려도 괜찮아.)"
+)
+_OUTPUT_UNLIMITED_NOTE = (
+    "(이번 답변은 평소 100자 제한 없이 필요한 만큼 자유롭게 대사를 늘려도 괜찮아.)"
+)
+
+
+def _output_limit_plan(output_char_limit: int | None) -> tuple[str | None, int]:
+    """(이번 답변 한정 지침 노트 또는 None, max_output_tokens)를 계산한다."""
+    if output_char_limit is None:
+        return _OUTPUT_UNLIMITED_NOTE, OPENAI_MAX_OUTPUT_TOKENS * _UNLIMITED_OUTPUT_TOKEN_MULTIPLIER
+    if output_char_limit == _DEFAULT_OUTPUT_CHAR_LIMIT:
+        return None, OPENAI_MAX_OUTPUT_TOKENS
+    note = _OUTPUT_LIMIT_NOTE_TEMPLATE.format(limit=output_char_limit)
+    tokens = max(
+        OPENAI_MAX_OUTPUT_TOKENS,
+        round(OPENAI_MAX_OUTPUT_TOKENS * output_char_limit / _DEFAULT_OUTPUT_CHAR_LIMIT),
+    )
+    return note, tokens
+
+
 async def get_response(
     message: str,
     history: list[dict] | None = None,
     context_note: str | None = None,
+    output_char_limit: int | None = _DEFAULT_OUTPUT_CHAR_LIMIT,
 ) -> str:
-    """자연어 답변을 생성한다. judge/검수 패스 없이 1회 생성 결과를 그대로 반환한다."""
-    draft = await _generate(_build_input(message, history, context_note))
+    """자연어 답변을 생성한다. judge/검수 패스 없이 1회 생성 결과를 그대로 반환한다.
+
+    output_char_limit은 레벨별 대사 글자수 상한(command/levels.py::Level
+    .output_char_limit) — 기본 100(SYSTEM_PROMPT에 이미 명시된 값)이면 아무 것도
+    안 바꾸고 기존 그대로 동작하고, 그 외 값이면 input에 이번 답변 한정 지침을
+    끼워 넣고 max_output_tokens도 비례해서 늘린다."""
+    limit_note, max_tokens = _output_limit_plan(output_char_limit)
+    combined_note = f"{limit_note}\n\n{context_note}" if limit_note and context_note else (limit_note or context_note)
+    draft = await _generate(
+        _build_input(message, history, combined_note), max_output_tokens=max_tokens
+    )
     return draft if draft is not None else _FALLBACK_RESPONSE
 
 

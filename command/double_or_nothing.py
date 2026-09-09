@@ -12,7 +12,6 @@ import random
 
 import discord
 
-import achievements
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
@@ -25,7 +24,6 @@ from command.economy_common import (
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
-from db.affection import format_affection_notice
 from db.users import get_user
 from db.wallet import add_coins, spend_coins
 
@@ -242,17 +240,13 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
         result = await add_coins(self.user_id, self.pot, method="double_or_nothing_cashout")
         text = random.choice(_CASHOUT_LINES)
 
-        # 2026-09-09 — "제작자는 이 업적이..." 전설 업적이 /도박 전체 공용(배율 64
-        # 이상)으로 확장됨에 따라 더블오어낫띵도 대상에 포함 — "여기까지"로 실제
-        # 지급이 확정되는 이 시점에만 체크한다(판돈이 상한 없이 두 배씩 불어나므로
-        # 6회 연속 성공(64배)부터 해당).
+        # "제작자는 이 업적이..." 전설 업적이 /도박 전체 공용(배율 64 이상)으로 확장됨에
+        # 따라 더블오어낫띵도 대상에 포함 — "여기까지"로 실제 지급이 확정되는 이
+        # 시점에만 체크한다(판돈이 상한 없이 두 배씩 불어나므로 6회 연속 성공(64배)
+        # 부터 해당). 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award()
+        # 내부에서 별도 글로벌 방송으로 처리되므로 여기서는 부여만 시도한다.
         multiplier = self.pot // self.original_bet
-        legendary = await maybe_award_legendary_multiplier(self.user_id, multiplier)
-        if legendary is not None and legendary["earned"]:
-            text += f"\n🏆 업적 달성: {achievements.format_name(achievements.dev_never_tested_this)}!!"
-            text += format_affection_notice(
-                legendary["applied_amount"], legendary["new_affection"], multiplier_eligible=False
-            )
+        await maybe_award_legendary_multiplier(self.user_id, multiplier)
 
         content = f"## 🎯 도전자: {self.challenger_name}\n{text}\n\n"
         content += format_bet_receipt(self.before_coins, self.original_bet, result["new_coins"])

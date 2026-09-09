@@ -94,27 +94,18 @@ async def increment_messages_today(user_id: int) -> int:
     return await rpc("increment_messages_today", {"p_user_id": user_id})
 
 
-# 자연어 대화 일일 상한: 호감도x2, 최솟값 20(음수 호감도도 동일 적용), 최대 500
-_NL_CAP_MULTIPLIER = 2
-_NL_CAP_MIN = 20
-_NL_CAP_MAX = 500
-
-
-async def ensure_nl_cap(user_id: int, affection: int) -> dict:
-    """오늘의 nl_cap을 확보한다. 정규적으로는 매일 06:30에 refresh_conversation_caps()가
-    전체 유저 일괄로 동결하지만, 그 시점 이후 새로 등록된 유저 등 아직 값이 없는 경우엔
-    지금 시점 호감도로 즉석 계산해서 그 값을 그대로 저장(동결)한다. 한 번 저장되면 그 값을
-    다시 재계산하지 않고 그대로 쓴다 (당일 06:30 값 고정 원칙)."""
-    stats = await ensure_daily_stats(user_id)
-    if stats["nl_cap"] is not None:
-        return stats
-    cap = min(max(affection * _NL_CAP_MULTIPLIER, _NL_CAP_MIN), _NL_CAP_MAX)
-    return await update_daily_stats(user_id, {"nl_cap": cap})
+async def increment_slash_count(user_id: int) -> int:
+    """슬래시 명령어 사용 횟수(레벨/XP 시스템, 2026-09-10 신규) — messages_today와
+    달리 자연어/슬래시를 합치지 않고 슬래시만 따로 센다."""
+    return await rpc("increment_slash_count", {"p_user_id": user_id})
 
 
 async def refresh_conversation_caps() -> None:
-    """매일 06:30(기상 시각)에 등록된 모든 유저의 nl_cap을 그 순간 호감도로 동결하고
-    nl_count/over_cap_attempts를 리셋한다."""
+    """매일 06:30(기상 시각)에 등록된 모든 유저의 nl_count/over_cap_attempts를
+    리셋한다. 2026-09-10부로 자연어 일일 횟수 상한(舊 nl_cap, 호감도 기반 공식)은
+    레벨 시스템으로 교체됐다 — 더 이상 여기서 동결하지 않고, 호출부가 매 메시지마다
+    levels.get_level_for_xp(user["total_xp"]).daily_nl_limit을 실시간 조회한다
+    (레벨업 즉시 혜택 체감)."""
     await rpc("refresh_daily_conversation_caps", {})
 
 

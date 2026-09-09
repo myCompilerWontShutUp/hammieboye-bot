@@ -106,13 +106,9 @@ async def _post_announcement(winner_id: int, reward_given: bool) -> None:
     line_template = random.choice(_ANNOUNCEMENT_LINES)
     suffix = f"\n{_REWARD_NOTICE}" if reward_given else ""
 
-    # award()는 멱등이라 이미 가지고 있으면 안 붙는다. 이 업적은 전역 태스크에서
-    # 모든 서버로 팬아웃되므로, winner가 실제로 그 서버에 있을 때만 보여준다(다른 업적은
-    # 유저 본인의 서버 안에서만 트리거돼 이 문제가 없다).
-    achievement_suffix = ""
-    achievement_result = await award_achievement(winner_id, achievements.daily_top_talker.ID)
-    if achievement_result["earned"]:
-        achievement_suffix = f"\n🏆 업적 달성: {achievements.format_name(achievements.daily_top_talker)}!!"
+    # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
+    # (호감도 보너스도 폐지) — 여기서는 부여만 시도하고 인라인 문구는 더 이상 안 붙인다.
+    await award_achievement(winner_id, achievements.daily_top_talker.ID)
 
     for guild in _client.guilds:
         if guild.id not in ALLOWED_GUILD_IDS:
@@ -125,8 +121,6 @@ async def _post_announcement(winner_id: int, reward_given: bool) -> None:
             continue
         name = await _resolve_display_name(guild, winner_id)
         text = line_template.format(name=name) + suffix
-        if achievement_suffix and guild.get_member(winner_id) is not None:
-            text += achievement_suffix
         try:
             await channel.send(text)
         except discord.HTTPException:

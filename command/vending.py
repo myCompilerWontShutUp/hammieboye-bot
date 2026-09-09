@@ -16,7 +16,6 @@ from command.economy_common import (
 from command.vending_catalog import ITEMS
 from events.scheduler import KST, format_footer_time
 from db.achievements import award as award_achievement
-from db.affection import format_affection_notice
 from db.snacks import add_snack
 from db.users import get_user
 from db.vending_log import get_purchase_counts, record_purchase
@@ -200,25 +199,12 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
     user = await get_user(user_id)
     current_coins = user["coins"]
     before_coins = current_coins + total_cost  # spend_coins 이후 조회라 역산으로 구한다
-    total_delta = 0
-    current_affection = user["affection"]
-    achievement_notices: list[str] = []
 
-    first_purchase = await award_achievement(user_id, achievements.vending_first_purchase.ID)
-    if first_purchase["earned"]:
-        total_delta += first_purchase["applied_amount"]
-        current_affection = first_purchase["new_affection"]
-        achievement_notices.append(
-            f"🏆 업적 달성: {achievements.format_name(achievements.vending_first_purchase)}!!"
-        )
+    # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
+    # (호감도 보너스도 폐지) — 여기서는 조건이 맞을 때 부여만 시도한다.
+    await award_achievement(user_id, achievements.vending_first_purchase.ID)
     if item.id in _SAVINGS_START_ELIGIBLE_ITEM_IDS:
-        savings = await award_achievement(user_id, achievements.savings_start.ID)
-        if savings["earned"]:
-            total_delta += savings["applied_amount"]
-            current_affection = savings["new_affection"]
-            achievement_notices.append(
-                f"🏆 업적 달성: {achievements.format_name(achievements.savings_start)}!!"
-            )
+        await award_achievement(user_id, achievements.savings_start.ID)
 
     embed = discord.Embed(title="🛒 구매 완료!!", color=VENDING_EMBED_COLOR)
     embed.description = (
@@ -232,12 +218,6 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
 
     purchase_lines = _SNACK_PURCHASE_LINES if item.kind == "snack" else _INVESTMENT_PURCHASE_LINES
     text = random.choice(purchase_lines)
-    for notice in achievement_notices:
-        text += f"\n{notice}"
-    if total_delta != 0:
-        # total_delta는 여기서 항상 업적 보너스(vending_first_purchase/savings_start,
-        # apply_day_multiplier=False)로만 구성된다 — 배율 분해 대상이 아니다.
-        text += format_affection_notice(total_delta, current_affection, multiplier_eligible=False)
     return text, embed
 
 

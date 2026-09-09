@@ -1,0 +1,6 @@
+ID = "ultra_king_god_general_majesty_alltime_legend_owner"
+NAME = "초 울트라 킹갓제네럴마제스티 올타임 레전드 주인님"
+HOW_TO_EARN = "레벨 7(앱솔루트 햄로드)에 도달하면 얻습니다."
+RARITY = "전설"
+CODE = "f0uqtwxx"
+HINT = "햄미와 함께한 시간이 정말 길어야 할 것 같다"

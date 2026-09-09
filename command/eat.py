@@ -6,6 +6,7 @@ from command.black_market_catalog import BY_ID as _BLACK_MARKET_BY_ID
 from command.black_market_catalog import BY_NAME as _BLACK_MARKET_BY_NAME
 from command.vending_catalog import BY_ID as _VENDING_BY_ID
 from command.vending_catalog import BY_NAME as _VENDING_BY_NAME
+from events.announcements import apply_xp_and_check_levelup
 from events.dessert_time import current_slot
 from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
@@ -144,6 +145,9 @@ async def handle(user_id: int, snack_name: str) -> str:
 
     fed_today[slot] = item.id
     await increment_snacks_given(user_id)
+    # 레벨/XP 시스템(2026-09-10) — "디저트 타임 이벤트" +10xp(슬롯당 1회 제한이 이미
+    # 있어 하루 최대 +30, 추가 상한 불필요).
+    await apply_xp_and_check_levelup(user_id, 10)
 
     if isinstance(item, BlackMarketItem):
         # 암시장 확률적 간식 — item.good_chance로 결과를 굴린다(2026-09-09 신규,
@@ -178,34 +182,16 @@ async def handle(user_id: int, snack_name: str) -> str:
 
     total_delta = result["applied_amount"]
     current_affection = result["new_affection"]
-    achievement_notices: list[str] = []
-    if result["achievement_notice"]:
-        achievement_notices.append(result["achievement_notice"])
 
+    # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
+    # (호감도 보너스도 폐지) — 여기서는 조건이 맞을 때 부여만 시도하고 인라인 문구는
+    # 더 이상 안 붙인다.
     if len({dessert_snack_id(v) for v in fed_today.values()}) == 3:
-        three_meals = await award_achievement(user_id, achievements.three_meals_a_day.ID)
-        if three_meals["earned"]:
-            total_delta += three_meals["applied_amount"]
-            current_affection = three_meals["new_affection"]
-            multiplier_eligible = False
-            achievement_notices.append(
-                f"🏆 업적 달성: {achievements.format_name(achievements.three_meals_a_day)}!!"
-            )
+        await award_achievement(user_id, achievements.three_meals_a_day.ID)
 
     if item.id == "premium_mealworm":
-        strongest = await award_achievement(user_id, achievements.strongest_snack_ever.ID)
-        if strongest["earned"]:
-            total_delta += strongest["applied_amount"]
-            current_affection = strongest["new_affection"]
-            multiplier_eligible = False
-            achievement_notices.append(
-                f"🏆 업적 달성: {achievements.format_name(achievements.strongest_snack_ever)}!!"
-            )
+        await award_achievement(user_id, achievements.strongest_snack_ever.ID)
 
-    for notice in achievement_notices:
-        text += f"\n{notice}"
     if total_delta != 0:
-        # total_delta는 기본 지급(item.effect, 배율 적용)에 업적 보너스(배율 미적용)가
-        # 섞일 수 있어 — 업적이 하나라도 붙으면 multiplier_eligible=False로 넘긴다.
         text += format_affection_notice(total_delta, current_affection, multiplier_eligible=multiplier_eligible)
     return text

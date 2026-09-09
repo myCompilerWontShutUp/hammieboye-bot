@@ -286,19 +286,18 @@ _SLOT_ROUND_TIMEOUT_SECONDS = 600
 
 
 def _render_grid(grid: list[str | None]) -> str:
-    # 마크다운 헤딩(#/##/###)은 title이 아니라 description 안에서만 실제로 크기가
-    # 커진다 — 그래서 그리드를 title이 아니라 description에 두고, 줄마다 "## "를
-    # 붙여 이모지가 일반 텍스트보다 크게 보이게 한다. 줄 번호와 그림 사이 구분선은
-    # 얇은 "|"보다 눈에 잘 띄는 굵은 세로선("┃")으로 확실하게 나눈다.
+    # 2026-09-10 — 舊 마크다운 헤딩(## ) 트릭을 버리고 그리드를 footer로 옮겼다
+    # (모바일에서 헤딩 크기 이모지가 제대로 안 보인다는 신고로 이모지 크기를 대폭
+    # 줄임) — footer는 마크다운 헤딩이 안 먹히고 항상 작은 글자로만 렌더링되므로
+    # 이 문제가 자연히 해결된다. 줄 번호와 그림 사이 구분선은 얇은 "|"보다 눈에 잘
+    # 띄는 굵은 세로선("┃")으로 확실하게 나눈다.
     rows = (" ".join(cell or _UNSPUN_PLACEHOLDER for cell in grid[i : i + 3]) for i in range(0, 9, 3))
-    return "\n".join(f"## {num} ┃ {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
+    return "\n".join(f"{num} ┃ {row}" for num, row in zip(_ROW_NUMBER_EMOJI, rows))
 
 
 def _build_embed(grid: list[str | None]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🎰 개쩌는 슬롯머신!!", description=_render_grid(grid), color=GAMBLING_EMBED_COLOR
-    )
-    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    embed = discord.Embed(title="🎰 개쩌는 슬롯머신!!", color=GAMBLING_EMBED_COLOR)
+    embed.set_footer(text=f"{_render_grid(grid)}\n{format_footer_time(datetime.now(KST))}")
     return embed
 
 
@@ -323,8 +322,6 @@ async def _settle(
         affection_result = await add_affection(user_id, 1, "slot_hamster_penalty")
         text = challenger_line + random.choice(_HAMSTER_PENALTY_LINES)
         text += "\n\n" + format_bet_receipt(before_coins, bet, penalty["new_coins"])
-        if affection_result["achievement_notice"]:
-            text += f"\n{affection_result['achievement_notice']}"
         if affection_result["applied_amount"] != 0:
             text += format_affection_notice(
                 affection_result["applied_amount"], affection_result["new_affection"]
@@ -343,38 +340,13 @@ async def _settle(
         text += f"\n{_MAX_MULTIPLIER_NOTICE}"
     text += "\n\n" + format_bet_receipt(before_coins, bet, result["new_coins"])
 
-    total_affection_delta = 0
-    current_affection: int | None = None
-    achievement_notices: list[str] = []
-    if result["achievement_notice"]:
-        achievement_notices.append(result["achievement_notice"])
+    # 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
+    # 글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다.
+    await award_achievement(user_id, achievements.gambling_hotline_1336.ID)
+    # 슬롯머신 전용 16배 초과 기준을 /도박 전체 공용 64배 이상 기준으로 대체
+    # (economy_common.py::maybe_award_legendary_multiplier가 문턱값을 관리).
+    await maybe_award_legendary_multiplier(user_id, multiplier)
 
-    first_win = await award_achievement(user_id, achievements.gambling_hotline_1336.ID)
-    if first_win["earned"]:
-        total_affection_delta += first_win["applied_amount"]
-        current_affection = first_win["new_affection"]
-        achievement_notices.append(
-            f"🏆 업적 달성: {achievements.format_name(achievements.gambling_hotline_1336)}!!"
-        )
-    # 2026-09-09 — 슬롯머신 전용 16배 초과 기준을 /도박 전체 공용 64배 이상 기준으로
-    # 대체(economy_common.py::maybe_award_legendary_multiplier가 문턱값을 관리).
-    legendary = await maybe_award_legendary_multiplier(user_id, multiplier)
-    if legendary is not None and legendary["earned"]:
-        total_affection_delta += legendary["applied_amount"]
-        current_affection = legendary["new_affection"]
-        achievement_notices.append(
-            f"🏆 업적 달성: {achievements.format_name(achievements.dev_never_tested_this)}!!"
-        )
-
-    for notice in achievement_notices:
-        text += f"\n{notice}"
-    if total_affection_delta != 0:
-        # total_affection_delta는 항상 업적 보너스(apply_day_multiplier=False)로만
-        # 구성돼 있어 배율 적용 대상이 아니다 — "N x 배율"로 잘못 분해되지 않도록
-        # 명시적으로 알린다.
-        text += format_affection_notice(
-            total_affection_delta, current_affection, multiplier_eligible=False
-        )
     return text, embed
 
 
@@ -547,6 +519,10 @@ class _GambleSelectView(EphemeralAutoDeleteView):
         balance = user["coins"] if user is not None else 0
         await interaction.response.send_modal(BetAmountModal(balance=balance, on_valid=on_valid))
 
+    # 2026-09-10 — 셋 다 danger(빨강)로 통일했다(舊 슬롯머신만 danger/승부예측 primary/
+    # 더블오어낫띵 secondary로 제각각이었음) — /내기의 세 버튼이 전부 primary로
+    # 일관된 것과 동일한 원칙, "위험한 게임" 도메인이라는 걸 색으로도 통일해서
+    # 드러낸다(舊 슬롯머신 단독일 때의 danger 의도를 세 게임 전체로 확장).
     @discord.ui.button(label="슬롯머신", style=discord.ButtonStyle.danger)
     async def slot_machine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
@@ -560,7 +536,7 @@ class _GambleSelectView(EphemeralAutoDeleteView):
 
         await self._open_bet_modal(interaction, _on_valid)
 
-    @discord.ui.button(label="승부예측", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="승부예측", style=discord.ButtonStyle.danger)
     async def horse_race_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
             await horse_race.start_round(modal_interaction, self.user_id, amount)
@@ -571,7 +547,7 @@ class _GambleSelectView(EphemeralAutoDeleteView):
 
         await self._open_bet_modal(interaction, _on_valid)
 
-    @discord.ui.button(label="더블오어낫띵", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="더블오어낫띵", style=discord.ButtonStyle.danger)
     async def double_or_nothing_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:

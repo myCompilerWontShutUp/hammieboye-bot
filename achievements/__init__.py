@@ -12,13 +12,13 @@ from achievements import (
     hammie_love_you,
     nightmare_freed,
     penny_pincher,
-    plastic_dance,
-    plastic_dance_god,
     savings_start,
     speech_bubble,
     strongest_snack_ever,
     three_meals_a_day,
+    ultra_king_god_general_majesty_alltime_legend_owner,
     vending_first_purchase,
+    wild_owner,
 )
 
 # ID -> 모듈. 각 모듈은 ID/NAME/HOW_TO_EARN/RARITY/CODE를 갖는다 ("업적 1개당 파일 1개").
@@ -27,8 +27,6 @@ from achievements import (
 # 이 튜플의 순서는 "업적이 만들어진 순서"로 취급되어 /내업적·/니업적의 "획득하지 못한
 # 업적" 정렬 기준으로도 쓰인다.
 _MODULES = (
-    plastic_dance,
-    plastic_dance_god,
     hammie_love_you,
     first_chat,
     speech_bubble,
@@ -47,6 +45,11 @@ _MODULES = (
     strongest_snack_ever,
     alone_on_a_happy_day,
     penny_pincher,
+    # 2026-09-10 신규 — 레벨 4/7 도달 시 자동 부여(레벨 시스템, CLAUDE.md §23).
+    # 舊 plastic_dance/plastic_dance_god는 /페트병 재설계와 함께 제거됨(SQL.md에서
+    # user_achievements 기존 보유 기록도 함께 삭제).
+    wild_owner,
+    ultra_king_god_general_majesty_alltime_legend_owner,
 )
 
 REGISTRY = {module.ID: module for module in _MODULES}

@@ -17,7 +17,6 @@ from typing import Awaitable, Callable
 
 import discord
 
-import achievements
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
@@ -30,7 +29,6 @@ from command.economy_common import (
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
-from db.affection import format_affection_notice
 from db.users import get_user
 from db.wallet import add_coins, spend_coins
 from events.scheduler import KST, format_footer_time
@@ -174,10 +172,12 @@ def evaluate_payout(predictions: dict[int, int], final_ranking: list[int]) -> in
 
 
 def render_track(positions: dict[int, int], finished_order: list[int]) -> str:
-    """레인 10개를 `## {번호이모지} {트랙}` 형식으로 렌더링한다(command/slot.py
-    ::_render_grid와 동일한 마크다운 헤딩 트릭 — description 안에서만 실제로 커진다).
-    finished_order는 이미 결승(_TRACK_LENGTH)에 도달한 순서대로 담긴 번호 리스트 —
-    그 레인 끝에 도착 순서대로 메달 이모지를 붙인다."""
+    """레인 10개를 `{번호이모지} {트랙}` 형식으로 렌더링한다. 2026-09-10 — 舊 마크다운
+    헤딩(## ) 트릭을 버리고 embed footer로 옮겼다(모바일에서 헤딩 크기 이모지가
+    제대로 안 보인다는 신고로 이모지 크기를 대폭 줄임, command/slot.py
+    ::_render_grid와 동일한 원칙). finished_order는 이미 결승(_TRACK_LENGTH)에
+    도달한 순서대로 담긴 번호 리스트 — 그 레인 끝에 도착 순서대로 메달 이모지를
+    붙인다."""
     medal_by_number = {
         number: _MEDAL_EMOJI[i] for i, number in enumerate(finished_order) if i < len(_MEDAL_EMOJI)
     }
@@ -192,7 +192,7 @@ def render_track(positions: dict[int, int], finished_order: list[int]) -> str:
             medal = medal_by_number.get(hamster.number)
             if medal:
                 row += medal
-        lines.append(f"## {row}")
+        lines.append(row)
     return "\n".join(lines)
 
 
@@ -219,6 +219,20 @@ _PREDICTION_INTRO_LINES = (
     "신중하게, 근데 재밌게 골라봐!! _(설렘)_",
     "누가 1등 할지 감이 와?? 골라봐!! _(궁금)_",
     "자, 승부예측 시작한다!! 준비됐지?? _(흥분)_",
+)
+
+# 출발선 프레임 전용(2026-09-10 신규) — 말들이 트랙 맨 앞에 나란히 서있는 모습을
+# 실제로 한 번 보여준 뒤에 달리기 시작한다(舊에는 이 장면 없이 바로 진행 중인
+# 첫 프레임부터 보였다).
+_RACE_START_LINES = (
+    "다들 출발선에 섰어!! 준비 완료!! _(긴장)_",
+    "자, 다들 준비됐지?? 출발선이야!! _(두근)_",
+    "출발 신호만 기다리고 있어!! _(긴장)_",
+    "다들 자리 잡았다!! 곧 출발이야!! _(설렘)_",
+    "긴장되는 출발선!! 누가 먼저 튀어나갈까?? _(흥분)_",
+    "레디... 이제 곧 달려나갈 거야!! _(집중)_",
+    "다들 결의에 찬 눈빛이야!! 출발 직전!! _(진지)_",
+    "출발선에 정렬 완료!! 곧 시작한다!! _(기대)_",
 )
 
 _RACE_RUNNING_LINES = (
@@ -290,6 +304,15 @@ def _roster_field_value() -> str:
     return "\n".join(f"{h.number}번 {h.species} : {h.name} — {h.blurb}" for h in HAMSTERS)
 
 
+# 기본(예측 단계) 임베드에 들어가는 간단한 규칙+배수 요약(2026-09-10 신규) — 舊에는
+# "선수 정보 보기" 버튼을 안 눌러도 참가 선수 소개가 통째로 나와 있었는데, 그 정보는
+# 그 버튼을 눌러야만 보이는 게 맞다는 지적으로 여기서는 규칙/배수만 짧게 안내한다.
+_QUICK_RULES_FIELD_VALUE = (
+    "적중한 등수의 배율은 서로 곱해집니다 — 3위 x2, 2위 x4, 1위 x6. 세 등수를 전부 "
+    "맞히면 x100(잭팟)입니다. 하나도 못 맞히면 배팅액을 전부 잃습니다."
+)
+
+
 def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
     embed = discord.Embed(title="🐹 햄스터 경마 승부예측", color=GAMBLING_EMBED_COLOR)
     lines = []
@@ -298,7 +321,7 @@ def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
         label = f"{number}번 {_HAMSTERS_BY_NUMBER[number].name}" if number else "???"
         lines.append(f"{rank}등 예측: {label}")
     embed.description = "\n".join(lines)
-    embed.add_field(name="참가 선수", value=_roster_field_value(), inline=False)
+    embed.add_field(name="🔢 배율 안내", value=_QUICK_RULES_FIELD_VALUE, inline=False)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
 
@@ -313,10 +336,9 @@ def _prediction_content(challenger_name: str, before_coins: int, bet: int) -> st
 
 
 def _build_race_embed(positions: dict[int, int], finished_order: list[int]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🐹 햄스터 경마", description=render_track(positions, finished_order), color=GAMBLING_EMBED_COLOR
-    )
-    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    embed = discord.Embed(title="🐹 햄스터 경마", color=GAMBLING_EMBED_COLOR)
+    track_text = render_track(positions, finished_order)
+    embed.set_footer(text=f"{track_text}\n{format_footer_time(datetime.now(KST))}")
     return embed
 
 
@@ -457,15 +479,48 @@ def _build_replay_view(user_id: int) -> ReplayView:
 
 async def _run_race(view: _PredictionView, trigger_interaction: discord.Interaction | None) -> None:
     """"경기 시작" 수동 클릭과 10분 타임아웃 자동 시작이 공유하는 경주 진행 함수 —
-    최종 순위와 5개 프레임의 위치를 미리 전부 계산한 뒤, 3초 간격으로 메시지를
-    고쳐써서 애니메이션처럼 보여주고 마지막에 정산한다. trigger_interaction이 있으면
-    (수동 클릭) 첫 프레임만 그 인터랙션으로 응답해 3초 제한 내에 확인시키고, 이후
-    프레임은 전부 view.message.edit()으로 진행한다(타임아웃 경로는 애초에 살아있는
-    인터랙션이 없어 처음부터 message.edit()만 쓴다)."""
+    최종 순위와 5개 프레임의 위치를 미리 전부 계산한 뒤, 출발선 프레임(전부 트랙
+    맨 앞)을 먼저 한 번 보여주고, 그다음 3초 간격으로 메시지를 고쳐써서 애니메이션
+    처럼 보여주고 마지막에 정산한다. trigger_interaction이 있으면(수동 클릭) 출발선
+    프레임만 그 인터랙션으로 응답해 3초 제한 내에 확인시키고, 이후 프레임은 전부
+    view.message.edit()으로 진행한다(타임아웃 경로는 애초에 살아있는 인터랙션이
+    없어 처음부터 message.edit()만 쓴다)."""
     final_ranking = compute_final_ranking()
     frames = compute_frame_positions(final_ranking)
     empty_view = discord.ui.View()  # 애니메이션 중엔 상호작용 불가(중복 시작 방지)
     finished_order: list[int] = []
+
+    # 출발선 프레임(2026-09-10 신규) — compute_frame_positions()는 이미 진행된
+    # 위치부터 시작해서, 이걸 그대로 첫 프레임으로 쓰면 말들이 나란히 서있는 출발
+    # 장면 없이 바로 달리는 중인 모습부터 보이는 문제가 있었다. 여기서 전부
+    # 0(트랙 맨 앞)인 프레임을 애니메이션 맨 앞에 명시적으로 하나 더 보여준다.
+    start_positions = {h.number: 0 for h in HAMSTERS}
+    start_embed = _build_race_embed(start_positions, finished_order)
+    start_content = f"## 🎯 도전자: {view.challenger_name}\n{random.choice(_RACE_START_LINES)}"
+
+    if trigger_interaction is not None:
+        try:
+            await trigger_interaction.response.edit_message(content=start_content, embed=start_embed, view=empty_view)
+            view.message = await trigger_interaction.original_response()
+        except discord.HTTPException:
+            logging.exception("Failed to edit horse race start frame")
+            # 이 실패로 _settle_race까지 절대 못 가서(경주 자체가 시작도
+            # 못 함) mark_inactive를 대신할 곳이 없다 — 여기서 직접 풀어준다
+            # (2026-09-09, 크로스블록 잠금 영구 미해제 버그 수정).
+            mark_inactive(view.challenger_id)
+            return
+    else:
+        if view.message is None:
+            mark_inactive(view.challenger_id)
+            return
+        try:
+            await view.message.edit(content=start_content, embed=start_embed, view=empty_view)
+        except discord.HTTPException:
+            logging.exception("Failed to edit horse race start frame")
+            mark_inactive(view.challenger_id)
+            return
+
+    await asyncio.sleep(_FRAME_INTERVAL_SECONDS)
 
     for frame_index, positions in enumerate(frames):
         for number in final_ranking:
@@ -474,27 +529,15 @@ async def _run_race(view: _PredictionView, trigger_interaction: discord.Interact
         embed = _build_race_embed(positions, finished_order)
         content = f"## 🎯 도전자: {view.challenger_name}\n{random.choice(_RACE_RUNNING_LINES)}"
 
-        if frame_index == 0 and trigger_interaction is not None:
-            try:
-                await trigger_interaction.response.edit_message(content=content, embed=embed, view=empty_view)
-                view.message = await trigger_interaction.original_response()
-            except discord.HTTPException:
-                logging.exception("Failed to edit horse race first frame")
-                # 이 실패로 _settle_race까지 절대 못 가서(경주 자체가 시작도
-                # 못 함) mark_inactive를 대신할 곳이 없다 — 여기서 직접 풀어준다
-                # (2026-09-09, 크로스블록 잠금 영구 미해제 버그 수정).
-                mark_inactive(view.challenger_id)
-                return
-        else:
-            if view.message is None:
-                mark_inactive(view.challenger_id)
-                return
-            try:
-                await view.message.edit(content=content, embed=embed, view=empty_view)
-            except discord.HTTPException:
-                logging.exception("Failed to edit horse race animation frame")
-                mark_inactive(view.challenger_id)
-                return
+        if view.message is None:
+            mark_inactive(view.challenger_id)
+            return
+        try:
+            await view.message.edit(content=content, embed=embed, view=empty_view)
+        except discord.HTTPException:
+            logging.exception("Failed to edit horse race animation frame")
+            mark_inactive(view.challenger_id)
+            return
 
         if frame_index < _FRAME_COUNT - 1:
             await asyncio.sleep(_FRAME_INTERVAL_SECONDS)
@@ -526,14 +569,11 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
             text = random.choice(_WIN_LINES).format(multiplier=multiplier)
         receipt = format_bet_receipt(view.before_coins, view.bet, result["new_coins"])
 
-        # 2026-09-09 — "제작자는 이 업적이..." 전설 업적이 /도박 전체 공용(배율 64
-        # 이상)으로 확장됨에 따라 승부예측도 대상에 포함(사실상 잭팟(x100)만 해당).
-        legendary = await maybe_award_legendary_multiplier(view.challenger_id, multiplier)
-        if legendary is not None and legendary["earned"]:
-            text += f"\n🏆 업적 달성: {achievements.format_name(achievements.dev_never_tested_this)}!!"
-            text += format_affection_notice(
-                legendary["applied_amount"], legendary["new_affection"], multiplier_eligible=False
-            )
+        # "제작자는 이 업적이..." 전설 업적이 /도박 전체 공용(배율 64 이상)으로 확장됨에
+        # 따라 승부예측도 대상에 포함(사실상 잭팟(x100)만 해당). 2026-09-10부로 업적
+        # 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도 글로벌 방송으로
+        # 처리되므로 여기서는 부여만 시도한다.
+        await maybe_award_legendary_multiplier(view.challenger_id, multiplier)
 
     content = (
         f"## 🎯 도전자: {view.challenger_name}\n{text}\n\n"

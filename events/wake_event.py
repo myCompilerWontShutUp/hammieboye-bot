@@ -79,30 +79,15 @@ async def handle_mention(message: discord.Message) -> None:
         line1, line2 = random.choice(_ANNOYED_PAIRS)
         result = await add_affection(user_id, _ANNOYED_DELTA)
         notice = format_affection_notice(result["applied_amount"], result["new_affection"])
-        achievement_notice = result["achievement_notice"]
     else:
         line1, line2 = random.choice(_NIGHTMARE_PAIRS)
         result = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD)
-        applied_amount = result["applied_amount"]
-        current_affection = result["new_affection"]
-        achievement_notice = result["achievement_notice"]
-
-        multiplier_eligible = True
-        achievement_result = await award_achievement(user_id, achievements.nightmare_freed.ID)
-        if achievement_result["earned"]:
-            applied_amount += achievement_result["applied_amount"]
-            current_affection = achievement_result["new_affection"]
-            multiplier_eligible = False
-            extra = f"🏆 업적 달성: {achievements.format_name(achievements.nightmare_freed)}!!"
-            achievement_notice = f"{achievement_notice}\n{extra}" if achievement_notice else extra
-
-        notice = format_affection_notice(
-            applied_amount, current_affection, multiplier_eligible=multiplier_eligible
-        )
+        notice = format_affection_notice(result["applied_amount"], result["new_affection"])
+        # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
+        # (호감도 보너스도 폐지) — 인라인 문구는 더 이상 안 붙인다.
+        await award_achievement(user_id, achievements.nightmare_freed.ID)
 
     reply_text = f"{line1}\n{line2}{notice}"
-    if achievement_notice:
-        reply_text += f"\n{achievement_notice}"
 
     try:
         await message.reply(reply_text)

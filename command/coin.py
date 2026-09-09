@@ -1,6 +1,7 @@
 import random
 from datetime import datetime, timedelta, timezone
 
+import levels
 from command.economy_common import format_coin_notice
 from db.affection import add_affection, format_affection_notice
 from db.daily_stats import claim_coin_daily_use, ensure_daily_stats, update_daily_stats
@@ -24,10 +25,11 @@ _DAILY_CLAIM_LIMIT = 3
 # 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus.
 _BASE_GRANT = 1
 
-# 10% 확률로 2배를 물어온다(2026-09-09 신규) — coin_grant_bonus까지 합산한 최종
-# 지급량 전체에 곱해진다. apply_day_multiplier(날짜 배율)와는 독립적으로 중첩된다
-# (의도된 동작 — 보너스와 특별한 날 배율이 겹치면 더 크게 받을 수 있음).
-_BONUS_CHANCE = 0.10
+# 레벨별 확률로 2배를 물어온다(2026-09-09 신규, 2026-09-10 레벨 시스템 도입으로
+# 고정 10% → levels.Level.double_drop_chance로 레벨업할수록 상승) — coin_grant_bonus
+# 까지 합산한 최종 지급량 전체에 곱해진다. apply_day_multiplier(날짜 배율)와는
+# 독립적으로 중첩된다(의도된 동작 — 보너스와 특별한 날 배율이 겹치면 더 크게 받을
+# 수 있음).
 _BONUS_MULTIPLIER = 2
 
 _GRANT_MESSAGES = (
@@ -244,7 +246,8 @@ async def handle(user_id: int) -> str:
 
     user = await get_user(user_id)
     base_amount = _BASE_GRANT + user["coin_grant_bonus"]
-    is_bonus = random.random() < _BONUS_CHANCE
+    double_drop_chance = levels.get_level_for_xp(user["total_xp"]).double_drop_chance
+    is_bonus = random.random() < double_drop_chance
     amount = base_amount * _BONUS_MULTIPLIER if is_bonus else base_amount
     result = await add_coins(user_id, amount, method=_METHOD, apply_day_multiplier=True)
 
