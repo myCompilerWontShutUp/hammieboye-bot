@@ -16,7 +16,7 @@ from config import (
 from core.base import SYSTEM_EMBED_COLOR
 from core.discord_names import resolve_real_name
 from core.korean import josa
-from events import dessert_time
+from events import dessert_time, presence
 from events.scheduler import KST, format_footer_time, random_times_in_window, resolve_broadcast_channel_id
 from events.special_days import get_help_me_event_count
 from db.achievements import award as award_achievement
@@ -372,6 +372,7 @@ def _build_announce_embed() -> discord.Embed:
 
 
 async def _post_one(event: dict) -> None:
+    await presence.enter_help_request()
     messages: dict[str, dict] = {}
     embed = _build_announce_embed()
     for guild in _client.guilds:
@@ -408,6 +409,7 @@ async def _announce_timeout(event: dict) -> None:
     (개인화된 호감도 수치는 표시하지 않는다)."""
     if _client is None:
         return
+    await presence.wake_up()
     line = random.choice(_TIMEOUT_LINES)
     for guild_id_str, location in (event.get("messages") or {}).items():
         guild = _client.get_guild(int(guild_id_str))
@@ -496,6 +498,7 @@ async def handle_potential_response(
         return await _grant_already_helped(user_id, event["prompt_text"])
 
     _invalidate_active_events_cache()
+    await presence.wake_up()
     result = await add_affection(user_id, reward, "call_event")
     await _try_increment_help_count(user_id)
     await _announce_winner(event, user_id, guild_id)

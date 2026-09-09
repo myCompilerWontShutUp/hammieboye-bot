@@ -146,13 +146,14 @@ async def handle(user_id: int, snack_name: str) -> str:
     await increment_snacks_given(user_id)
 
     if isinstance(item, BlackMarketItem):
-        # 암시장 확률적 간식(2026-09-08 신규) — 정확히 50/50으로 굴려서 결과를 정한다.
-        # 악마의 씨앗(double_or_halve)만 예외로, 고정 델타 대신 "지금 호감도의 2배"
-        # 또는 "지금 호감도의 절반으로 감소"를 적용한다(최초 설계는 "0으로 리셋"이었으나
-        # 너무 가혹하다는 피드백으로 완화). uncapped + 배율 미적용(add_affection의
-        # 일일 +100 상한/주말·생일 배율은 이런 극단적인 도박성 결과와 안 어울려
-        # 건너뛴다) — 업적 달성 보너스와 동일한 원칙.
-        good = random.random() < 0.5
+        # 암시장 확률적 간식 — item.good_chance로 결과를 굴린다(2026-09-09 신규,
+        # 기본 50/50이지만 산딸기?는 25%로 예외). 악마의 씨앗(double_or_halve)만
+        # 예외로, 고정 델타 대신 "지금 호감도의 2배" 또는 "지금 호감도의 절반으로
+        # 감소"를 적용한다(최초 설계는 "0으로 리셋"이었으나 너무 가혹하다는 피드백으로
+        # 완화). uncapped + 배율 미적용(add_affection의 일일 +100 상한/주말·생일
+        # 배율은 이런 극단적인 도박성 결과와 안 어울려 건너뛴다) — 업적 달성 보너스와
+        # 동일한 원칙.
+        good = random.random() < item.good_chance
         if item.double_or_halve:
             current_user = await get_user(user_id)
             current_affection_before = current_user["affection"] if current_user is not None else 0

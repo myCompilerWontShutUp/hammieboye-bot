@@ -94,8 +94,10 @@ _TOOL_PURCHASE_LINES = (
     "손에 넣자마자 쓰고 싶어져!! _(신남)_",
 )
 
-_CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "tool": "도구"}
-_CATEGORY_ORDER: tuple[str, ...] = ("snack", "tool")
+# 2026-09-09 — 카테고리 이름을 컨셉에 맞게 변경(간식→괴식, 도구→장비, 내부 kind
+# 값은 그대로), "포션" 카테고리 신설(아직 재고 없음). 순서는 괴식-포션-장비.
+_CATEGORY_LABELS: dict[str, str] = {"snack": "괴식", "potion": "포션", "tool": "장비"}
+_CATEGORY_ORDER: tuple[str, ...] = ("snack", "potion", "tool")
 _DEFAULT_CATEGORY = "snack"
 
 # 임베드는 시스템 요소라 햄미의 반말/오타 페르소나를 쓰지 않고 정중체로 고정한다
@@ -110,7 +112,7 @@ _CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "tool": "산 물건은 `/사용`으로 직접 사용해보세요. 한 번에 하나씩만 사용할 수 있습니다.",
 }
 
-_EMPTY_CATEGORY_PLACEHOLDER = "(아직 없음)"
+_EMPTY_CATEGORY_PLACEHOLDER = "재고 준비중"
 
 # 관리자 권한 장난 품목 전용 — /자판기의 舊 op_permission과 동일한 컨셉(2026-09-08
 # /암시장으로 이전). 구매 가능 여부·잔액과 무관하게 항상 이 문구로 대체하고 결제 자체를
@@ -128,10 +130,11 @@ def _item_block(item, purchase_count: int) -> str:
     """/자판기와 동일한 카드형(이름+횟수 줄 / 가격 줄 / 효과 줄로 3줄 — 2026-09-08
     가격과 효과를 한 줄에 "—"로 붙여 쓰다가 모바일에서 줄바꿈이 애매하게 꺾여
     가독성이 떨어진다는 지적으로 줄을 분리했다). 확률적 간식은 "N 오르거나 M 감소"
-    형태로 두 결과를 함께 보여주고, 도구는 카탈로그의 description을 그대로 쓴다.
-    장난 품목(is_joke)은 실제로 결제/지급이 없어 "(N회 구매)" 표시를 생략한다(舊
-    /자판기 "기타" 품목과 동일한 원칙)."""
-    count_suffix = "" if item.is_joke else f" ({purchase_count}회 구매)"
+    형태로 두 결과를 함께 보여주고, 장비는 카탈로그의 description을 그대로 쓴다.
+    장난 품목(is_joke)도 2026-09-09부터 다른 품목과 동일하게 "(N회 구매)"를
+    표시한다(실제 의미는 없는 숫자지만 — 결제/로그가 안 남아 항상 0 — 일관성을
+    위해 예외 없이 보여준다)."""
+    count_suffix = f" ({purchase_count}회 구매)"
     if item.kind == "snack":
         if item.double_or_halve:
             detail = "먹일 시 호감도가 현재의 2배가 되거나 절반으로 줄어듦"
@@ -198,7 +201,7 @@ class _ItemSelect(discord.ui.Select):
                 default=(item.id == selected_id),
             )
             for item in items
-        ] or [discord.SelectOption(label="(아직 없음)", value="__none__")]
+        ] or [discord.SelectOption(label=_EMPTY_CATEGORY_PLACEHOLDER, value="__none__")]
         super().__init__(placeholder="살 물건을 선택해줘!!", options=options, row=0, disabled=not items)
 
     async def callback(self, interaction: discord.Interaction) -> None:

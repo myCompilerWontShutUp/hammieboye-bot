@@ -110,9 +110,11 @@ _SAVINGS_START_ELIGIBLE_ITEM_IDS = frozenset(
 # 품목 선택 + 구매 버튼을 합쳤다. "동전"이라는 표시 이름을 "투자"로 바꿨을 뿐 내부
 # kind("coin")·가격 인상 로직·효과(=`/동전` 획득량 증가)는 전부 그대로다. 舊 "기타"
 # (장난 품목, op_permission)는 이 화면에서 아예 안 보이게 뺐다 — 카탈로그에서 지우진
-# 않았지만 이 UI로는 더 이상 도달할 방법이 없다.
-_CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "coin": "투자"}
-_CATEGORY_ORDER: tuple[str, ...] = ("snack", "coin")
+# 않았지만 이 UI로는 더 이상 도달할 방법이 없다. 2026-09-09 "음료" 카테고리 신설
+# (아직 재고 없음, command/black_market.py의 빈 카테고리 처리를 그대로 이식) —
+# 순서는 간식-음료-투자.
+_CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "beverage": "음료", "coin": "투자"}
+_CATEGORY_ORDER: tuple[str, ...] = ("snack", "beverage", "coin")
 _DEFAULT_CATEGORY = "snack"
 
 _CATEGORY_DESCRIPTIONS: dict[str, str] = {
@@ -123,6 +125,10 @@ _CATEGORY_DESCRIPTIONS: dict[str, str] = {
 }
 
 _JOKE_RESPONSE = "...어?? 이건 사실 파는 거 아니야!! 장난으로 넣어둔 거야!! _(웃음)_"
+
+# 아직 재고가 없는 카테고리(음료) 전용 — command/black_market.py::_EMPTY_CATEGORY_PLACEHOLDER
+# 와 동일한 원칙.
+_EMPTY_CATEGORY_PLACEHOLDER = "재고 준비중"
 
 
 def _category_items(kind: str) -> list:
@@ -149,12 +155,14 @@ def _item_block(item, price: int, purchase_count: int) -> str:
     return f"**{item.name}** ({purchase_count}회 구매)\n{price:,}코인\n{detail}"
 
 
-_MAX_CATEGORY_ITEMS = max(len(_category_items(kind)) for kind in _CATEGORY_ORDER)
+_MAX_CATEGORY_ITEMS = max(len(_category_items(kind)) for kind in _CATEGORY_ORDER) or 1
 
 
 async def _build_shop_embed(kind: str, counts: dict[str, int]) -> discord.Embed:
     items = _category_items(kind)
     blocks = [_item_block(item, _price_from_counts(item, counts), counts.get(item.id, 0)) for item in items]
+    if not blocks:
+        blocks = [_EMPTY_CATEGORY_PLACEHOLDER]
     blocks += [""] * (_MAX_CATEGORY_ITEMS - len(blocks))
     embed = discord.Embed(title="🛒 자판기", color=VENDING_EMBED_COLOR)
     description = f"**[{_CATEGORY_LABELS[kind]}]**\n\n" + "\n\n".join(blocks)
@@ -247,8 +255,8 @@ class _ItemSelect(discord.ui.Select):
                 default=(item.id == selected_id),
             )
             for item in items
-        ]
-        super().__init__(placeholder="구매할 품목을 선택해줘!!", options=options, row=0)
+        ] or [discord.SelectOption(label=_EMPTY_CATEGORY_PLACEHOLDER, value="__none__")]
+        super().__init__(placeholder="구매할 품목을 선택해줘!!", options=options, row=0, disabled=not items)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view: _VendingView = self.view

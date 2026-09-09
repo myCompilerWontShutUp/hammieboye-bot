@@ -1,10 +1,13 @@
 import logging
 import random
 from datetime import datetime
+from typing import Awaitable, Callable
 
 import discord
 
 import achievements
+import command.double_or_nothing as double_or_nothing
+import command.horse_race as horse_race
 from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
@@ -13,7 +16,12 @@ from command.economy_common import (
     BetAmountModal,
     ReplayView,
     RulesView,
+    claim_active_or_reject,
     format_bet_receipt,
+    mark_active,
+    mark_inactive,
+    maybe_award_legendary_multiplier,
+    reject_if_already_playing,
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
@@ -81,8 +89,8 @@ _RULES_INTRO_LINES = (
 # RulesView가 embed.description으로 그대로 보여주는 문구라 시스템 정중체로 고정한다
 # (2026-09-09 — 페르소나 말투 정정, command/black_market.py와 동일한 원칙).
 _RULES_OVERVIEW_TEXT = (
-    "위험한 게임들을 모아둔 곳입니다. 지금은 슬롯머신 하나가 있으며(앞으로 더 늘어날 "
-    "수도 있습니다) 아래 버튼에서 원하는 게임을 골라주세요.\n\n"
+    "위험한 게임들을 모아둔 곳입니다. 지금은 슬롯머신·승부예측·더블오어낫띵 세 가지가 "
+    "있으며(앞으로 더 늘어날 수도 있습니다) 아래 버튼에서 원하는 게임을 골라주세요.\n\n"
     "한 번에 아주 크게 벌 수도 있지만, 패배하면 배팅액을 모두 잃을 수 있으니 "
     "주의하시기 바랍니다."
 )
@@ -121,11 +129,6 @@ _LINES: tuple[tuple[int, int, int], ...] = (
     (0, 3, 6), (1, 4, 7), (2, 5, 8),
     (0, 4, 8), (2, 4, 6),
 )
-
-# 전설 업적("제작자는 이 업적이 가능한지 테스트하지 않았습니다") 기준 — 세븐(77) 한
-# 줄만 걸려도 이미 초과하지만, 세븐 한 줄이 뜰 확률 자체가 낮아 여전히 희귀하다.
-# 정확히 16이면 미달(엄격한 초과 비교) — 다이아(10) 두 줄 동시 완성(10x10=100) 등도 해당.
-_LEGENDARY_MULTIPLIER_THRESHOLD = 16
 
 _SLOT_MACHINE_RULE_TEXT = (
     "3x3 칸을 채워서 가로 3줄 + 세로 3줄 + 대각선 2줄, 총 8줄을 확인합니다. "
@@ -273,6 +276,15 @@ _SPIN_PROMPT_LINES = (
 )
 
 
+# 슬롯머신 판 자체(스핀 버튼 3개)의 대기시간(2026-09-09, 기존 60초 → 10분으로 연장) —
+# economy_common.TIMEOUT_SECONDS(60초)는 게임 선택 프롬프트 등 다른 용도에 계속
+# 쓰이므로 안 건드리고, 슬롯머신 판 완결 전용으로 파일 로컬 상수를 새로 둔다. 이
+# 10분은 스핀 버튼을 눌러도 초기화되지 않는다 — discord.py View는 timeout을
+# 재대입(bump())하지 않는 한 최초 생성 시각 기준으로만 만료되므로, 이 뷰 어디에서도
+# bump()를 호출하지 않는 것만으로 이 요구사항이 그대로 충족된다.
+_SLOT_ROUND_TIMEOUT_SECONDS = 600
+
+
 def _render_grid(grid: list[str | None]) -> str:
     # 마크다운 헤딩(#/##/###)은 title이 아니라 description 안에서만 실제로 크기가
     # 커진다 — 그래서 그리드를 title이 아니라 description에 두고, 줄마다 "## "를
@@ -300,7 +312,9 @@ async def _settle(
     메시지에 누구의 판인지 보여주기 위한 도전자 이름(맨 위 한 줄)."""
     multiplier, hamster_hit, capped = evaluate(grid)
     embed = _build_embed(grid)
-    challenger_line = f"🎯 도전자: {challenger_name}\n"
+    # 2026-09-09 — 마크다운 헤딩(`## `)을 붙여 크게 표시(그리드에 이미 쓰인 트릭과
+    # 동일 — Discord는 일반 메시지 content=에서도 헤딩을 렌더링한다).
+    challenger_line = f"## 🎯 도전자: {challenger_name}\n"
 
     if hamster_hit:
         penalty = await deduct_coins_clamped(user_id, bet)
@@ -342,14 +356,15 @@ async def _settle(
         achievement_notices.append(
             f"🏆 업적 달성: {achievements.format_name(achievements.gambling_hotline_1336)}!!"
         )
-    if multiplier > _LEGENDARY_MULTIPLIER_THRESHOLD:
-        legendary = await award_achievement(user_id, achievements.dev_never_tested_this.ID)
-        if legendary["earned"]:
-            total_affection_delta += legendary["applied_amount"]
-            current_affection = legendary["new_affection"]
-            achievement_notices.append(
-                f"🏆 업적 달성: {achievements.format_name(achievements.dev_never_tested_this)}!!"
-            )
+    # 2026-09-09 — 슬롯머신 전용 16배 초과 기준을 /도박 전체 공용 64배 이상 기준으로
+    # 대체(economy_common.py::maybe_award_legendary_multiplier가 문턱값을 관리).
+    legendary = await maybe_award_legendary_multiplier(user_id, multiplier)
+    if legendary is not None and legendary["earned"]:
+        total_affection_delta += legendary["applied_amount"]
+        current_affection = legendary["new_affection"]
+        achievement_notices.append(
+            f"🏆 업적 달성: {achievements.format_name(achievements.dev_never_tested_this)}!!"
+        )
 
     for notice in achievement_notices:
         text += f"\n{notice}"
@@ -372,7 +387,7 @@ def _build_replay_view(user_id: int) -> ReplayView:
     async def _on_replay(
         interaction: discord.Interaction, amount: int, old_message: "discord.Message | None"
     ) -> None:
-        await _start_round(interaction, user_id, amount)
+        await _start_round(interaction, user_id, amount, is_replay=True)
         if old_message is not None:
             try:
                 await old_message.edit(view=None)
@@ -387,7 +402,7 @@ class _SlotView(discord.ui.View):
     각자 돌려서 "채우는" 방식이라 버튼이 3개 다 눌려야 결과가 나온다(순서는 자유)."""
 
     def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
-        super().__init__(timeout=TIMEOUT_SECONDS)
+        super().__init__(timeout=_SLOT_ROUND_TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
@@ -397,7 +412,8 @@ class _SlotView(discord.ui.View):
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
-        """60초 동안 세 줄을 다 못 돌렸으면, 안 돌린 줄을 전부 자동으로 돌리고 그대로
+        """10분 동안 세 줄을 다 못 돌렸으면(2026-09-09, 기존 60초에서 연장 — 버튼을
+        눌러도 이 10분은 초기화되지 않는다), 안 돌린 줄을 전부 자동으로 돌리고 그대로
         정산한다 — 내기(bet.py)와 달리 여기선 "선택"이 아니라 "공개"라서 환불이 아니라
         마저 진행하는 쪽이 자연스럽다. 정산 후에는 다른 완료 경로와 동일하게
         "다시하기" 버튼을 보여준다."""
@@ -415,7 +431,11 @@ class _SlotView(discord.ui.View):
             await self.message.edit(content=text, embed=embed, view=replay_view)
             replay_view.message = self.message
         except discord.HTTPException:
+            # ReplayView가 메시지에 못 붙으면 그 on_timeout이 영영 안 불려
+            # mark_inactive도 영영 안 불린다 — 여기서 직접 풀어준다(horse_race.py
+            # 감사 중 발견된 동일 계열 버그, 2026-09-09 수정).
             logging.exception("Failed to edit slot prompt on timeout")
+            mark_inactive(self.user_id)
 
     async def _spin_row(
         self, interaction: discord.Interaction, row: int, button: discord.ui.Button
@@ -443,8 +463,12 @@ class _SlotView(discord.ui.View):
             self.user_id, self.bet, self.before_coins, self.challenger_name, self.grid
         )
         replay_view = _build_replay_view(self.user_id)
-        await interaction.response.edit_message(content=text, embed=embed, view=replay_view)
-        replay_view.message = await interaction.original_response()
+        try:
+            await interaction.response.edit_message(content=text, embed=embed, view=replay_view)
+            replay_view.message = await interaction.original_response()
+        except discord.HTTPException:
+            logging.exception("Failed to edit slot settlement message")
+            mark_inactive(self.user_id)
 
     @discord.ui.button(emoji=_ROW_NUMBER_EMOJI[0], label=_SPIN_LABEL, style=discord.ButtonStyle.primary)
     async def spin_row_1(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -459,14 +483,30 @@ class _SlotView(discord.ui.View):
         await self._spin_row(interaction, 2, button)
 
 
-async def _start_round(interaction: discord.Interaction, user_id: int, bet: int) -> None:
+async def _start_round(
+    interaction: discord.Interaction, user_id: int, bet: int, *, is_replay: bool = False
+) -> None:
     """모달에서 유효한 금액을 받은 뒤 실제 슬롯머신 판을 새 공개 메시지로 연다 —
     첫 판이든 "다시하기"든 항상 새 메시지다(2026-09-07, 이전엔 다시하기가 같은
     메시지를 고쳐써서 이전 판 기록이 사라졌다). 금액 검증(1~MAX_BET)은 모달이 이미
-    끝냈으니 여기서는 잔액만 확인한다."""
+    끝냈으니 여기서는 잔액만 확인한다.
+
+    is_replay 처리는 bet.py::_start_round와 동일한 원칙(economy_common
+    .claim_active_or_reject docstring 참고) — 신규 진입일 때만 spend_coins 이전에
+    원자적 크로스블록 체크를 한다."""
+    if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
+        return
+
     if not await spend_coins(user_id, bet):
+        if not is_replay:
+            mark_inactive(user_id)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
+
+    # 배팅이 성립한 시점부터 "진행 중"으로 표시한다(2026-09-09) — 정산 후
+    # "다시하기" 버튼이 사라지기 전까지 /내기·/도박(승부예측 포함) 재진입을 막는다.
+    if is_replay:
+        mark_active(user_id, _OWN_COMMAND)
 
     # vending.py::_execute_purchase와 동일한 역산 — spend_coins가 차감 전 잔액을
     # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
@@ -478,7 +518,7 @@ async def _start_round(interaction: discord.Interaction, user_id: int, bet: int)
 
     view = _SlotView(user_id, bet, before_coins, challenger_name)
     content = (
-        f"🎯 도전자: {challenger_name}\n"
+        f"## 🎯 도전자: {challenger_name}\n"
         + random.choice(_SPIN_PROMPT_LINES)
         + "\n\n"
         + format_bet_receipt(before_coins, bet, None)
@@ -492,19 +532,23 @@ async def _start_round(interaction: discord.Interaction, user_id: int, bet: int)
 class _GambleSelectView(EphemeralAutoDeleteView):
     """/도박 실행 직후 뜨는 ephemeral 프롬프트 — 본인에게만 보이므로 "다른 사람이
     눌렀을 때" 처리는 애초에 불필요하다(디스코드가 다른 사람에게 아예 안 보여준다).
-    지금은 슬롯머신 하나뿐이지만, /내기의 _GameSelectView와 동일한 골격이라 게임이
-    늘어도 버튼만 추가하면 된다."""
+    /내기의 _GameSelectView와 동일한 골격이라 게임이 늘어도 버튼만 추가하면 된다
+    (2026-09-09 "승부예측" 추가로 처음 늘어남)."""
 
     def __init__(self, user_id: int) -> None:
         super().__init__(timeout=TIMEOUT_SECONDS)
         self.user_id = user_id
 
-    @discord.ui.button(label="슬롯머신", style=discord.ButtonStyle.danger)
-    async def slot_machine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def _open_bet_modal(
+        self, interaction: discord.Interaction, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
+    ) -> None:
         self.bump()
         user = await get_user(self.user_id)
         balance = user["coins"] if user is not None else 0
+        await interaction.response.send_modal(BetAmountModal(balance=balance, on_valid=on_valid))
 
+    @discord.ui.button(label="슬롯머신", style=discord.ButtonStyle.danger)
+    async def slot_machine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
             await _start_round(modal_interaction, self.user_id, amount)
             # 게임이 실제로 시작됐으니(= 공개 메시지가 새로 생겼으니) 애초의 ephemeral
@@ -514,7 +558,31 @@ class _GambleSelectView(EphemeralAutoDeleteView):
             except discord.HTTPException:
                 logging.exception("Failed to delete gamble-select prompt after game start")
 
-        await interaction.response.send_modal(BetAmountModal(balance=balance, on_valid=_on_valid))
+        await self._open_bet_modal(interaction, _on_valid)
+
+    @discord.ui.button(label="승부예측", style=discord.ButtonStyle.primary)
+    async def horse_race_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
+            await horse_race.start_round(modal_interaction, self.user_id, amount)
+            try:
+                await self.interaction.delete_original_response()
+            except discord.HTTPException:
+                logging.exception("Failed to delete gamble-select prompt after horse race start")
+
+        await self._open_bet_modal(interaction, _on_valid)
+
+    @discord.ui.button(label="더블오어낫띵", style=discord.ButtonStyle.secondary)
+    async def double_or_nothing_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
+            await double_or_nothing.start_round(modal_interaction, self.user_id, amount)
+            try:
+                await self.interaction.delete_original_response()
+            except discord.HTTPException:
+                logging.exception("Failed to delete gamble-select prompt after double-or-nothing start")
+
+        await self._open_bet_modal(interaction, _on_valid)
 
 
 async def handle_gamble(interaction: discord.Interaction) -> None:
@@ -522,7 +590,13 @@ async def handle_gamble(interaction: discord.Interaction) -> None:
     게임 선택 프롬프트(인트로 문구 + 임베드 + 슬롯머신 버튼)를 보여준다.
 
     /내기와 달리 취침 시간대에도 완전히 차단하지 않고 그대로 진행된다(2026-09-06) —
-    대신 인트로 문구만 SLEEP_REPLY_GAMBLE로 바뀐다("몰래 하는" 컨셉)."""
+    대신 인트로 문구만 SLEEP_REPLY_GAMBLE로 바뀐다("몰래 하는" 컨셉).
+
+    2026-09-09부터 이미 진행 중인 /내기·/도박 판이 있으면(슬롯머신·승부예측 크로스
+    포함) 여기서 막힌다 — reject_if_already_playing이 이미 defer된 응답을 대신
+    채운다."""
+    if not await reject_if_already_playing(interaction, interaction.user.id):
+        return
     user = await get_user(interaction.user.id)
     balance = user["coins"] if user is not None else 0
 
@@ -551,6 +625,12 @@ async def handle_rules() -> tuple[str, discord.Embed, discord.ui.View]:
     embed = discord.Embed(title="🎰 도박 규칙", description=_RULES_OVERVIEW_TEXT, color=GAMBLING_EMBED_COLOR)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     view = RulesView(
-        "🎰 도박 규칙", {"슬롯머신": _SLOT_MACHINE_RULE_TEXT}, color=GAMBLING_EMBED_COLOR
+        "🎰 도박 규칙",
+        {
+            "슬롯머신": _SLOT_MACHINE_RULE_TEXT,
+            "승부예측": horse_race.HORSE_RACE_RULE_TEXT,
+            "더블오어낫띵": double_or_nothing.DOUBLE_OR_NOTHING_RULE_TEXT,
+        },
+        color=GAMBLING_EMBED_COLOR,
     )
     return random.choice(_RULES_INTRO_LINES), embed, view

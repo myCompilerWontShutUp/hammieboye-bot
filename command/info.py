@@ -10,7 +10,7 @@ from core.korean import josa
 from events.scheduler import KST, format_footer_time
 from events.special_days import get_help_me_event_count
 from db.daily_stats import ensure_nl_cap
-from db.ranking import compute_percentile, count_total, get_rank
+from db.ranking import compute_percentile, count_total, get_coin_rank, get_rank
 from db.users import get_user
 import command.achievements as achievements_view
 import command.bag as bag_view
@@ -89,38 +89,66 @@ def _format_date(iso_str: str) -> str:
     return f"{first_seen.strftime('%Y. %m. %d')} ({days}일째)"
 
 
-async def _render_affection(
+async def _render_info(
     user_id: int, *, target_name: str | None, guild: discord.Guild | None
 ) -> tuple[str, discord.Embed]:
-    """舊 /내정보의 "💕 햄미와 나" 필드(호감도+서버/전체 순위)."""
+    """舊 "호감도" 탭 → "정보" 탭으로 확장(2026-09-09) — 호감도(+서버/전체 순위)와
+    동전(+서버/전체 순위, command/bag.py::handle()의 동전 부분과 동일한 계산)을
+    한 번에 보여준다. 전체 유저 수(count_total)는 호감도든 동전이든 동일한 값이라
+    한 번만 조회해서 두 순위 계산에 같이 쓴다(중복 API 호출 방지)."""
     is_self = target_name is None
     user = await get_user(user_id)
     affection = user["affection"]
+    coins = user["coins"]
     member_ids = [m.id for m in guild.members if not m.bot] if guild is not None else None
 
     if member_ids is not None:
-        global_rank, global_total, guild_rank, guild_total = await asyncio.gather(
+        (
+            affection_global_rank,
+            affection_guild_rank,
+            coin_global_rank,
+            coin_guild_rank,
+            global_total,
+            guild_total,
+        ) = await asyncio.gather(
             get_rank(user_id, affection),
-            count_total(),
             get_rank(user_id, affection, member_ids),
+            get_coin_rank(user_id, coins),
+            get_coin_rank(user_id, coins, member_ids),
+            count_total(),
             count_total(member_ids),
         )
     else:
-        global_rank, global_total = await asyncio.gather(get_rank(user_id, affection), count_total())
-        guild_rank = None
+        affection_global_rank, coin_global_rank, global_total = await asyncio.gather(
+            get_rank(user_id, affection), get_coin_rank(user_id, coins), count_total()
+        )
+        affection_guild_rank = None
+        coin_guild_rank = None
         guild_total = None
 
-    title = "나의 호감도" if is_self else f"{target_name}의 호감도"
-    heart_field_name = "💕 햄미와 나" if is_self else f"💕 햄미와 {target_name}"
+    title = "나의 정보" if is_self else f"{target_name}의 정보"
     embed = discord.Embed(title=title, color=EMBED_COLOR)
 
+    heart_field_name = "💕 햄미와 나" if is_self else f"💕 햄미와 {target_name}"
     heart_lines = [f"- 햄미의 호감도: **{affection}**"]
-    if guild_rank is not None:
-        guild_percentile = compute_percentile(guild_rank, guild_total)
-        heart_lines.append(f"- 서버 호감도 순위: **{guild_rank}**위 (상위 {guild_percentile}%)")
-    global_percentile = compute_percentile(global_rank, global_total)
-    heart_lines.append(f"- 전체 호감도 순위: **{global_rank}**위 (상위 {global_percentile}%)")
+    if affection_guild_rank is not None:
+        guild_percentile = compute_percentile(affection_guild_rank, guild_total)
+        heart_lines.append(f"- 서버 호감도 순위: **{affection_guild_rank}**위 (상위 {guild_percentile}%)")
+    affection_global_percentile = compute_percentile(affection_global_rank, global_total)
+    heart_lines.append(
+        f"- 전체 호감도 순위: **{affection_global_rank}**위 (상위 {affection_global_percentile}%)"
+    )
     embed.add_field(name=heart_field_name, value="\n".join(heart_lines), inline=False)
+
+    coin_field_name = "🪙 동전" if is_self else f"🪙 {target_name}의 동전"
+    coin_lines = [f"- 보유 동전 개수: **{coins}**"]
+    if coin_guild_rank is not None:
+        coin_guild_percentile = compute_percentile(coin_guild_rank, guild_total)
+        coin_lines.append(f"- 서버 동전 순위: **{coin_guild_rank}**위 (상위 {coin_guild_percentile}%)")
+    coin_global_percentile = compute_percentile(coin_global_rank, global_total)
+    coin_lines.append(f"- 전체 동전 순위: **{coin_global_rank}**위 (상위 {coin_global_percentile}%)")
+    embed.add_field(name=coin_field_name, value="\n".join(coin_lines), inline=False)
+
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
     if is_self:
@@ -239,24 +267,24 @@ async def render_admin_summary(user_id: int) -> tuple[str, discord.Embed]:
 
 # /내정보·/니정보 카테고리 탭(2026-09-06, /자판기-리스트와 동일한 UI로 재개편) —
 # ephemeral 선택 프롬프트를 없애고, 처음부터 공개(모두에게 보이는) 메시지로 기본
-# 카테고리(호감도)를 바로 보여준 뒤 버튼으로 같은 메시지 안에서 다른 카테고리로
-# 전환한다.
-_CATEGORY_ORDER: tuple[str, ...] = ("affection", "bag", "achievements", "today", "lifetime")
+# 카테고리(정보)를 바로 보여준 뒤 버튼으로 같은 메시지 안에서 다른 카테고리로
+# 전환한다. 2026-09-09 舊 "호감도" 탭을 "정보" 탭으로 확장(동전 요약 포함).
+_CATEGORY_ORDER: tuple[str, ...] = ("info", "bag", "achievements", "today", "lifetime")
 _CATEGORY_LABELS: dict[str, str] = {
-    "affection": "호감도",
+    "info": "정보",
     "bag": "가방",
     "achievements": "업적",
     "today": "오늘 기록",
     "lifetime": "전체 기록",
 }
-_DEFAULT_CATEGORY = "affection"
+_DEFAULT_CATEGORY = "info"
 
 
 async def _render_category(
     kind: str, subject_id: int, *, target_name: str | None, guild: discord.Guild | None
 ) -> tuple[str, discord.Embed]:
-    if kind == "affection":
-        return await _render_affection(subject_id, target_name=target_name, guild=guild)
+    if kind == "info":
+        return await _render_info(subject_id, target_name=target_name, guild=guild)
     if kind == "bag":
         return await bag_view.handle(subject_id, target_name=target_name, guild=guild)
     if kind == "achievements":

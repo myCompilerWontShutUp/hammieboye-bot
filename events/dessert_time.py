@@ -11,6 +11,7 @@ from core.base import SYSTEM_EMBED_COLOR
 from core.discord_names import resolve_real_name
 from db.daily_stats import get_dessert_feeders_for, kst_today_str
 from db.users import get_created_at_map
+from events import presence
 from events.scheduler import KST, broadcast_to_guilds, format_footer_time
 
 _client: discord.Client | None = None
@@ -156,6 +157,7 @@ def current_slot(now: datetime | None = None) -> str | None:
 async def broadcast_open() -> None:
     if _client is None:
         return
+    await presence.enter_snack_request()
     await broadcast_to_guilds(
         _client,
         ALLOWED_GUILD_IDS,
@@ -167,6 +169,7 @@ async def broadcast_open() -> None:
 async def broadcast_close(slot: str) -> None:
     if _client is None:
         return
+    await presence.wake_up()
     text = random.choice(_CLOSE_LINES)
     leaderboard = await _build_leaderboard_text(slot)
     if leaderboard is not None:

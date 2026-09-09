@@ -5,8 +5,10 @@ from typing import Awaitable, Callable
 
 import discord
 
+import achievements
 from core.base import EphemeralAutoDeleteView
 from core.korean import josa
+from db.achievements import award as award_achievement
 from db.users import get_user
 from events.scheduler import KST, format_footer_time
 
@@ -73,6 +75,92 @@ REPLAY_TIMEOUT_SECONDS = 10
 
 INVALID_AMOUNT_RESPONSE = f"1~{MAX_BET} 사이의 숫자로 적어줘!! _(갸웃)_"
 
+# 유저별 "진행 중인 판" 추적(2026-09-09 신규) — /내기·/도박(슬롯머신·승부예측 전부
+# 포함)은 서로 크로스로 막는다: 이미 한쪽에서 판이 진행 중이면(정산 후 "다시하기"
+# 버튼이 사라지기 전까지) 다른 쪽 슬래시 커맨드도 재진입을 막는다. 프로세스 메모리
+# 전용이라 재시작 시 유실되지만, 진행 중이던 판 자체도 재시작하면 같이 유실되는
+# 기존 한계(CLAUDE.md §18)와 동일선상이라 별도 영속화는 불필요하다.
+_ACTIVE_PLAYERS: dict[int, str] = {}  # user_id -> own_command("/내기" 또는 "/도박")
+
+
+def mark_active(user_id: int, own_command: str) -> None:
+    _ACTIVE_PLAYERS[user_id] = own_command
+
+
+def mark_inactive(user_id: int) -> None:
+    _ACTIVE_PLAYERS.pop(user_id, None)
+
+
+_ALREADY_PLAYING_LINES = (
+    "잠깐, 아직 {command}{josa} 안 끝났어!! 그것부터 마무리해줘!! _(단호)_",
+    "어라, {command} 진행 중이잖아!! 다 끝내고 다시 와줘!! _(갸웃)_",
+    "지금 {command} 하고 있는 거 안 잊었지?? 그거부터!! _(웃음)_",
+    "판이 아직 안 끝났어!! {command} 먼저 마무리해줘!! _(단호)_",
+    "동시에 두 판은 안 돼!! {command}{josa} 끝나야 새로 할 수 있어!! _(장난)_",
+    "{command} 판이 아직 진행 중이야!! 거기부터 끝내줘!! _(안내)_",
+    "이미 시작한 {command}{josa} 있잖아!! 그거 먼저!! _(단호)_",
+    "하나씩 하자!! {command} 마무리하고 다시 불러줘!! _(웃음)_",
+    "아직 {command} 결과가 안 나왔어!! 기다려줘!! _(안내)_",
+    "지금 진행 중인 {command}{josa} 있어서 못 열어줘!! _(미안)_",
+)
+
+
+async def reject_if_already_playing(interaction: discord.Interaction, user_id: int) -> bool:
+    """True면 계속 진행. 이미 이 유저의 /내기 또는 /도박 판이 진행 중이면(정산 후
+    "다시하기" 버튼이 사라지기 전까지) 안내하고 False — /내기·/도박 슬래시 커맨드
+    진입점(bet.py::handle_bet/slot.py::handle_gamble)이 이미 ephemeral로 defer된
+    상태에서 제일 먼저 호출한다.
+
+    **이것만으로는 TOCTOU 허점이 있다**(2026-09-09에 발견, claim_active_or_reject
+    참고) — 여기 체크와 실제 mark_active() 호출(게임 선택 → 배팅 모달 제출을 거친
+    한참 뒤) 사이에 시간차가 있어, 슬래시 커맨드 진입 직후 시점에는 항상 이 체크를
+    통과한다. 그래서 이 함수는 어디까지나 "빠른 UX 안내"(모달까지 다 채우게 하고
+    나서야 거절하는 걸 피하기 위함) 용도로만 남기고, 실제 크로스블록 방지는
+    claim_active_or_reject가 담당한다."""
+    active_command = _ACTIVE_PLAYERS.get(user_id)
+    if active_command is None:
+        return True
+    line = random.choice(_ALREADY_PLAYING_LINES).format(
+        command=active_command, josa=josa(active_command, "이", "가")
+    )
+    await interaction.edit_original_response(content=line, embed=None, view=None)
+    return False
+
+
+async def claim_active_or_reject(interaction: discord.Interaction, user_id: int, own_command: str) -> bool:
+    """True면 성공(원자적으로 _ACTIVE_PLAYERS에 기록됨) — bet.py/slot.py/
+    horse_race.py/double_or_nothing.py의 start_round류가 **신규 진입**(다시하기가
+    아닌 최초 배팅)일 때만 spend_coins 이전에 호출한다.
+
+    2026-09-09 신설 — reject_if_already_playing 하나만으로는 TOCTOU 허점이 있었다:
+    그 체크는 슬래시 커맨드 진입 시점(아직 베팅 전)에 한 번만 실행되고, 실제
+    mark_active()는 게임 선택 → 배팅 모달 제출까지 거친 뒤에야 불렸다. 그 사이 유저가
+    /내기·/도박 ephemeral 프롬프트를 둘 다(또는 /내기를 두 번) 미리 열어두면 둘 다
+    이 최초 체크를 통과하고, 이후 순서대로 베팅을 마치면 두 판이 동시에 진행되는데
+    `_ACTIVE_PLAYERS`는 유저당 값 하나만 들고 있어 나중 판만 추적된다 — 먼저 끝난
+    판의 mark_inactive가 아직 진행 중인 다른 판의 잠금까지 지워버려 세 번째 판까지
+    바로 열릴 수 있었다(일반 유저가 클릭 순서만 조정하면 재현 가능).
+
+    실제 상태 변경(mark_active) 시점에 다시 한번 원자적으로 확인해야 막을 수
+    있어서(파이썬 asyncio는 단일 스레드라 딕셔너리 조회+대입 자체엔 락이 필요
+    없다 — 문제는 "체크"와 "반영" 시점이 서로 다른 상호작용으로 갈라져 있다는
+    것) 이 함수가 신설됐다. 이미 다른 판이 활성 상태면(같은 own_command로 이미
+    활성 중이어도 — "다시하기"가 아닌 완전히 새로운 진입이라 무조건 거절, 신규
+    진입은 절대 valid replay가 아니다) ephemeral 거절 메시지를 보내고 False.
+    spend_coins **이전**에 호출해야 거절 시 환불 로직이 필요 없다. "다시하기"
+    (ReplayView.replay → on_replay)는 이미 그 판이 활성 상태인 게 보장돼 있어 이
+    함수를 거치지 않고 기존 mark_active()를 그대로 무조건 호출한다."""
+    active_command = _ACTIVE_PLAYERS.get(user_id)
+    if active_command is not None:
+        line = random.choice(_ALREADY_PLAYING_LINES).format(
+            command=active_command, josa=josa(active_command, "이", "가")
+        )
+        await interaction.response.send_message(line, ephemeral=True)
+        return False
+    _ACTIVE_PLAYERS[user_id] = own_command
+    return True
+
+
 async def reject_if_wrong_user_with_cta(
     interaction: discord.Interaction, user_id: int, own_command: str
 ) -> bool:
@@ -131,7 +219,14 @@ class ReplayView(discord.ui.View):
     game_kind를 클로저로 감싸 전달) — 2026-09-07부터 새 판은 이 메시지를 고쳐쓰지
     않고 **새 공개 메시지**로 열리고, old_message(=이 판의 메시지, self.message)는
     그 콜백이 버튼만 제거해 기록으로 남긴다(판마다 새 메시지로 이어지길 원한다는
-    요청 — 기존엔 이 메시지 자체를 edit해서 이전 판 기록이 사라졌었다)."""
+    요청 — 기존엔 이 메시지 자체를 edit해서 이전 판 기록이 사라졌었다).
+
+    **"다시하기" 버튼이 사라지는 순간이 "게임 완전 종료" 판정 기준이다**(2026-09-09,
+    reject_if_already_playing 참고) — 이 버튼이 시간 초과로 사라질 때
+    mark_inactive()를 호출해 이 유저가 다시 /내기·/도박을 새로 시작할 수 있게
+    한다. 버튼을 눌러 다시하기를 선택하면 on_replay가 곧바로 다음 판을 시작하며
+    (mark_active가 그 안에서 다시 호출됨) 이 시점엔 절대 mark_inactive를 호출하지
+    않는다 — 계속 "진행 중" 상태로 이어진다."""
 
     def __init__(
         self,
@@ -146,6 +241,7 @@ class ReplayView(discord.ui.View):
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
+        mark_inactive(self.user_id)
         if self.message is None:
             return
         try:
@@ -273,3 +369,24 @@ def format_bet_receipt(before: int, bet: int, current: int | None) -> str:
         f"- 배팅 금액: {bet:,}코인\n"
         f"- 현재 금액: {current_label}"
     )
+
+
+# "제작자는 이 업적이 가능한지 테스트하지 않았습니다" 전설 업적 기준(2026-09-09) —
+# 舊 슬롯머신 전용(배율 16배 초과)에서 /도박 전체 공용(배율 64배 이상)으로 확장됐다.
+# 슬롯머신·승부예측·더블오어낫띵이 이 상수+헬퍼를 공유해 기준을 한 곳에서만 관리한다.
+LEGENDARY_MULTIPLIER_THRESHOLD = 64
+
+
+async def maybe_award_legendary_multiplier(user_id: int, multiplier: int) -> dict | None:
+    """실현된 배율이 LEGENDARY_MULTIPLIER_THRESHOLD 이상이면 전설 업적 지급을
+    시도하고 db/achievements.py::award()의 원본 결과 dict({earned, applied_amount,
+    new_affection})를 그대로 반환한다 — 미달이면 None. earned가 False일 수도
+    있다(이미 보유 중이라 멱등하게 무시된 경우). 알림 문구 조립은 호출부가 직접
+    한다 — 슬롯머신은 다른 업적(gambling_hotline_1336)과 호감도 델타를 한 줄로
+    합쳐서 보여주는 기존 방식이 있어 원시 결과가 필요하고, 승부예측·더블오어낫띵은
+    단독으로 보여주면 되기 때문이다. 실제 지급이 확정된 시점에서만 호출해야
+    한다(폭탄으로 잃거나 무응답으로 몰수된 판은 "실제로 딴 게 없다"는 원칙상
+    대상이 아니다)."""
+    if multiplier < LEGENDARY_MULTIPLIER_THRESHOLD:
+        return None
+    return await award_achievement(user_id, achievements.dev_never_tested_this.ID)

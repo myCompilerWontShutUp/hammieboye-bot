@@ -17,7 +17,9 @@ import command.vending as vending
 from command.collection_info import handle as collection_info_handle
 from command.info import handle_self as info_handle_self
 from command.leave import handle as leave_handle
-from command.plastic import handle as plastic_handle
+# 2026-09-09 임시 제거 — /페트병 재설계 예정, 복구하려면 아래 import와 커맨드 등록
+# 블록의 주석을 해제한다.
+# from command.plastic import handle as plastic_handle
 from command.update_log import autocomplete_버전, handle as update_log_handle
 from core import onboarding
 from core.base import touch_channel
@@ -70,27 +72,31 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         await interaction.response.defer(ephemeral=True)
         await touch_channel(interaction)
-        await interaction.edit_original_response(embed=probability_info.build_embed())
+        embed, view = probability_info.build_view(interaction.user.id)
+        await interaction.edit_original_response(embed=embed, view=view)
+        view.message = await interaction.original_response()
 
     @tree.command(name="탈퇴", description="햄미가 모은 내 정보를 삭제한다")
     async def leave_command(interaction: discord.Interaction) -> None:
         await leave_handle(interaction)
 
-    @tree.command(name="페트병", description="페트병을 던진다")
-    async def plastic_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        # 완전 무시하면 디스코드가 "앱이 응답하지 않았어요"를 띄워 의도한 연출과 어긋나서
-        # 취침 중엔 명시적으로 응답한다. /페트병은 놀이형이라 전용 SLEEP_REPLY_PLASTIC을 쓴다.
-        if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_PLASTIC):
-            return
-        await interaction.response.defer()
-        if not await _prepare(interaction):
-            return
-        text = await plastic_handle(interaction.user.id)
-        await interaction.edit_original_response(content=text)
+    # 2026-09-09 /페트병 임시 제거 — 재설계 예정. 로직(command/plastic.py)은 그대로
+    # 두고 등록만 뺐다, 복구하려면 아래 블록의 주석을 해제한다.
+    # @tree.command(name="페트병", description="페트병을 던진다")
+    # async def plastic_command(interaction: discord.Interaction) -> None:
+    #     if interaction.user.bot:
+    #         return
+    #     # 완전 무시하면 디스코드가 "앱이 응답하지 않았어요"를 띄워 의도한 연출과 어긋나서
+    #     # 취침 중엔 명시적으로 응답한다. /페트병은 놀이형이라 전용 SLEEP_REPLY_PLASTIC을 쓴다.
+    #     if not await sleep_guard.guard(interaction, silent=False, message=sleep_guard.SLEEP_REPLY_PLASTIC):
+    #         return
+    #     await interaction.response.defer()
+    #     if not await _prepare(interaction):
+    #         return
+    #     text = await plastic_handle(interaction.user.id)
+    #     await interaction.edit_original_response(content=text)
 
-    @tree.command(name="내정보", description="내 호감도·가방·업적·기록을 확인한다")
+    @tree.command(name="내정보", description="내 정보·가방·업적·기록을 확인한다")
     async def info_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
             return

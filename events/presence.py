@@ -7,6 +7,13 @@ _client: discord.Client | None = None
 _SLEEP_STATUS_TEXT = "쿨쿨... 잠자는 중 🌙"
 _AWAKE_STATUS_TEXT = "페트병 흔드는 중 🐹"
 _DND_STATUS_TEXT = "누가 깨웠어... 방해금지 🚫"
+# 2026-09-09 신규 — 헬프 미 이벤트/디저트 타임이 활성 상태인 동안 상태 메시지를
+# 바꾼다(events/help_me_event.py::_post_one/_announce_timeout·handle_potential_response,
+# events/dessert_time.py::broadcast_open/broadcast_close가 각각 진입/해제 시점에
+# 호출). 두 이벤트는 스케줄링 단계에서 서로 겹치지 않게 보장되므로(§3-2 참고) 항상
+# 최대 하나만 활성 상태라, 별도 카운터 없이 단순 진입/복귀(wake_up())만으로 충분하다.
+_HELP_REQUEST_STATUS_TEXT = "도움 요청 중 🆘"
+_SNACK_REQUEST_STATUS_TEXT = "간식 요청 중 🍪"
 
 
 def init(client: discord.Client) -> None:
@@ -54,3 +61,29 @@ async def wake_up() -> None:
         )
     except discord.HTTPException:
         logging.exception("Failed to set awake presence")
+
+
+async def enter_help_request() -> None:
+    """헬프 미 이벤트가 방송된 순간부터(클레임 또는 10분 무응답 만료로 끝날 때까지)."""
+    if _client is None:
+        return
+    try:
+        await _client.change_presence(
+            status=discord.Status.online,
+            activity=discord.CustomActivity(name=_HELP_REQUEST_STATUS_TEXT),
+        )
+    except discord.HTTPException:
+        logging.exception("Failed to set help-request presence")
+
+
+async def enter_snack_request() -> None:
+    """디저트 타임 슬롯이 열려있는 동안(broadcast_open ~ broadcast_close)."""
+    if _client is None:
+        return
+    try:
+        await _client.change_presence(
+            status=discord.Status.online,
+            activity=discord.CustomActivity(name=_SNACK_REQUEST_STATUS_TEXT),
+        )
+    except discord.HTTPException:
+        logging.exception("Failed to set snack-request presence")

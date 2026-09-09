@@ -24,6 +24,12 @@ _DAILY_CLAIM_LIMIT = 3
 # 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus.
 _BASE_GRANT = 1
 
+# 10% 확률로 2배를 물어온다(2026-09-09 신규) — coin_grant_bonus까지 합산한 최종
+# 지급량 전체에 곱해진다. apply_day_multiplier(날짜 배율)와는 독립적으로 중첩된다
+# (의도된 동작 — 보너스와 특별한 날 배율이 겹치면 더 크게 받을 수 있음).
+_BONUS_CHANCE = 0.10
+_BONUS_MULTIPLIER = 2
+
 _GRANT_MESSAGES = (
     "쳇바퀴를 신나게 굴렸더니 동전이 떨어져써!! _(신남)_",
     "열심히 굴렸다!! 짤그락, 동전이야!! _(뿌듯)_",
@@ -45,6 +51,31 @@ _GRANT_MESSAGES = (
     "부지런한 햄미에게 동전이!! _(자랑)_",
     "오늘도 착실하게 동전을 벌었어!! _(뿌듯)_",
     "쳇바퀴 굴리기, 동전으로 정산 완료!! _(만족)_",
+)
+
+# 10% 보너스 전용 문구 풀(2026-09-09 신규) — 평소 지급 문구와 구분해서 "더 많이
+# 물어왔다"는 걸 확실히 알 수 있게 한다.
+_BONUS_GRANT_MESSAGES = (
+    "저쪽에 동전이 많아써!! 그래서 평소보다 더 많이 들고왓써!! _(신남)_",
+    "오늘은 대박이야!! 동전을 두 배로 물어왔어!! _(흥분)_",
+    "쳇바퀴 굴리다가 동전 무더기를 발견해써!! _(놀람)_",
+    "운 좋게 동전이 잔뜩 쌓여 있었어!! 다 들고왔지!! _(자랑)_",
+    "오늘따라 동전이 유독 많이 떨어져써!! _(신기)_",
+    "숨겨진 동전 창고를 찾았어!! 두 배로 챙겨왔다!! _(뿌듯)_",
+    "짤그락짤그락!! 오늘은 유난히 두둑해!! _(신남)_",
+    "쳇바퀴 밑이 동전으로 가득했어!! 다 쓸어왔어!! _(황홀)_",
+    "오늘 운이 좋았나 봐!! 동전이 두 배야!! _(들뜸)_",
+    "동전이 우르르 쏟아져 나왔어!! _(놀람)_",
+    "이건 대박이다!! 평소보다 훨씬 많이 벌었어!! _(환호)_",
+    "저쪽 구석에 동전이 잔뜩 있었어!! 냠냠 다 챙겼지!! _(만족)_",
+    "오늘 쳇바퀴가 유독 후하게 주네!! _(신남)_",
+    "동전 대박!! 두 배로 받아왔어!! _(흥분)_",
+    "우연히 동전 더미를 발견했어!! 놓칠 수 없었지!! _(자랑)_",
+    "오늘은 운수 좋은 날이야!! 동전이 두 배!! _(뿌듯)_",
+    "쳇바퀴 굴리다 동전 잭팟 터졌어!! _(황홀)_",
+    "이렇게 많이 물어온 건 처음이야!! _(놀람)_",
+    "동전이 두 배로 짤랑거려!! 기분 최고야!! _(신남)_",
+    "오늘의 노동이 두 배로 보답받았어!! _(뿌듯)_",
 )
 
 _COOLDOWN_MESSAGES = (
@@ -212,10 +243,12 @@ async def handle(user_id: int) -> str:
     await update_daily_stats(user_id, {"cooldown_abuse_counts": _reset_cooldown_abuse(stats)})
 
     user = await get_user(user_id)
-    amount = _BASE_GRANT + user["coin_grant_bonus"]
+    base_amount = _BASE_GRANT + user["coin_grant_bonus"]
+    is_bonus = random.random() < _BONUS_CHANCE
+    amount = base_amount * _BONUS_MULTIPLIER if is_bonus else base_amount
     result = await add_coins(user_id, amount, method=_METHOD, apply_day_multiplier=True)
 
-    text = random.choice(_GRANT_MESSAGES)
+    text = random.choice(_BONUS_GRANT_MESSAGES if is_bonus else _GRANT_MESSAGES)
     text += format_coin_notice(result["applied_amount"], result["new_coins"])
     if result["achievement_notice"]:
         text += f"\n{result['achievement_notice']}"

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-_ItemKind = Literal["snack", "tool"]
+_ItemKind = Literal["snack", "potion", "tool"]
 
 
 @dataclass(frozen=True)
@@ -10,10 +10,12 @@ class BlackMarketItem:
     name: str
     price: int  # 코인 단위, /자판기와 동일한 화폐.
     kind: _ItemKind
-    # 확률적 간식 전용 필드(kind == "snack") — 결과는 정확히 50%로, 구매 시점이
-    # 아니라 /사용으로 실제 먹였을 때(디저트 타임)만 굴린다(command/eat.py 참고).
+    # 확률적 간식 전용 필드(kind == "snack") — 구매 시점이 아니라 /사용으로 실제
+    # 먹였을 때(디저트 타임)만 굴린다(command/eat.py 참고).
     good_delta: int | None = None
     bad_delta: int | None = None
+    # 좋은 결과가 나올 확률(2026-09-09 신규) — 기본 50/50, 산딸기?만 25%로 예외.
+    good_chance: float = 0.5
     # True면 good_delta/bad_delta 대신 "현재 호감도의 2배" / "현재 호감도의 절반으로
     # 감소"를 적용한다(악마의 씨앗 전용 — 먹이는 시점의 호감도에 따라 결과가 달라지는
     # 유일한 품목). 2026-09-08 최초 설계는 "나쁘면 0으로 리셋"이었으나, 완전히
@@ -42,14 +44,14 @@ class BlackMarketItem:
 SNACK_ITEMS: tuple[BlackMarketItem, ...] = (
     BlackMarketItem(
         "moldy_cheese", "곰팡이 치즈", 14, "snack",
-        good_delta=4, bad_delta=-1,
+        good_delta=4, bad_delta=-4,
         good_reaction="오히려 쿰쿰해서 더 맛있다!!",
         bad_reaction="곰팡이 때문에 배가 아파졌다...",
         code="rpn2x7s8",
     ),
     BlackMarketItem(
         "raspberry", "산딸기?", 666, "snack",
-        good_delta=28, bad_delta=-7,
+        good_delta=28, bad_delta=-7, good_chance=0.25,
         good_reaction="맛있고 잘 익은 산딸기다!!",
         bad_reaction="산딸기인 줄 알았는데 뱀딸기였다...",
         code="911ab85m",
@@ -68,12 +70,12 @@ SNACK_ITEMS: tuple[BlackMarketItem, ...] = (
 TOOL_ITEMS: tuple[BlackMarketItem, ...] = (
     BlackMarketItem(
         "forbidden_book", "금서", 100, "tool",
-        description="`/사용 금서`로 키워드와 내용을 가르칠 수 있습니다(1인당 5개, 일주일 뒤 소멸).",
+        description="/사용 금서로 키워드와 내용을 가르칠 수 있습니다(1인당 5개, 일주일 뒤 소멸).",
         code="tn5bz7mg",
     ),
     BlackMarketItem(
         "hammie_schedule", "햄미 일정표", 100, "tool",
-        description="`/사용 햄미 일정표`로 오늘 하루 일과를 확인할 수 있습니다(본인에게만 보임).",
+        description="/사용 햄미 일정표로 오늘 하루 일과를 확인할 수 있습니다(본인에게만 보임).",
         code="2fqm19jl",
     ),
     BlackMarketItem(

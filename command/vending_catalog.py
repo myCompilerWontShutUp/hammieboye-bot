@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-_ItemKind = Literal["snack", "coin", "joke"]
+_ItemKind = Literal["snack", "beverage", "coin", "joke"]
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,11 @@ from command.economy_common import (
     BetAmountModal,
     ReplayView,
     RulesView,
+    claim_active_or_reject,
     format_bet_receipt,
+    mark_active,
+    mark_inactive,
+    reject_if_already_playing,
     reject_if_already_resolved,
     reject_if_wrong_user_with_cta,
 )
@@ -31,6 +35,14 @@ _OWN_COMMAND = "/내기"
 
 _ODD_EVEN = "odd_even"
 _RPS = "rps"
+_UP_DOWN = "up_down"
+
+# 게임 진행 중(홀짝/가위바위보/업다운 선택 대기) 라운드 전용 타임아웃(2026-09-09,
+# 기존 60초 → 10분으로 연장) — command/slot.py::_SLOT_ROUND_TIMEOUT_SECONDS와 동일한
+# 패턴. economy_common.TIMEOUT_SECONDS(60)는 게임 선택 프롬프트 등 다른 용도에
+# 계속 쓰이므로 그대로 둔다. **동시에 정책도 바뀐다** — 이 10분 안에 아무것도
+# 고르지 않으면 이제 환불이 아니라 전액 몰수로 처리한다(_forfeit_timeout 참고).
+_BET_ROUND_TIMEOUT_SECONDS = 600
 
 # "으흠! 나에게 내기를 걸다니..." — /내기 실행 직후, 게임 종류를 고르는 ephemeral
 # 프롬프트에 붙는 인트로 문구.
@@ -84,10 +96,10 @@ _RULES_INTRO_LINES = (
 # (2026-09-09 — "~이야!!"/"~있어!!" 같은 페르소나 말투가 섞여 있던 걸 발견해 정정,
 # command/black_market.py와 동일한 원칙).
 _RULES_OVERVIEW_TEXT = (
-    "동전을 걸고 하는 미니게임입니다. 지금은 두 가지가 있으며(앞으로 더 늘어날 수도 "
+    "동전을 걸고 하는 미니게임입니다. 지금은 세 가지가 있으며(앞으로 더 늘어날 수도 "
     "있습니다) 아래 버튼에서 원하는 게임을 골라주세요.\n\n"
-    f"배팅액은 1~{MAX_BET}동전까지 걸 수 있고, 게임 진행 중 60초 동안 아무것도 "
-    "고르지 않으면 배팅액을 그대로 환불합니다."
+    f"배팅액은 1~{MAX_BET}동전까지 걸 수 있고, 게임 진행 중 10분 동안 아무것도 "
+    "고르지 않으면 포기한 것으로 간주해 배팅액을 모두 잃습니다."
 )
 
 _ODD_EVEN_RULE_TEXT = (
@@ -99,28 +111,26 @@ _RPS_RULE_TEXT = (
     "배팅액을 그대로 돌려받고(번 것이 아니라 순수 반환), 지면 배팅액을 전부 "
     "잃습니다."
 )
+_UPDOWN_RULE_TEXT = (
+    "🔢 업다운\n\n햄미가 1~20 사이의 숫자를 하나 생각합니다. 셀렉트 메뉴로 숫자를 "
+    "골라 맞히면 되고, 기회는 3번입니다. 고른 숫자보다 정답이 크면 \"업\", 작으면 "
+    "\"다운\" 힌트가 나오고 다음 셀렉트에는 그 범위의 숫자만 남습니다. 3번째 안에 "
+    "맞히면 배팅액의 3배를 받고, 끝까지 못 맞히면 배팅액을 전부 잃습니다."
+)
 
-_BET_TIMEOUT_LINES = (
-    "너무 오래 기다려서 그냥 취소했어!! 배팅금은 돌려줄게!! _(안도)_",
-    "시간 초과됐어!! 건 동전은 그대로 돌려줄게!! _(휴)_",
-    "아무도 안 골라서 내기를 접었어!! 동전은 무사해!! _(정리)_",
-    "이번 내기는 여기까지!! 배팅금은 돌려줬어!! _(끄덕)_",
-    "시간이 다 됐어... 동전은 다시 넣어줄게!! _(아쉬움)_",
-    "너무 뜸 들여써!! 배팅은 취소, 동전은 환불!! _(단호)_",
-    "기다리다 지쳐써!! 그래도 동전은 돌려줄게!! _(피곤)_",
-    "결정을 못 내려서 내기를 마감했어!! 동전은 그대로야!! _(정리)_",
-    "시간 초과!! 손해는 없게 동전 돌려줬어!! _(안심)_",
-    "너무 늦어서 그냥 없던 일로 했어!! 동전은 환불!! _(정리)_",
-    "아무 반응이 없길래 취소했어!! 동전 걱정은 하지 마!! _(위로)_",
-    "제한 시간이 끝나써!! 배팅금은 안전하게 돌려줬어!! _(끄덕)_",
-    "이번엔 흐지부지됐네!! 그래도 동전은 그대로 남아있어!! _(안도)_",
-    "기다림도 한계가 있지!! 동전은 돌려줬어!! _(단호)_",
-    "시간 다 됐다구!! 배팅은 무효, 동전은 환불!! _(정리)_",
-    "결국 아무도 안 눌러써!! 동전만 조용히 돌려줄게!! _(체념)_",
-    "너무 늦게 왔나 봐!! 동전은 도로 챙겨줬어!! _(아쉬움)_",
-    "내기는 취소됐지만 동전은 안 사라져!! _(안심)_",
-    "시간 초과로 판이 접혔어!! 동전은 무사히 돌아왔어!! _(끄덕)_",
-    "너무 오래 걸려써!! 그래도 손해는 없게 해줬어!! _(정리)_",
+# 2026-09-09 — 舊 _BET_TIMEOUT_LINES(환불 전제)를 몰수 전제로 전면 교체했다.
+# 10분 동안 아무것도 안 고르면 포기한 걸로 간주해 배팅액을 그대로 가져간다(환불 없음).
+_BET_FORFEIT_LINES = (
+    "너무 오래 기다렸어!! 포기한 걸로 알고 배팅액은 가져갈게!! _(단호)_",
+    "시간 다 됐어!! 응답이 없어서 그냥 몰수했어!! _(냉정)_",
+    "아무도 안 골라서 배팅액은 그대로 가져갈게!! _(정리)_",
+    "선택이 없어서 이번 판은 포기로 처리했어!! 동전은 안 돌아가!! _(단호)_",
+    "10분이 지났어!! 배팅액은 이제 내 거야!! _(으쓱)_",
+    "결정을 안 내려서 배팅액을 몰수했어!! _(냉정)_",
+    "시간 초과!! 이번엔 환불 없이 그대로 가져갈게!! _(단호)_",
+    "아무 반응이 없어서 포기 처리했어!! 배팅액은 안 돌아와!! _(정리)_",
+    "너무 늦었어!! 배팅액은 이제 못 돌려줘!! _(미안)_",
+    "시간이 다 됐다구!! 배팅액은 그대로 가져갈게!! _(단호)_",
 )
 
 _ODD_EVEN_WIN_LINES = (
@@ -235,15 +245,59 @@ _RPS_DRAW_LINES = (
     "완전 똑같은 선택!! {actual} 무승부야!! _(놀람)_",
 )
 
+_UPDOWN_UP_LINES = (
+    "업이야!! 더 큰 숫자로 골라봐!! _(안내)_",
+    "업!! 정답은 그거보다 커!! _(힌트)_",
+    "더 위쪽이야!! 업!! _(안내)_",
+    "업이야, 숫자를 더 키워봐!! _(웃음)_",
+    "그것보단 커!! 업이야!! _(안내)_",
+    "위로 올라가야 돼!! 업!! _(힌트)_",
+    "업!! 더 큰 숫자를 노려봐!! _(응원)_",
+    "정답은 더 위에 있어!! 업이야!! _(안내)_",
+)
+_UPDOWN_DOWN_LINES = (
+    "다운이야!! 더 작은 숫자로 골라봐!! _(안내)_",
+    "다운!! 정답은 그거보다 작아!! _(힌트)_",
+    "더 아래쪽이야!! 다운!! _(안내)_",
+    "다운이야, 숫자를 더 줄여봐!! _(웃음)_",
+    "그것보단 작아!! 다운이야!! _(안내)_",
+    "아래로 내려가야 돼!! 다운!! _(힌트)_",
+    "다운!! 더 작은 숫자를 노려봐!! _(응원)_",
+    "정답은 더 아래에 있어!! 다운이야!! _(안내)_",
+)
+_UPDOWN_WIN_LINES = (
+    "정답!! {target} 맞았어!! _(환호)_",
+    "우와, {target}!! 정확히 맞혔어!! _(놀람)_",
+    "짜잔, 정답은 {target}이었어!! 맞혔다!! _(신남)_",
+    "{target}!! 완벽하게 맞혔네!! _(감탄)_",
+    "정답 {target}!! 대단해!! _(박수)_",
+    "빙고!! {target} 맞혔다!! _(환호)_",
+    "역시!! {target} 정확히 맞혔어!! _(뿌듯)_",
+    "{target}이었어!! 딱 걸렸다, 정답!! _(신남)_",
+)
+_UPDOWN_LOSE_LINES = (
+    "아쉽다, 정답은 {target}이었는데!! _(안타까움)_",
+    "이런, 정답은 {target}이었어!! 다음엔 맞혀봐!! _(아쉬움)_",
+    "땡!! 정답은 {target}이었어!! _(장난)_",
+    "3번 다 놓쳤어!! 정답은 {target}!! _(아쉬움)_",
+    "아깝다, 정답은 {target}이었어!! _(안타까움)_",
+    "결국 못 맞혔네!! 정답은 {target}!! _(위로)_",
+    "이번엔 놓쳤어!! 정답은 {target}이었어!! _(아쉬움)_",
+    "정답은 {target}!! 다음엔 꼭 맞혀봐!! _(응원)_",
+)
 
-async def _refund_timeout(message: discord.Message, user_id: int, bet: int) -> None:
-    """60초 동안 아무도 안 누르면 이미 선차감된 배팅액을 그대로 돌려준다 — 원금
-    반환일 뿐이라 count_as_earned=False(무승부 환불과 동일한 이유). 인터랙션 토큰이
-    아니라 메시지 객체를 직접 들고 있다가 edit한다 — 이 메시지가 최초 슬래시 응답으로
-    생겼는지(첫 판) 모달 제출로 edit된 건지(다시하기)와 무관하게 항상 동작한다."""
-    await add_coins(user_id, bet, method="bet_timeout_refund", count_as_earned=False)
+
+async def _forfeit_timeout(message: discord.Message, user_id: int, bet: int) -> None:
+    """10분 동안 아무도 안 누르면 포기한 것으로 간주해 배팅액을 전액 몰수한다
+    (2026-09-09 — 舊 60초/환불 정책에서 변경, 환불 add_coins 호출 없음). 인터랙션
+    토큰이 아니라 메시지 객체를 직접 들고 있다가 edit한다 — 이 메시지가 최초 슬래시
+    응답으로 생겼는지(첫 판) 모달 제출로 edit된 건지(다시하기)와 무관하게 항상
+    동작한다."""
+    # 여기선 ReplayView 자체가 안 뜨니(선택도 안 하고 시간 초과) 그 on_timeout의
+    # mark_inactive를 못 거친다 — 이 경로가 "게임 종료"의 유일한 지점이라 직접 호출.
+    mark_inactive(user_id)
     try:
-        await message.edit(content=random.choice(_BET_TIMEOUT_LINES), embed=None, view=None)
+        await message.edit(content=random.choice(_BET_FORFEIT_LINES), embed=None, view=None)
     except discord.HTTPException:
         logging.exception("Failed to edit bet prompt on timeout")
 
@@ -273,7 +327,7 @@ def _build_replay_view(user_id: int, game_kind: str) -> ReplayView:
     async def _on_replay(
         interaction: discord.Interaction, amount: int, old_message: "discord.Message | None"
     ) -> None:
-        await _start_round(interaction, user_id, game_kind, amount)
+        await _start_round(interaction, user_id, game_kind, amount, is_replay=True)
         if old_message is not None:
             try:
                 await old_message.edit(view=None)
@@ -284,15 +338,34 @@ def _build_replay_view(user_id: int, game_kind: str) -> ReplayView:
 
 
 async def _start_round(
-    interaction: discord.Interaction, user_id: int, game_kind: str, bet: int
+    interaction: discord.Interaction, user_id: int, game_kind: str, bet: int, *, is_replay: bool = False
 ) -> None:
     """모달에서 유효한 금액을 받은 뒤 실제 판을 새 공개 메시지로 연다 — 첫 판이든
     "다시하기"든 항상 새 메시지다(2026-09-07, 이전엔 다시하기가 같은 메시지를
     고쳐써서 이전 판 기록이 사라졌다). 금액 검증(1~MAX_BET)은 모달이 이미 끝냈으니
-    여기서는 잔액만 확인한다."""
+    여기서는 잔액만 확인한다.
+
+    is_replay=False(신규 진입, 게임 선택 버튼)일 때만 claim_active_or_reject로
+    spend_coins보다 먼저 원자적 크로스블록 체크를 한다(2026-09-09) — 이미 다른
+    판이 활성 상태면 배팅 자체를 하지 않고 바로 거절해서 환불 로직이 필요 없다.
+    is_replay=True(ReplayView 다시하기)는 이미 그 판이 활성 상태인 게 보장돼 있어
+    이 체크를 건너뛰고 항상 그대로 갱신한다(economy_common.claim_active_or_reject
+    docstring 참고)."""
+    if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
+        return
+
     if not await spend_coins(user_id, bet):
+        if not is_replay:
+            mark_inactive(user_id)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
+
+    # 배팅이 실제로 성립한 시점부터 "진행 중"으로 표시한다(2026-09-09) — 정산 후
+    # "다시하기" 버튼이 사라지기 전까지 /내기·/도박 재진입을 막는다
+    # (reject_if_already_playing, economy_common.py 참고). "다시하기"로 이어지는
+    # 판도 이 함수를 다시 거치므로 계속 갱신되며 끊기지 않는다.
+    if is_replay:
+        mark_active(user_id, _OWN_COMMAND)
 
     # vending.py::_execute_purchase와 동일한 역산 — spend_coins가 차감 전 잔액을
     # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
@@ -302,14 +375,25 @@ async def _start_round(
     # 공개 메시지라 누구의 판인지 한눈에 보이게 도전자 이름을 맨 위에 적는다(2026-09-07
     # 신규) — 서버 안이면 그 서버 별명, 아니면 실제 이름(discord.py의 display_name이
     # 알아서 골라줌). interaction.user는 항상 이 판을 시작한 본인(모달을 연 사람)이다.
-    challenger_line = f"🎯 도전자: {interaction.user.display_name}"
+    # 2026-09-09 — 마크다운 헤딩(`## `)을 붙여 크게 표시(슬롯머신 그리드에 이미 쓰인
+    # 트릭과 동일 — Discord는 일반 메시지 content=에서도 헤딩을 렌더링한다).
+    challenger_line = f"## 🎯 도전자: {interaction.user.display_name}"
 
     if game_kind == _ODD_EVEN:
         view: discord.ui.View = _OddEvenView(user_id, bet, before_coins, interaction.user.display_name)
         content = f"{challenger_line}\n홀?? 짝?? 골라봐!! (배팅: {bet}동전) _(두근)_\n\n{receipt}"
-    else:
+    elif game_kind == _RPS:
         view = _RPSView(user_id, bet, before_coins, interaction.user.display_name)
         content = f"{challenger_line}\n가위?? 바위?? 보?? 골라봐!! (배팅: {bet}동전) _(긴장)_\n\n{receipt}"
+    else:
+        target = random.randint(1, 20)
+        view = _UpDownView(
+            user_id, bet, before_coins, interaction.user.display_name, target, 1, 20, 0
+        )
+        content = (
+            f"{challenger_line}\n1~20 사이 숫자를 하나 골라봐!! (배팅: {bet}동전, "
+            f"기회 3번) _(두근)_\n\n{receipt}"
+        )
 
     await interaction.response.send_message(content=content, view=view)
     view.message = await interaction.original_response()
@@ -317,7 +401,7 @@ async def _start_round(
 
 class _OddEvenView(discord.ui.View):
     def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
-        super().__init__(timeout=TIMEOUT_SECONDS)
+        super().__init__(timeout=_BET_ROUND_TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
@@ -327,7 +411,7 @@ class _OddEvenView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        await _refund_timeout(self.message, self.user_id, self.bet)
+        await _forfeit_timeout(self.message, self.user_id, self.bet)
 
     async def _resolve(self, interaction: discord.Interaction, guess: str) -> None:
         if not await reject_if_already_resolved(self, interaction):
@@ -348,11 +432,18 @@ class _OddEvenView(discord.ui.View):
             user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
-        text = f"🎯 도전자: {self.challenger_name}\n{text}"
+        text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
 
         replay_view = _build_replay_view(self.user_id, _ODD_EVEN)
-        await interaction.response.edit_message(content=text, view=replay_view)
-        replay_view.message = await interaction.original_response()
+        try:
+            await interaction.response.edit_message(content=text, view=replay_view)
+            replay_view.message = await interaction.original_response()
+        except discord.HTTPException:
+            # ReplayView가 메시지에 못 붙으면 그 on_timeout이 영영 안 불려
+            # mark_inactive도 영영 안 불린다 — 여기서 직접 풀어준다(horse_race.py
+            # 감사 중 발견된 동일 계열 버그, 2026-09-09 수정).
+            logging.exception("Failed to edit odd-even settlement message")
+            mark_inactive(self.user_id)
 
     @discord.ui.button(label="홀", style=discord.ButtonStyle.primary)
     async def odd(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -368,7 +459,7 @@ class _RPSView(discord.ui.View):
     _BEATS = {"가위": "보", "바위": "가위", "보": "바위"}
 
     def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
-        super().__init__(timeout=TIMEOUT_SECONDS)
+        super().__init__(timeout=_BET_ROUND_TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
@@ -378,7 +469,7 @@ class _RPSView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        await _refund_timeout(self.message, self.user_id, self.bet)
+        await _forfeit_timeout(self.message, self.user_id, self.bet)
 
     async def _resolve(self, interaction: discord.Interaction, choice: str) -> None:
         if not await reject_if_already_resolved(self, interaction):
@@ -404,11 +495,15 @@ class _RPSView(discord.ui.View):
             user = await get_user(self.user_id)
             text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
             text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
-        text = f"🎯 도전자: {self.challenger_name}\n{text}"
+        text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
 
         replay_view = _build_replay_view(self.user_id, _RPS)
-        await interaction.response.edit_message(content=text, view=replay_view)
-        replay_view.message = await interaction.original_response()
+        try:
+            await interaction.response.edit_message(content=text, view=replay_view)
+            replay_view.message = await interaction.original_response()
+        except discord.HTTPException:
+            logging.exception("Failed to edit rock-paper-scissors settlement message")
+            mark_inactive(self.user_id)
 
     @discord.ui.button(label="가위", style=discord.ButtonStyle.primary)
     async def scissors(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -421,6 +516,131 @@ class _RPSView(discord.ui.View):
     @discord.ui.button(label="보", style=discord.ButtonStyle.primary)
     async def paper(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._resolve(interaction, "보")
+
+
+class _UpDownSelect(discord.ui.Select):
+    """현재 시도의 유효 범위(low~high)만 옵션으로 보여주는 셀렉트 — 시도마다
+    `_UpDownView`가 통째로 새로 만들어지므로 이 컴포넌트도 매번 새로 생성된다
+    (vending.py::_ItemSelect와 동일한 결 — 옵션이 바뀌면 기존 컴포넌트를 고쳐쓰지
+    않고 새로 만든다)."""
+
+    def __init__(self, low: int, high: int) -> None:
+        options = [discord.SelectOption(label=str(n), value=str(n)) for n in range(low, high + 1)]
+        super().__init__(placeholder="숫자를 골라줘!!", options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: _UpDownView = self.view
+        await view._handle_guess(interaction, int(self.values[0]))
+
+
+class _UpDownView(discord.ui.View):
+    """업다운(2026-09-09 신규) — 햄미가 1~20 중 하나(target)를 몰래 정하고, 유저는
+    셀렉트로 최대 3번 시도한다. 시도마다 범위가 좁혀진 새 View+새 Select로 통째로
+    갈아끼운다(한 라운드=한 메시지, 슬롯머신이 스핀마다 같은 메시지를 고쳐쓰는 것과
+    동일한 결 — "다시하기"만 새 메시지)."""
+
+    def __init__(
+        self,
+        user_id: int,
+        bet: int,
+        before_coins: int,
+        challenger_name: str,
+        target: int,
+        low: int,
+        high: int,
+        attempts_used: int,
+    ) -> None:
+        super().__init__(timeout=_BET_ROUND_TIMEOUT_SECONDS)
+        self.user_id = user_id
+        self.bet = bet
+        self.before_coins = before_coins
+        self.challenger_name = challenger_name
+        self.target = target
+        self.low = low
+        self.high = high
+        self.attempts_used = attempts_used
+        self.message: discord.Message | None = None
+        self.add_item(_UpDownSelect(low, high))
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        await _forfeit_timeout(self.message, self.user_id, self.bet)
+
+    async def _handle_guess(self, interaction: discord.Interaction, guess: int) -> None:
+        if not await reject_if_already_resolved(self, interaction):
+            return
+        if not await reject_if_wrong_user_with_cta(interaction, self.user_id, _OWN_COMMAND):
+            return
+        self.stop()
+
+        attempts_used = self.attempts_used + 1
+
+        if guess == self.target:
+            result = await add_coins(self.user_id, self.bet * 3, method="bet_updown_win")
+            text = random.choice(_UPDOWN_WIN_LINES).format(target=self.target)
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
+            if result["achievement_notice"]:
+                text += f"\n{result['achievement_notice']}"
+            text += await _maybe_award_win_achievement(self.user_id)
+            text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
+            replay_view = _build_replay_view(self.user_id, _UP_DOWN)
+            try:
+                await interaction.response.edit_message(content=text, view=replay_view)
+                replay_view.message = await interaction.original_response()
+            except discord.HTTPException:
+                logging.exception("Failed to edit up-down win settlement message")
+                mark_inactive(self.user_id)
+            return
+
+        if attempts_used >= 3:
+            # 정상적으로 3번 다 틀려서 끝난 패배 — 무응답 몰수(_forfeit_timeout)와는
+            # 다르다. 실제로 선택을 했으니 "다시하기"가 정상적으로 뜬다.
+            user = await get_user(self.user_id)
+            text = random.choice(_UPDOWN_LOSE_LINES).format(target=self.target)
+            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
+            text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
+            replay_view = _build_replay_view(self.user_id, _UP_DOWN)
+            try:
+                await interaction.response.edit_message(content=text, view=replay_view)
+                replay_view.message = await interaction.original_response()
+            except discord.HTTPException:
+                logging.exception("Failed to edit up-down lose settlement message")
+                mark_inactive(self.user_id)
+            return
+
+        if guess < self.target:
+            hint = random.choice(_UPDOWN_UP_LINES)
+            new_low, new_high = guess + 1, self.high
+        else:
+            hint = random.choice(_UPDOWN_DOWN_LINES)
+            new_low, new_high = self.low, guess - 1
+
+        remaining = 3 - attempts_used
+        receipt = format_bet_receipt(self.before_coins, self.bet, None)
+        content = (
+            f"## 🎯 도전자: {self.challenger_name}\n{hint} (남은 기회: {remaining}번)"
+            f"\n\n{receipt}"
+        )
+        new_view = _UpDownView(
+            self.user_id,
+            self.bet,
+            self.before_coins,
+            self.challenger_name,
+            self.target,
+            new_low,
+            new_high,
+            attempts_used,
+        )
+        try:
+            await interaction.response.edit_message(content=content, view=new_view)
+            new_view.message = await interaction.original_response()
+        except discord.HTTPException:
+            # 여기서 실패하면 self.stop()은 이미 호출된 뒤라 이 뷰는 더 이상
+            # 아무것도 안 하고, 새 view도 못 붙어 게임이 통째로 멈춘다 — 잠금을
+            # 풀어줘야 유저가 새 판을 다시 시작할 수 있다.
+            logging.exception("Failed to edit up-down continue message")
+            mark_inactive(self.user_id)
 
 
 class _GameSelectView(EphemeralAutoDeleteView):
@@ -455,10 +675,19 @@ class _GameSelectView(EphemeralAutoDeleteView):
     async def rps(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._select(interaction, _RPS)
 
+    @discord.ui.button(label="업다운", style=discord.ButtonStyle.primary)
+    async def up_down(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._select(interaction, _UP_DOWN)
+
 
 async def handle_bet(interaction: discord.Interaction) -> None:
     """/내기 진입점 — 이미 ephemeral로 defer된 상태라고 가정하고 edit_original_response로
-    게임 선택 프롬프트(인트로 문구 + 임베드 + 홀짝/가위바위보 버튼)를 보여준다."""
+    게임 선택 프롬프트(인트로 문구 + 임베드 + 홀짝/가위바위보 버튼)를 보여준다.
+
+    2026-09-09부터 이미 진행 중인 /내기·/도박 판이 있으면(크로스 포함) 여기서
+    막힌다 — reject_if_already_playing이 이미 defer된 응답을 대신 채운다."""
+    if not await reject_if_already_playing(interaction, interaction.user.id):
+        return
     user = await get_user(interaction.user.id)
     balance = user["coins"] if user is not None else 0
 
@@ -484,7 +713,7 @@ async def handle_rules() -> tuple[str, discord.Embed, discord.ui.View]:
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     view = RulesView(
         "🎲 내기 규칙",
-        {"홀짝": _ODD_EVEN_RULE_TEXT, "가위바위보": _RPS_RULE_TEXT},
+        {"홀짝": _ODD_EVEN_RULE_TEXT, "가위바위보": _RPS_RULE_TEXT, "업다운": _UPDOWN_RULE_TEXT},
         color=GAMBLING_EMBED_COLOR,
     )
     return random.choice(_RULES_INTRO_LINES), embed, view
