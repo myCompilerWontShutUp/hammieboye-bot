@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.1",
-        commit_hash="PENDING",
+        commit_hash="91a4432",
         date="2026-09-10",
         changes=(
             "0~7레벨로 성장하는 레벨 시스템이 새로 생겼습니다. 레벨이 오를수록 하루 "
