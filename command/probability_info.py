@@ -32,6 +32,8 @@ def _slot_field_value() -> str:
 
 
 def _black_market_field_value() -> str:
+    # 슬롯머신 필드(_slot_field_value)와 동일하게 항목마다 줄바꿈 한 번만 — 2026-09-09
+    # 이전엔 "\n\n"으로 이어붙여 슬롯머신 목록보다 줄 간격이 유독 넓어 보였다.
     lines = []
     for item in _BLACK_MARKET_SNACKS:
         if item.double_or_halve:
@@ -39,7 +41,7 @@ def _black_market_field_value() -> str:
         else:
             good, bad = f"호감도 +{item.good_delta}", f"호감도 {item.bad_delta}"
         lines.append(f"**{item.name}** — 좋은 결과 50%({good}) / 나쁜 결과 50%({bad})")
-    return "\n\n".join(lines)
+    return "\n".join(lines)
 
 
 def build_embed() -> discord.Embed:

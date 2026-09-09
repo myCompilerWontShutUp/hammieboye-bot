@@ -88,7 +88,7 @@ async def build_affection_embed(client: discord.Client) -> tuple[str, discord.Em
 
     embed = discord.Embed(title="햄미의 호감도 랭킹", color=LIST_EMBED_COLOR)
     if not top:
-        embed.description = "아직 등록된 사용자가 없어."
+        embed.description = "아직 등록된 사용자가 없습니다."
     else:
         # 멘션(<@id>) 대신 실제 이름을 쓴다 — 조회도 서로 독립적이라 병렬 처리한다.
         names = await asyncio.gather(*(resolve_real_name(client, c["user_id"]) for c in top))
@@ -106,7 +106,7 @@ async def build_coin_embed(client: discord.Client) -> tuple[str, discord.Embed]:
 
     embed = discord.Embed(title="햄미의 동전 랭킹", color=LIST_EMBED_COLOR)
     if not top:
-        embed.description = "아직 등록된 사용자가 없어."
+        embed.description = "아직 등록된 사용자가 없습니다."
     else:
         names = await asyncio.gather(*(resolve_real_name(client, c["user_id"]) for c in top))
         lines = [

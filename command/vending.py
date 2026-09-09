@@ -46,6 +46,55 @@ _INTRO_LINES = (
     "자판기 버튼 눌러볼까?? _(설렘)_",
 )
 
+# 구매 완료 응답 전용 문구(2026-09-09 신규) — 이전엔 위 _INTRO_LINES("자판기에 머가
+# 있을까??" 류, 자판기를 열 때 쓰는 문구)를 구매 완료 반응에도 그대로 재사용해서
+# "이 자판기 뭐가 들었을까??" 같은 문구가 방금 산 물건에 대한 반응인 것처럼 어색하게
+# 붙는 문제가 있었다. 간식/투자 품목 각각 전용 반응 풀로 분리했다.
+_SNACK_PURCHASE_LINES = (
+    "냠냠, 이거 완전 좋아!! _(신남)_",
+    "오예!! 간식 득템!! _(흥분)_",
+    "이야, 맛있는 냄새가 나!! _(킁킁)_",
+    "간식 상자 열어보고 시퍼!! _(설렘)_",
+    "이거 냠냠 하기 딱 좋겠다!! _(기대)_",
+    "오늘 간식 미리 골라놨어!! _(뿌듯)_",
+    "짜잔, 간식 손에 넣었다!! _(자랑)_",
+    "이거 디저트 타임에 냠냠 할 거야!! _(신남)_",
+    "간식 냄새만 맡아도 행복해!! _(황홀)_",
+    "오호, 좋은 걸 골랐네!! _(만족)_",
+    "이제 배고플 일 없겠다!! _(안심)_",
+    "간식 챙겼으니 든든해!! _(뿌듯)_",
+    "이거 먹을 생각하니 벌써 신나!! _(들뜸)_",
+    "냠냠 타임이 기다려져!! _(설렘)_",
+    "간식 하나 더 모았다!! _(으쓱)_",
+    "이거 진짜 잘 산 것 같아!! _(만족)_",
+    "오늘도 간식 부자!! _(자랑)_",
+    "이 간식, 기대되는데?? _(궁금)_",
+    "간식 보따리가 두둑해졌어!! _(흐뭇)_",
+    "이거 나중에 꼭 먹을 거야!! _(다짐)_",
+)
+_INVESTMENT_PURCHASE_LINES = (
+    "오, 이제 동전을 더 많이 벌 수 있겠다!! _(신남)_",
+    "짜잔, 투자 성공!! _(뿌듯)_",
+    "이제 쳇바퀴 돌릴 맛이 나!! _(기대)_",
+    "동전 벌이가 쏠쏠해지겠어!! _(흐뭇)_",
+    "이거 진짜 알짜 투자였어!! _(만족)_",
+    "다음 동전 받을 때가 기다려져!! _(설렘)_",
+    "오늘 현명한 소비를 했다구!! _(으쓱)_",
+    "이제 동전이 더 잘 모이겠지?? _(궁금)_",
+    "투자 잘했다는 느낌이 들어!! _(자신감)_",
+    "동전 벌이 업그레이드 완료!! _(신남)_",
+    "이거 사길 잘했어!! _(뿌듯)_",
+    "미래의 나한테 고마워할 거야!! _(뿌듯)_",
+    "이제 부자 될 일만 남았어!! _(들뜸)_",
+    "동전 벌이가 든든해졌다!! _(안심)_",
+    "오늘의 투자, 성공적이야!! _(만족)_",
+    "이거로 동전이 술술 모이겠다!! _(기대)_",
+    "잘 굴렸다, 내 동전!! _(자랑)_",
+    "이제 쳇바퀴가 더 즐거워질 것 같아!! _(신남)_",
+    "동전 창고가 커진 기분이야!! _(뿌듯)_",
+    "이 투자, 두고두고 도움 될 거야!! _(확신)_",
+)
+
 # 동전 카테고리 품목은 살 때마다 가격이 정확히 2배씩 오른다(효과량은 그대로,
 # 2026-09-08 너프) — 이미 산 횟수만큼 이 배수를 곱해서 "다음 구매 가격"을 낸다.
 _COIN_PRICE_MULTIPLIER = 2
@@ -173,7 +222,8 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
-    text = random.choice(_INTRO_LINES)
+    purchase_lines = _SNACK_PURCHASE_LINES if item.kind == "snack" else _INVESTMENT_PURCHASE_LINES
+    text = random.choice(purchase_lines)
     for notice in achievement_notices:
         text += f"\n{notice}"
     if total_delta != 0:
@@ -249,6 +299,13 @@ class _BuyButton(discord.ui.Button):
         price = _price_from_counts(item, counts)
         user = await get_user(view.user_id)
         before = user["coins"] if user is not None else 0
+
+        # 잔액이 모자라면 모달 자체를 열지 않는다(2026-09-09 — 이전엔 모달을 일단
+        # 띄워 "구매 후 잔액"이 음수로 보이다가 실제 결제 시점(_execute_purchase의
+        # spend_coins)에야 실패했다).
+        if before < price:
+            await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
+            return
 
         async def _on_confirm(modal_interaction: discord.Interaction) -> None:
             result = await _execute_purchase(view.user_id, item)

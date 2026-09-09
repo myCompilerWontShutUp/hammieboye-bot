@@ -46,6 +46,54 @@ _INTRO_LINES = (
     "쉿... 조용히 구경해봐!! _(속삭임)_",
 )
 
+# 구매 완료 응답 전용 문구(2026-09-09 신규) — 이전엔 위 _INTRO_LINES(암시장에 들어올
+# 때 쓰는 "쉿..." 류 문구)를 구매 완료 반응에도 그대로 재사용해서 방금 산 물건과
+# 무관한 문구가 붙는 문제가 있었다. 확률형 간식/도구 각각 전용 반응 풀로 분리했다.
+_SNACK_PURCHASE_LINES = (
+    "쉿, 이거 궁금한 효과가 있대!! _(소곤)_",
+    "몰래 산 보람이 있네!! _(뿌듯)_",
+    "이거 먹으면 어떻게 될지 두근두근해!! _(긴장)_",
+    "위험하지만 끌리는 물건이야!! _(호기심)_",
+    "이런 걸 파는 데가 여기밖에 없을 거야!! _(자랑)_",
+    "몰래 챙겨왔어!! _(살금)_",
+    "이거 먹을 때 완전 떨릴 것 같아!! _(긴장)_",
+    "수상하지만 놓칠 수 없었어!! _(단호)_",
+    "이 정체불명의 물건, 기대돼!! _(설렘)_",
+    "쉿, 아무한테도 말 안 할게!! _(비밀)_",
+    "결과가 어떻게 나올지 아무도 몰라!! _(스릴)_",
+    "이거 먹는 순간이 진짜 도박이야!! _(긴장)_",
+    "밤에만 구할 수 있는 귀한 거야!! _(뿌듯)_",
+    "이거 손에 넣다니 믿기지 않아!! _(흥분)_",
+    "몰래 하나 더 챙겼어!! _(장난)_",
+    "결과는 나중에 확인해볼게!! _(설렘)_",
+    "이 수상한 물건, 완전 내 취향이야!! _(만족)_",
+    "어둠 속 거래, 성공적이었어!! _(뿌듯)_",
+    "이거 먹으면 무슨 일이 생길까?? _(궁금)_",
+    "은밀하게 손에 넣은 전리품이야!! _(자랑)_",
+)
+_TOOL_PURCHASE_LINES = (
+    "이거 쓸 데가 많을 것 같아!! _(기대)_",
+    "쉿, 유용한 걸 챙겼어!! _(소곤)_",
+    "이거 나중에 써먹어야지!! _(다짐)_",
+    "몰래 좋은 물건을 건졌네!! _(뿌듯)_",
+    "이 도구, 진짜 필요했던 거야!! _(만족)_",
+    "언제 써볼까, 벌써 기대돼!! _(설렘)_",
+    "이거 은근 쓸모 있어 보여!! _(호기심)_",
+    "밤에만 구할 수 있는 특별한 물건이야!! _(자랑)_",
+    "이걸로 뭘 할 수 있을지 궁금해!! _(궁금)_",
+    "잘 챙겨뒀다가 나중에 쓸게!! _(단호)_",
+    "이 도구, 딱 필요했던 참이야!! _(안도)_",
+    "몰래 산 보람이 있는 물건이네!! _(뿌듯)_",
+    "이거 하나로 하루가 달라질 것 같아!! _(기대)_",
+    "쓰임새가 기대되는 아이템이야!! _(설렘)_",
+    "이 도구, 소중히 다뤄야겠다!! _(다짐)_",
+    "이런 물건은 흔치 않아!! _(자랑)_",
+    "이거 바로 써보고 싶어!! _(들뜸)_",
+    "어둠 속에서 건진 유용한 물건이야!! _(만족)_",
+    "이 도구 덕분에 편해지겠다!! _(안심)_",
+    "손에 넣자마자 쓰고 싶어져!! _(신남)_",
+)
+
 _CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "tool": "도구"}
 _CATEGORY_ORDER: tuple[str, ...] = ("snack", "tool")
 _DEFAULT_CATEGORY = "snack"
@@ -136,7 +184,8 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
         f"- {item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    return random.choice(_INTRO_LINES), embed
+    purchase_lines = _SNACK_PURCHASE_LINES if item.kind == "snack" else _TOOL_PURCHASE_LINES
+    return random.choice(purchase_lines), embed
 
 
 class _ItemSelect(discord.ui.Select):
@@ -195,6 +244,13 @@ class _BuyButton(discord.ui.Button):
 
         user = await get_user(view.user_id)
         before = user["coins"] if user is not None else 0
+
+        # 잔액이 모자라면 모달 자체를 열지 않는다(2026-09-09 — 이전엔 모달을 일단
+        # 띄워 "구매 후 잔액"이 음수로 보이다가 실제 결제 시점(_execute_purchase의
+        # spend_coins)에야 실패했다).
+        if before < item.price:
+            await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
+            return
 
         async def _on_confirm(modal_interaction: discord.Interaction) -> None:
             result = await _execute_purchase(view.user_id, item)

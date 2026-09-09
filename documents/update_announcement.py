@@ -33,6 +33,20 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.3.4",
+        commit_hash="PENDING",
+        date="2026-09-09",
+        changes=(
+            "`/자판기`·`/암시장`에서 간식을 구매했을 때와 투자 상품을 구매했을 때 "
+            "햄미의 반응이 서로 다른 전용 문구로 나뉘었습니다.",
+            "슬롯머신 그림 순서와 `/봇정보-확률공개`의 암시장 확률형 간식 목록 간격이 "
+            "더 보기 좋게 정리되었습니다.",
+            "일부 안내 문구가 더 정중하게 다듬어졌습니다.",
+            "잔액이 부족한데도 `/자판기`·`/암시장`의 구매 확인 창이 뜨던 문제가 "
+            "수정되었습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.3.3",
         commit_hash="560401f",
         date="2026-09-09",

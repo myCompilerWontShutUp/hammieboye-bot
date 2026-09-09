@@ -87,11 +87,14 @@ _RULES_OVERVIEW_TEXT = (
     "주의하시기 바랍니다."
 )
 
-_GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _HAMSTER, _DIAMOND, _STAR, _SEVEN = (
-    "🍇", "🥜", "🍓", "🌰", "🐹", "💎", "⭐", "7️⃣",
+_CHESTNUT, _STRAWBERRY, _PEANUT, _GRAPE, _STAR, _DIAMOND, _SEVEN, _HAMSTER = (
+    "🌰", "🍓", "🥜", "🍇", "⭐", "💎", "7️⃣", "🐹",
 )
+# 표시 순서(2026-09-09 확정): 밤 → 딸기 → 땅콩 → 포도 → 별 → 다이아 → 세븐 → 햄스터.
+# `/봇정보-확률공개`의 확률 목록도 이 SYMBOLS 순서를 그대로 따라간다(probability_summary()가
+# 이 튜플을 순회해서 만들기 때문에 별도로 맞출 필요가 없다).
 SYMBOLS: tuple[str, ...] = (
-    _GRAPE, _PEANUT, _STRAWBERRY, _CHESTNUT, _HAMSTER, _DIAMOND, _STAR, _SEVEN,
+    _CHESTNUT, _STRAWBERRY, _PEANUT, _GRAPE, _STAR, _DIAMOND, _SEVEN, _HAMSTER,
 )
 
 # 햄스터(🐹)는 배율표에 없다 — 한 줄이라도 걸리면 배율 무관하게 전액 페널티로 분기.
@@ -99,12 +102,12 @@ SYMBOLS: tuple[str, ...] = (
 # 2026-09-07 9종으로 복원했었으나(밤/치즈 다시 추가), 2026-09-09 치즈만 다시
 # 제거해 최종 8종으로 확정 — 칸당 적중 확률은 1/8. 밤은 포도/땅콩/딸기와 동일한 x2 등급.
 _MULTIPLIERS: dict[str, int] = {
-    _GRAPE: 2, _PEANUT: 2, _STRAWBERRY: 2, _CHESTNUT: 2,
+    _CHESTNUT: 2, _STRAWBERRY: 2, _PEANUT: 2, _GRAPE: 2,
     _STAR: 3, _DIAMOND: 10, _SEVEN: 77,
 }
 _SYMBOL_NAMES: dict[str, str] = {
-    _GRAPE: "포도", _PEANUT: "땅콩", _STRAWBERRY: "딸기", _CHESTNUT: "밤",
-    _DIAMOND: "다이아", _STAR: "별", _SEVEN: "세븐", _HAMSTER: "햄스터",
+    _CHESTNUT: "밤", _STRAWBERRY: "딸기", _PEANUT: "땅콩", _GRAPE: "포도",
+    _STAR: "별", _DIAMOND: "다이아", _SEVEN: "세븐", _HAMSTER: "햄스터",
 }
 
 # 세븐 8라인 동시 완성(77^8) 등 배율이 지나치게 커지는 것을 막는 하드 상한
@@ -129,7 +132,7 @@ _SLOT_MACHINE_RULE_TEXT = (
     "한 줄에 같은 그림이 3개 모이면 그 그림의 배율이 곱해지고, 여러 줄이 동시에 완성되면 "
     "배율끼리 전부 곱해집니다(배팅액 x 최종 배율을 돌려받습니다).\n\n"
     "그림별 배율은 다음과 같습니다:\n"
-    "🍇 포도 x2 · 🥜 땅콩 x2 · 🍓 딸기 x2 · 🌰 밤 x2\n"
+    "🌰 밤 x2 · 🍓 딸기 x2 · 🥜 땅콩 x2 · 🍇 포도 x2\n"
     "⭐ 별 x3 · 💎 다이아 x10 · 7️⃣ 세븐 x77\n\n"
     f"여러 줄이 동시에 완성돼도 최종 배율은 최대 x{MAX_MULTIPLIER}를 넘지 않습니다.\n\n"
     "🐹 햄스터가 한 줄이라도 걸리면 다른 배율은 모두 무시되고, 배팅액만큼 "

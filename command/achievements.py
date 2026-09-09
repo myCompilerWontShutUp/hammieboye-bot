@@ -10,8 +10,9 @@ from events.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 
 # 정책 고지 성격이라 고정 문구 1개 — 특정 업적을 짚어 물어보면 RAG 문서가 알려준다는
-# "발견의 재미" 원칙과 이어지도록 자연어 질문을 유도한다.
-_DESCRIPTION = "어떻게 얻는지 궁금하면 햄미에게 물어봐!! 내가 다 알려줄게!!"
+# "발견의 재미" 원칙과 이어지도록 자연어 질문을 유도한다. embed.description에 들어가는
+# 문구라 시스템 정중체로 고정한다(2026-09-09 — 페르소나 말투 정정).
+_DESCRIPTION = "어떻게 얻는지 궁금하면 햄미에게 물어보세요."
 
 _INTRO_LINES = (
     "내 업적 자랑해볼게!! _(으쓱)_",
@@ -62,8 +63,10 @@ _INTRO_OTHER_LINES = (
 )
 
 # /내업적·/니업적은 획득한 것만 보여준다 — 전체 목록은 /업적-리스트로 분리됐다(§1-7).
-_NO_EARNED_LINE = "- 아직 획득한 업적이 없어"
-_CATALOG_POINTER = "무슨 업적이 있는지 궁금하면 `/업적-리스트`를 확인해봐!!"
+# 둘 다 embed.add_field(value=...)에 들어가는 문구라 시스템 정중체로 고정한다
+# (2026-09-09 — 페르소나 말투 정정).
+_NO_EARNED_LINE = "- 아직 획득한 업적이 없습니다."
+_CATALOG_POINTER = "무슨 업적이 있는지 궁금하다면 `/업적-리스트`를 확인해보세요."
 
 # /업적-리스트 전용 인트로 풀 — 완전히 비개인화된 정적 카탈로그라 대상자 이름이 안 들어간다.
 _LIST_INTRO_LINES = (

@@ -11,16 +11,20 @@ from events.scheduler import KST, format_footer_time
 # "v1.0.1"/"V1.0.1"/"1.0.1" 전부 허용, 그 외엔 형식 오류로 취급한다.
 _VERSION_PATTERN = re.compile(r"^v?(\d+\.\d+\.\d+)$", re.IGNORECASE)
 
+# embed.description에 들어가는 문구라 시스템 정중체로 고정한다(2026-09-09 — 페르소나
+# 말투가 섞여 있던 걸 발견해 정정, core/base.py §22-4 규칙과 동일한 원칙). 아래
+# _INVALID_FORMAT_MESSAGE/_NOT_FOUND_TEMPLATE는 반대로 embed가 아니라 content=로만
+# 나가는 오류 안내라 페르소나 말투를 그대로 유지한다.
 _NO_CHANGES_NOTICE = (
-    "이 버전엔 사용자한테 보여줄 만한 변경사항이 없었어 — 내부 개선이나 관리자 기능 "
-    "관련 변경뿐이었거든!! _(끄덕)_"
+    "이 버전엔 사용자에게 보여줄 만한 변경사항이 없습니다 — 내부 개선이나 관리자 기능 "
+    "관련 변경만 있었습니다."
 )
 _INVALID_FORMAT_MESSAGE = "버전 형식이 이상해!! `v1.0.1`처럼 입력해줘!! _(갸웃)_"
 _NOT_FOUND_TEMPLATE = "그런 버전은 없는데?? 확인 가능한 버전은 v{oldest} ~ v{newest}이야!! _(고개 저음)_"
 
 # op 권한자에게만 추가로 붙는 관리자 전용 섹션 — 일반 사용자 응답에는 절대 안 나온다.
 _ADMIN_SECTION_HEADER = "\n\n─────────\n🔐 관리자 전용 변경사항"
-_ADMIN_SECTION_EMPTY = "이 버전엔 관리자 전용 변경사항이 따로 없었어."
+_ADMIN_SECTION_EMPTY = "이 버전엔 관리자 전용 변경사항이 따로 없습니다."
 
 
 def _normalize(raw: str) -> str | None:
