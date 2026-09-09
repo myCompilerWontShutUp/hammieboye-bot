@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.3.4",
-        commit_hash="PENDING",
+        commit_hash="b0d5cfb",
         date="2026-09-09",
         changes=(
             "`/자판기`·`/암시장`에서 간식을 구매했을 때와 투자 상품을 구매했을 때 "
