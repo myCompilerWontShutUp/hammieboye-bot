@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.4",
-        commit_hash="PENDING",
+        commit_hash="17ddfaf",
         date="2026-09-10",
         changes=(
             "더블오어낫띵은 이제 금액을 직접 입력하지 않고, 올인 또는 하프 중에서 "
