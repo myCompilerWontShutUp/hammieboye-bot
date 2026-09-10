@@ -19,7 +19,10 @@ _CATEGORIES = (
     "commands",
     "prefixes",
     "affection_guide",
+    "level_guide",
     "achievements",
+    "game_guide",
+    "collection_guide",
     "admin_commands",
 )
 
@@ -37,7 +40,11 @@ _INSTRUCTIONS = """\
 - prefixes: 햄미를 어떻게 부르면 되는지(호출 단어)를 묻거나, 특정 단어를 호출 단어로
   써도 되는지/추가할 수 있는지 묻는 경우 (예: "이 단어로 불러도 돼?", "새 호출 단어 추가해줘")
 - affection_guide: 호감도를 올리는 방법/공략을 물어봄
+- level_guide: 경험치(XP)나 레벨을 올리는 방법/공략을 물어봄
 - achievements: 업적(도전과제)에 관해 물어봄 — 업적이 뭐가 있는지, 특정 업적을 어떻게 얻는지 등
+- game_guide: 내기(홀짝/가위바위보/업다운)·도박(슬롯머신/승부예측/더블오어낫띵)의 규칙,
+  하는 법, 배당, 승률/확률을 물어봄
+- collection_guide: 햄미가 어떤 정보를 저장하는지/수집하는지 물어봄
 - admin_commands: 관리자 콘솔("주인님 가라사대"로 여는 la/tc/sh/gn/rm/ac/op 등) 명령어가
   뭐가 있는지, 어떻게 쓰는지 물어봄 (일반 유저가 쓰는 명령어를 묻는 "commands"와는 다른
   카테고리 — 관리자 전용 명령어 언급이 있어야 해당)

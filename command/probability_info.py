@@ -35,19 +35,22 @@ _INTRO = "햄미가 제공하는 확률형 콘텐츠의 확률을 모두 공개�
 # 카테고리가 서로 합쳐지지 않고 각자 페이지를 차지해 3페이지가 된다.
 _PAGE_CHAR_BUDGET = 400
 
-_ODD_EVEN_PROBABILITY_TEXT = "승리 확률 50%, 패배 확률 50%."
-_RPS_PROBABILITY_TEXT = "승리 확률 약 33.3%, 무승부 확률 약 33.3%, 패배 확률 약 33.3%."
-_UPDOWN_PROBABILITY_TEXT = (
+# documents/game_guide.py(자연어 RAG 문서)가 그대로 재사용한다(2026-09-10) — 이 값들이
+# 확률에 관한 유일한 출처라 밑줄을 떼어 공개 이름으로 바꿨다(command/eat.py가 use.py에
+# 재사용시킬 때 밑줄을 뗀 것과 동일한 원칙).
+ODD_EVEN_PROBABILITY_TEXT = "승리 확률 50%, 패배 확률 50%."
+RPS_PROBABILITY_TEXT = "승리 확률 약 33.3%, 무승부 확률 약 33.3%, 패배 확률 약 33.3%."
+UPDOWN_PROBABILITY_TEXT = (
     "최적의 전략으로 플레이할 경우 승리 확률은 약 35%이며, 승리 시 배팅액의 3배를 "
     "받습니다."
 )
-_DOUBLE_OR_NOTHING_PROBABILITY_TEXT = (
+DOUBLE_OR_NOTHING_PROBABILITY_TEXT = (
     "매 상자마다 50% 확률로 판돈이 2배가 되고, 50% 확률로 판돈을 전부 잃습니다. "
     "반복할 때마다 독립적으로 다시 계산되며, 판돈에는 상한이 없습니다."
 )
 
 
-def _slot_field_value() -> str:
+def slot_field_value() -> str:
     cell_count = len(slot.SYMBOLS)
     return (
         slot.probability_summary()
@@ -56,7 +59,7 @@ def _slot_field_value() -> str:
     )
 
 
-def _horse_race_field_value() -> str:
+def horse_race_field_value() -> str:
     # horse_race.HAMSTERS의 실제 마릿수에서 그대로 계산한다 — 슬롯머신
     # probability_summary()가 SYMBOLS 구성 변경에 자동 대응하는 것과 동일한 원칙으로,
     # 나중에 마릿수가 바뀌어도 이 문구가 자동으로 맞게 갱신된다.
@@ -72,12 +75,12 @@ def _horse_race_field_value() -> str:
     )
 
 
-def _format_percent(value: float) -> str:
+def format_percent(value: float) -> str:
     return f"{value:.0f}%" if value == int(value) else f"{value:.1f}%"
 
 
-def _black_market_field_value() -> str:
-    # 슬롯머신 필드(_slot_field_value)와 동일하게 항목마다 줄바꿈 한 번만(2026-09-09
+def black_market_field_value() -> str:
+    # 슬롯머신 필드(slot_field_value)와 동일하게 항목마다 줄바꿈 한 번만(2026-09-09
     # 이전엔 "\n\n"으로 이어붙여 슬롯머신 목록보다 줄 간격이 유독 넓어 보였다).
     # 2026-09-09 — item.good_chance를 그대로 반영해 산딸기?의 25/75 편향도
     # 하드코딩 없이 자동으로 맞게 표시된다.
@@ -90,8 +93,8 @@ def _black_market_field_value() -> str:
         good_pct = item.good_chance * 100
         bad_pct = 100 - good_pct
         lines.append(
-            f"**{item.name}** — 좋은 결과 {_format_percent(good_pct)}({good}) / "
-            f"나쁜 결과 {_format_percent(bad_pct)}({bad})"
+            f"**{item.name}** — 좋은 결과 {format_percent(good_pct)}({good}) / "
+            f"나쁜 결과 {format_percent(bad_pct)}({bad})"
         )
     return "\n".join(lines)
 
@@ -109,17 +112,17 @@ def _category_groups() -> tuple[tuple[_Section, ...], ...]:
     별도 embed 필드로 남아 가독성은 그대로 유지된다."""
     return (
         (
-            _Section("🪙 내기 — 홀짝", _ODD_EVEN_PROBABILITY_TEXT),
-            _Section("✂️ 내기 — 가위바위보", _RPS_PROBABILITY_TEXT),
-            _Section("🔢 내기 — 업다운", _UPDOWN_PROBABILITY_TEXT),
+            _Section("🪙 내기 — 홀짝", ODD_EVEN_PROBABILITY_TEXT),
+            _Section("✂️ 내기 — 가위바위보", RPS_PROBABILITY_TEXT),
+            _Section("🔢 내기 — 업다운", UPDOWN_PROBABILITY_TEXT),
         ),
         (
-            _Section("🎰 도박 — 슬롯머신", _slot_field_value()),
-            _Section("🐹 도박 — 승부예측", _horse_race_field_value()),
-            _Section("📦 도박 — 더블오어낫띵", _DOUBLE_OR_NOTHING_PROBABILITY_TEXT),
+            _Section("🎰 도박 — 슬롯머신", slot_field_value()),
+            _Section("🐹 도박 — 승부예측", horse_race_field_value()),
+            _Section("📦 도박 — 더블오어낫띵", DOUBLE_OR_NOTHING_PROBABILITY_TEXT),
         ),
         (
-            _Section("🌙 암시장 — 확률형 간식", _black_market_field_value()),
+            _Section("🌙 암시장 — 확률형 간식", black_market_field_value()),
         ),
     )
 

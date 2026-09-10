@@ -260,12 +260,28 @@ class _BuyButton(discord.ui.Button):
             if isinstance(result, tuple):
                 text, embed = result
                 await modal_interaction.response.send_message(content=text, embed=embed, ephemeral=True)
+                await _refresh_shop_message(view)
             else:
                 await modal_interaction.response.send_message(result, ephemeral=True)
 
         await interaction.response.send_modal(
             PurchaseConfirmModal(item_name=item.name, before=before, price=item.price, on_confirm=_on_confirm)
         )
+
+
+async def _refresh_shop_message(view: "_BlackMarketView") -> None:
+    """구매 성공 직후 원본 공개 메시지를 최신 구매 횟수로 즉시 갱신한다(2026-09-10,
+    command/vending.py::_refresh_shop_message와 동일한 원칙) — view.message가 없으면
+    조용히 건너뛴다."""
+    if view.message is None:
+        return
+    counts = await get_purchase_counts(view.user_id)
+    view._rebuild_select(counts)
+    embed = await _build_shop_embed(view.active_category, counts)
+    try:
+        await view.message.edit(embed=embed, view=view)
+    except discord.HTTPException:
+        logging.exception("Failed to refresh black market shop message after purchase")
 
 
 class _BlackMarketView(discord.ui.View):

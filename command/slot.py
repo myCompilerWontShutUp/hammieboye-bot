@@ -278,8 +278,9 @@ async def _settle(
 ) -> tuple[str, discord.Embed, discord.Embed]:
     """세 줄이 모두 채워진 뒤 정산. before_coins는 판 시작 시 역산해둔 배팅 전
     잔액 — 반환하는 두 번째 임베드(그리드)와 세 번째 임베드(영수증)는
-    `embeds=[grid, receipt]`로 함께 붙인다. challenger_name은 공개 메시지 맨
-    위에 보여줄 도전자 이름."""
+    `embeds=[receipt, grid]`로 함께 붙인다(영수증이 위, 그리드가 아래 —
+    2026-09-10 순서 변경). challenger_name은 공개 메시지 맨 위에 보여줄
+    도전자 이름."""
     multiplier, hamster_hit, capped = evaluate(grid)
     embed = _build_embed(grid)
     # 2026-09-09 — 마크다운 헤딩(`## `)을 붙여 크게 표시(그리드에 이미 쓰인 트릭과
@@ -376,7 +377,7 @@ class _SlotView(discord.ui.View):
         )
         replay_view = _build_replay_view(self.user_id)
         try:
-            await self.message.edit(content=text, embeds=[embed, receipt_embed], view=replay_view)
+            await self.message.edit(content=text, embeds=[receipt_embed, embed], view=replay_view)
             replay_view.message = self.message
         except discord.HTTPException:
             # ReplayView가 메시지에 못 붙으면 그 on_timeout이 영영 안 불려
@@ -407,7 +408,7 @@ class _SlotView(discord.ui.View):
             # 임베드를 매번 다시 만들어 그리드와 함께 넘겨야 유지된다.
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, None)
             await interaction.response.edit_message(
-                embeds=[_build_embed(self.grid), receipt_embed], view=self
+                embeds=[receipt_embed, _build_embed(self.grid)], view=self
             )
             return
 
@@ -417,7 +418,7 @@ class _SlotView(discord.ui.View):
         )
         replay_view = _build_replay_view(self.user_id)
         try:
-            await interaction.response.edit_message(content=text, embeds=[embed, receipt_embed], view=replay_view)
+            await interaction.response.edit_message(content=text, embeds=[receipt_embed, embed], view=replay_view)
             replay_view.message = await interaction.original_response()
         except discord.HTTPException:
             logging.exception("Failed to edit slot settlement message")
@@ -474,7 +475,7 @@ async def _start_round(
     embed = _build_embed(view.grid)
     receipt_embed = build_bet_receipt_embed(before_coins, bet, None)
 
-    await interaction.response.send_message(content=content, embeds=[embed, receipt_embed], view=view)
+    await interaction.response.send_message(content=content, embeds=[receipt_embed, embed], view=view)
     view.message = await interaction.original_response()
 
 

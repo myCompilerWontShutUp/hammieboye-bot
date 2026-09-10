@@ -18,10 +18,16 @@ import levels
 from config import ALLOWED_GUILD_IDS
 from core.discord_names import resolve_real_name
 from db.users import get_user
+from db.wallet import add_coins
 from db.xp import add_xp, claim_affection_xp, claim_daily_base_xp, claim_nl_xp, claim_slash_xp
 from events.scheduler import broadcast_to_guilds
 
 _client: discord.Client | None = None
+
+# 레벨업 축하 코인(2026-09-10 신규, CLAUDE.md §23) — "레벨업한 레벨 x 100"
+# (사용자 지시). apply_day_multiplier=False — 업적 달성 보너스(舊)와 동일한 원칙으로
+# 날짜 배율 미적용, 고정 수치 그대로 지급.
+_LEVEL_UP_COIN_MULTIPLIER = 100
 
 
 def init(client: discord.Client) -> None:
@@ -33,7 +39,11 @@ async def broadcast_level_up(user_id: int, level: "levels.Level") -> None:
     if _client is None:
         return
     name = await resolve_real_name(_client, user_id)
-    text = f"🎉 {name}님이 레벨 {level.number}({level.name})(으)로 레벨업했습니다!!"
+    coin_reward = level.number * _LEVEL_UP_COIN_MULTIPLIER
+    text = (
+        f"🎉 {name}님이 레벨 {level.number}({level.name})(으)로 레벨업했습니다!! "
+        f"🪙 햄미가 축하 선물로 {coin_reward}코인을 가지고 왔습니다!"
+    )
     await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=text)
 
 
@@ -47,7 +57,8 @@ async def broadcast_level_up_batch(level_up_events: list[tuple[int, "levels.Leve
     lines = []
     for user_id, level in level_up_events:
         name = await resolve_real_name(_client, user_id)
-        lines.append(f"{name}님 → 레벨 {level.number}({level.name})")
+        coin_reward = level.number * _LEVEL_UP_COIN_MULTIPLIER
+        lines.append(f"{name}님 → 레벨 {level.number}({level.name}) (🪙 +{coin_reward}코인)")
     text = "🎉 여러 명이 한꺼번에 레벨업했어요!!\n" + "\n".join(lines)
     await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=text)
 
@@ -79,6 +90,13 @@ async def _handle_levelup(
         from db.achievements import award as award_achievement
 
         await award_achievement(user_id, new_level.achievement_id)
+
+    await add_coins(
+        user_id,
+        new_level.number * _LEVEL_UP_COIN_MULTIPLIER,
+        method="level_up_bonus",
+        count_as_earned=True,
+    )
 
     if broadcast:
         await broadcast_level_up(user_id, new_level)

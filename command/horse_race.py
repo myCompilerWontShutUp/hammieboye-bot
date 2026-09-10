@@ -361,9 +361,8 @@ _JACKPOT_LINES = (
 HORSE_RACE_RULE_TEXT = (
     "🐹 승부예측\n\n"
     "- 햄스터 10마리 중 1등·2등·3등을 예측하는 경마 게임입니다.\n"
-    "- \"1등 예측하기\"·\"2등 예측하기\"·\"3등 예측하기\" 버튼으로 각 등수에 "
-    "들어올 햄스터를 하나씩 고릅니다(같은 햄스터를 두 등수에 중복으로 고를 수 "
-    "없습니다).\n\n"
+    "- 등수별 예측 버튼으로 각 등수에 들어올 햄스터를 하나씩 고릅니다(같은 "
+    "햄스터를 두 등수에 중복으로 고를 수 없습니다).\n\n"
     "적중 배율:\n"
     "- 3위 적중: x2\n"
     "- 2위 적중: x4\n"
@@ -397,9 +396,10 @@ _QUICK_RULES_FIELD_VALUE = (
 
 
 def _predictions_field_value(predictions: dict[int, int], final_ranking: list[int] | None) -> str:
-    """예측 현황 한 줄씩("N등 예측: 1️⃣ 잠보") — final_ranking이 주어지면(=결과가
-    나온 뒤) 각 줄 끝에 적중 여부(✅/❌)를 붙인다. 예측 단계 임베드(description)와
-    경주 애니메이션/정산 임베드(필드)가 이 함수 하나를 공유해 같은 형식을 유지한다."""
+    """예측 현황 한 줄씩("🥇 예측 : 1️⃣ 잠보 | 결과 : -") — 결과 칸은 final_ranking이
+    없으면(아직 결과 모름) 기본값 "-", 있으면 적중 여부(✅/❌)로 채운다. 예측 단계
+    임베드(description)와 경주 애니메이션/정산 임베드(필드)가 이 함수 하나를
+    공유해 같은 형식을 유지한다."""
     lines = []
     for rank in (1, 2, 3):
         number = predictions.get(rank)
@@ -407,10 +407,11 @@ def _predictions_field_value(predictions: dict[int, int], final_ranking: list[in
             label = f"{_LANE_NUMBER_EMOJI[number - 1]} {_HAMSTERS_BY_NUMBER[number].name}"
         else:
             label = "???"
-        line = f"{rank}등 예측: {label}"
         if final_ranking is not None and number is not None:
-            line += " ✅" if final_ranking[rank - 1] == number else " ❌"
-        lines.append(line)
+            result = "✅" if final_ranking[rank - 1] == number else "❌"
+        else:
+            result = "-"
+        lines.append(f"{_MEDAL_EMOJI[rank - 1]} 예측 : {label} | 결과 : {result}")
     return "\n".join(lines)
 
 
@@ -533,7 +534,7 @@ class _PredictionView(discord.ui.View):
                 # 매번 다시 만들어 함께 넘겨야 한다(slot.py::_spin_row와 동일).
                 receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, None)
                 await modal_interaction.response.edit_message(
-                    embeds=[_prediction_embed(self.predictions), receipt_embed], view=self
+                    embeds=[receipt_embed, _prediction_embed(self.predictions)], view=self
                 )
 
             await interaction.response.send_modal(_RankPickModal(rank, remaining, _on_pick))
@@ -700,7 +701,7 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
     )
     replay_view = _build_replay_view(view.challenger_id)
     try:
-        await view.message.edit(content=content, embeds=[race_embed, receipt_embed], view=replay_view)
+        await view.message.edit(content=content, embeds=[receipt_embed, race_embed], view=replay_view)
         replay_view.message = view.message
     except discord.HTTPException:
         # ReplayView가 메시지에 못 붙으면 그 on_timeout이 영영 안 불려
@@ -745,5 +746,5 @@ async def start_round(
     embed = _prediction_embed(view.predictions)
     receipt_embed = build_bet_receipt_embed(before_coins, bet, None)
 
-    await interaction.response.send_message(content=content, embeds=[embed, receipt_embed], view=view)
+    await interaction.response.send_message(content=content, embeds=[receipt_embed, embed], view=view)
     view.message = await interaction.original_response()

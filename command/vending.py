@@ -300,12 +300,29 @@ class _BuyButton(discord.ui.Button):
             if isinstance(result, tuple):
                 text, embed = result
                 await modal_interaction.response.send_message(content=text, embed=embed, ephemeral=True)
+                await _refresh_shop_message(view)
             else:
                 await modal_interaction.response.send_message(result, ephemeral=True)
 
         await interaction.response.send_modal(
             PurchaseConfirmModal(item_name=item.name, before=before, price=price, on_confirm=_on_confirm)
         )
+
+
+async def _refresh_shop_message(view: "_VendingView") -> None:
+    """구매 성공 직후 원본 공개 메시지(품목 목록 embed)를 최신 구매 횟수/가격으로
+    즉시 갱신한다(2026-09-10) — 구매 결과 자체는 ephemeral로 오지만, 그 뒤에 남는
+    공개 목록(N회 구매·투자 가격)이 갱신 없이 옛 값을 그대로 보여주던 문제 수정.
+    view.message가 없으면(아직 안 잡혔거나 메시지가 지워졌으면) 조용히 건너뛴다."""
+    if view.message is None:
+        return
+    counts = await get_purchase_counts(view.user_id)
+    view._rebuild_select(counts)
+    embed = await _build_shop_embed(view.active_category, counts)
+    try:
+        await view.message.edit(embed=embed, view=view)
+    except discord.HTTPException:
+        logging.exception("Failed to refresh vending shop message after purchase")
 
 
 class _VendingView(discord.ui.View):

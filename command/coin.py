@@ -25,12 +25,16 @@ _DAILY_CLAIM_LIMIT = 3
 # 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus.
 _BASE_GRANT = 1
 
-# 레벨별 확률로 2배를 물어온다(2026-09-09 신규, 2026-09-10 레벨 시스템 도입으로
-# 고정 10% → levels.Level.double_drop_chance로 레벨업할수록 상승) — coin_grant_bonus
-# 까지 합산한 최종 지급량 전체에 곱해진다. apply_day_multiplier(날짜 배율)와는
+# 레벨별 확률로 2배 또는 5배를 물어온다(2026-09-09 2배 신설, 2026-09-10 레벨
+# 시스템 도입으로 고정 10% → levels.Level.double_drop_chance로 레벨업할수록 상승,
+# 같은 날 5배 신설 — levels.Level.quintuple_drop_chance) — coin_grant_bonus까지
+# 합산한 최종 지급량 전체에 곱해진다. apply_day_multiplier(날짜 배율)와는
 # 독립적으로 중첩된다(의도된 동작 — 보너스와 특별한 날 배율이 겹치면 더 크게 받을
-# 수 있음).
+# 수 있음). 5배와 2배는 하나의 판정을 공유(누적 구간 방식)해 서로 배타적이다 —
+# [0, 5배 확률) 구간이면 5배, 그다음 [5배 확률, 5배+2배 확률) 구간이면 2배,
+# 나머지는 평소 지급.
 _BONUS_MULTIPLIER = 2
+_SUPER_BONUS_MULTIPLIER = 5
 
 _GRANT_MESSAGES = (
     "쳇바퀴를 신나게 굴렸더니 동전이 떨어져써!! _(신남)_",
@@ -78,6 +82,31 @@ _BONUS_GRANT_MESSAGES = (
     "이렇게 많이 물어온 건 처음이야!! _(놀람)_",
     "동전이 두 배로 짤랑거려!! 기분 최고야!! _(신남)_",
     "오늘의 노동이 두 배로 보답받았어!! _(뿌듯)_",
+)
+
+# 5배 보너스 전용 문구 풀(2026-09-10 신규) — 2배보다 훨씬 희귀하니 "초대박" 급으로
+# 더 호들갑스럽게 표현해서 확실히 구분되게 한다.
+_SUPER_BONUS_GRANT_MESSAGES = (
+    "이게 무슨 일이야?!?! 동전이 다섯 배나 쏟아졌어!! _(경악)_",
+    "초대박!! 오늘 동전이 다섯 배로 터졌어!! _(황홀)_",
+    "말도 안 돼!! 동전이 다섯 배로 쌓여 있었어!! _(충격)_",
+    "이런 행운이!! 다섯 배로 몽땅 쓸어왔다!! _(흥분)_",
+    "쳇바퀴 아래가 동전으로 파묻혀 있었어!! 다섯 배!! _(경악)_",
+    "역대급 잭팟이야!! 동전 다섯 배 획득!! _(황홀)_",
+    "이건 진짜 대박이다!! 다섯 배나 물어왔어!! _(흥분)_",
+    "믿기지 않아!! 오늘은 다섯 배로 운이 트였어!! _(놀람)_",
+    "동전 창고를 통째로 발견한 기분이야!! 다섯 배!! _(경악)_",
+    "이렇게까지 많이 물어온 적은 처음이야!! 다섯 배!! _(충격)_",
+    "오늘은 완전 럭키데이야!! 동전 다섯 배!! _(신남)_",
+    "쳇바퀴 신이 도와준 게 틀림없어!! 다섯 배!! _(황홀)_",
+    "동전 폭탄이 터진 줄 알았어!! 다섯 배야!! _(경악)_",
+    "이 정도면 전설이야!! 다섯 배 획득!! _(흥분)_",
+    "오늘따라 동전이 유난히 넘쳐났어!! 다섯 배!! _(놀람)_",
+    "믿을 수 없는 행운!! 다섯 배로 받아왔어!! _(황홀)_",
+    "쳇바퀴 밑에 보물창고가 있었나 봐!! 다섯 배!! _(경악)_",
+    "오늘 운은 진짜 제대로다!! 동전 다섯 배!! _(신남)_",
+    "이런 날이 다 있네!! 다섯 배나 벌었어!! _(흥분)_",
+    "완전 초대박!! 동전이 다섯 배로 짤랑거려!! _(황홀)_",
 )
 
 _COOLDOWN_MESSAGES = (
@@ -246,13 +275,21 @@ async def handle(user_id: int) -> str:
 
     user = await get_user(user_id)
     base_amount = _BASE_GRANT + user["coin_grant_bonus"]
-    double_drop_chance = levels.get_level_for_xp(user["total_xp"]).double_drop_chance
-    is_bonus = random.random() < double_drop_chance
-    amount = base_amount * _BONUS_MULTIPLIER if is_bonus else base_amount
+    level = levels.get_level_for_xp(user["total_xp"])
+    # 5배/2배는 하나의 굴림을 공유하는 배타적 구간이다 — [0, 5배 확률)이면 5배,
+    # 그다음 구간이면 2배, 나머지는 평소 지급(코드 상단 주석 참고).
+    roll = random.random()
+    if roll < level.quintuple_drop_chance:
+        multiplier, bonus_label, text_pool = _SUPER_BONUS_MULTIPLIER, "x5배 (동전 초대박 당첨)", _SUPER_BONUS_GRANT_MESSAGES
+    elif roll < level.quintuple_drop_chance + level.double_drop_chance:
+        multiplier, bonus_label, text_pool = _BONUS_MULTIPLIER, "x2배 (동전 행운 당첨)", _BONUS_GRANT_MESSAGES
+    else:
+        multiplier, bonus_label, text_pool = 1, None, _GRANT_MESSAGES
+    amount = base_amount * multiplier
     result = await add_coins(user_id, amount, method=_METHOD, apply_day_multiplier=True)
 
-    text = random.choice(_BONUS_GRANT_MESSAGES if is_bonus else _GRANT_MESSAGES)
-    text += format_coin_notice(result["applied_amount"], result["new_coins"])
+    text = random.choice(text_pool)
+    text += format_coin_notice(result["applied_amount"], result["new_coins"], bonus_label=bonus_label)
     if result["achievement_notice"]:
         text += f"\n{result['achievement_notice']}"
     return text

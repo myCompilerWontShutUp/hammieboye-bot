@@ -22,9 +22,29 @@ _OVERVIEW_TEXT = (
     "아래 목록에서 레벨을 선택하면 그 레벨의 상세 정보를 확인할 수 있습니다."
 )
 
+# 드롭다운 맨 위("0레벨"보다 먼저)에 두는 "경험치 획득 조건" 항목 전용 값·본문
+# (2026-09-10 신규) — 레벨 자체가 아니라서 레벨 번호(str(int))와 겹치지 않는
+# 문자열을 쓴다.
+_XP_INFO_VALUE = "xp_info"
+_XP_INFO_TEXT = (
+    "- 매일 첫 활동(자연어 대화 또는 슬래시 명령어) 시 기본 경험치 +1\n"
+    "- 호감도가 1 오를 때마다 경험치 +2 (하루 최대 200)\n"
+    "- 자연어 대화 1회당 경험치 +1 (하루 최대 5회)\n"
+    "- 슬래시 명령어 1회당 경험치 +1 (하루 최대 5회)\n"
+    "- 업적을 달성하면 경험치 +5(일반) 또는 +30(전설)\n"
+    "- 헬프 미 이벤트를 도우면 경험치 +10(최초 성공) 또는 +3(1분 내 추가 도움)\n"
+    "- 간식을 먹이면 경험치 +10 (하루 최대 3번)"
+)
+
 
 def _overview_embed() -> discord.Embed:
     embed = discord.Embed(title=_TITLE, description=_OVERVIEW_TEXT, color=SYSTEM_EMBED_COLOR)
+    embed.set_footer(text=format_footer_time(datetime.now(KST)))
+    return embed
+
+
+def _xp_info_embed() -> discord.Embed:
+    embed = discord.Embed(title="🎖️ 경험치 획득 조건", description=_XP_INFO_TEXT, color=SYSTEM_EMBED_COLOR)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
 
@@ -52,15 +72,23 @@ def _level_embed(level: levels.Level) -> discord.Embed:
 
 
 class _LevelSelect(discord.ui.Select):
-    """레벨 0~7을 고르는 드롭다운. 고른 레벨은 `default=True`로 표시해 드롭다운을
-    다시 열어도 지금 보고 있는 레벨이 그대로 선택 상태로 보이게 한다."""
+    """"경험치 획득 조건"(0레벨보다 먼저) + 레벨 0~7을 고르는 드롭다운. 고른
+    항목은 `default=True`로 표시해 드롭다운을 다시 열어도 지금 보고 있는
+    항목이 그대로 선택 상태로 보이게 한다."""
 
-    def __init__(self, selected: int | None) -> None:
+    def __init__(self, selected: str | None) -> None:
         options = [
+            discord.SelectOption(
+                label="경험치 획득 조건",
+                value=_XP_INFO_VALUE,
+                default=(selected == _XP_INFO_VALUE),
+            )
+        ]
+        options += [
             discord.SelectOption(
                 label=f"{lvl.number}레벨 - {lvl.name}",
                 value=str(lvl.number),
-                default=(lvl.number == selected),
+                default=(selected == str(lvl.number)),
             )
             for lvl in levels.LEVELS
         ]
@@ -70,10 +98,11 @@ class _LevelSelect(discord.ui.Select):
         view: _LevelInfoView = self.view
         if not await reject_if_wrong_invoker(interaction, view.user_id):
             return
-        number = int(self.values[0])
-        view.selected = number
+        value = self.values[0]
+        view.selected = value
         view._rebuild_select()
-        await interaction.response.edit_message(embed=_level_embed(levels.LEVELS[number]), view=view)
+        embed = _xp_info_embed() if value == _XP_INFO_VALUE else _level_embed(levels.LEVELS[int(value)])
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 class _LevelInfoView(discord.ui.View):
@@ -84,7 +113,7 @@ class _LevelInfoView(discord.ui.View):
     def __init__(self, user_id: int) -> None:
         super().__init__(timeout=600)
         self.user_id = user_id
-        self.selected: int | None = None
+        self.selected: str | None = None
         self.message: discord.Message | None = None
         self._select = _LevelSelect(self.selected)
         self.add_item(self._select)

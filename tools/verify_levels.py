@@ -39,6 +39,8 @@ def check_invariants() -> list[str]:
                 problems.append(f"레벨 {level.number}: 하루 대화 횟수가 이전 레벨보다 적음")
             if level.double_drop_chance < prev.double_drop_chance:
                 problems.append(f"레벨 {level.number}: /동전 2배 확률이 이전 레벨보다 낮음")
+            if level.quintuple_drop_chance < prev.quintuple_drop_chance:
+                problems.append(f"레벨 {level.number}: /동전 5배 확률이 이전 레벨보다 낮음")
             for field in _MONOTONIC_BOOL_FIELDS:
                 if getattr(prev, field) and not getattr(level, field):
                     problems.append(f"레벨 {level.number}: {field}가 이전 레벨보다 닫힘")

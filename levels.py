@@ -29,19 +29,20 @@ class Level:
     gambling_allowed: bool  # /도박만 해당 — /내기는 레벨 무관 항상 허용
     gift_command_allowed: bool
     double_drop_chance: float
+    quintuple_drop_chance: float = 0.0  # /동전 x5 확률(2026-09-10 신규, x2와 별개로 중첩 판정)
     achievement_id: str | None = None  # 이 레벨 도달 시 자동 부여(없으면 None)
 
 
 LEVELS: tuple[Level, ...] = (
-    Level(0, "뉴비", 0, 10, 100, 100, False, None, False, None, False, False, False, False, 0.10),
-    Level(1, "로보로브스키", 50, 30, 100, 100, False, None, False, None, True, False, True, False, 0.10),
-    Level(2, "정글리안", 150, 60, 1000, 100, False, None, True, 3, True, False, True, False, 0.10),
-    Level(3, "시리안", 300, 100, 1000, 100, False, None, True, 5, True, True, True, False, 0.20),
-    Level(4, "와일드", 500, 150, 1000, 100, True, 3, True, 7, True, True, True, False, 0.20, "wild_owner"),
-    Level(5, "킹스터", 750, 210, None, 500, True, 3, True, 10, True, True, True, True, 0.50),
-    Level(6, "그랜드 킹스터", 1050, 280, None, 500, True, 5, True, 10, True, True, True, True, 0.50),
+    Level(0, "뉴비", 0, 10, 100, 100, False, None, False, None, False, False, False, False, 0.10, 0.00),
+    Level(1, "로보로브스키", 50, 30, 100, 100, False, None, False, None, True, False, True, False, 0.10, 0.01),
+    Level(2, "정글리안", 150, 60, 1000, 100, False, None, True, 3, True, False, True, False, 0.10, 0.01),
+    Level(3, "시리안", 300, 100, 1000, 100, False, None, True, 5, True, True, True, False, 0.20, 0.02),
+    Level(4, "와일드", 500, 150, 1000, 100, True, 3, True, 7, True, True, True, False, 0.20, 0.02, "wild_owner"),
+    Level(5, "킹스터", 750, 210, None, 500, True, 3, True, 10, True, True, True, True, 0.50, 0.05),
+    Level(6, "그랜드 킹스터", 1050, 280, None, 500, True, 5, True, 10, True, True, True, True, 0.50, 0.05),
     Level(
-        7, "앱솔루트 햄로드", 1400, 360, None, 500, True, 10, True, 10, True, True, True, True, 1.00,
+        7, "앱솔루트 햄로드", 1400, 360, None, 500, True, 10, True, 10, True, True, True, True, 1.00, 0.10,
         "ultra_king_god_general_majesty_alltime_legend_owner",
     ),
 )
