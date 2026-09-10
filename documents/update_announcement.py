@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.5",
-        commit_hash="PENDING",
+        commit_hash="a4fabd1",
         date="2026-09-10",
         changes=(
             "레벨업을 하면 햄미가 축하 선물로 동전(레벨 x 100개)을 함께 가져다 줍니다.",
