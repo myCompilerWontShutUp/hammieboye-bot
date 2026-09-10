@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.3",
-        commit_hash="PENDING",
+        commit_hash="79d18e0",
         date="2026-09-10",
         changes=(
             "레벨 시스템과 내기·도박 게임 규칙을 확인할 수 있는 `/봇정보-레벨`, "
