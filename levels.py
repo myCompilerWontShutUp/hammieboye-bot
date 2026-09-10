@@ -77,8 +77,8 @@ def min_level_for(feature: str) -> Level:
 
 
 _BAR_LENGTH = 10
-_BAR_FILLED = "▰"
-_BAR_EMPTY = "▱"
+_BAR_FILLED = "◼"
+_BAR_EMPTY = "◻"
 
 
 def xp_progress_bar(total_xp: int, level: Level, next_level: Level | None) -> str:

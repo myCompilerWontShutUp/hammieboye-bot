@@ -150,10 +150,7 @@ async def _render_info(
     next_level = levels.get_next_level(level)
     level_lines = [f"- 레벨 {level.number} ({level.name})"]
     if next_level is not None:
-        level_lines.append(
-            f"- 경험치: **{user['total_xp']}** / {next_level.xp_required} "
-            f"(다음 레벨까지 {next_level.xp_required - user['total_xp']})"
-        )
+        level_lines.append(f"- 경험치: **{user['total_xp']}** / {next_level.xp_required}")
     else:
         level_lines.append(f"- 경험치: **{user['total_xp']}** (최고 레벨)")
     level_lines.append(levels.xp_progress_bar(user["total_xp"], level, next_level))

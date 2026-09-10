@@ -33,6 +33,15 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.4.2",
+        commit_hash="PENDING",
+        date="2026-09-10",
+        changes=(
+            "`/내정보`·`/니정보`의 레벨 진행 바 모양이 더 또렷하게 바뀌었고, "
+            "다음 레벨까지 남은 경험치를 알려주던 문구가 정리되었습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.4.1",
         commit_hash="91a4432",
         date="2026-09-10",
