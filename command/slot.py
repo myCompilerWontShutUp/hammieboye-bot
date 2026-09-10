@@ -12,6 +12,7 @@ from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
+    MAX_BET_GAMBLING,
     TIMEOUT_SECONDS,
     BetAmountModal,
     ReplayView,
@@ -336,7 +337,12 @@ def _build_replay_view(user_id: int) -> ReplayView:
             except discord.HTTPException:
                 logging.exception("Failed to clear old slot message buttons after replay")
 
-    return ReplayView(user_id, _OWN_COMMAND, _on_replay)
+    async def _open_modal(interaction: discord.Interaction, balance: int, on_valid) -> None:
+        await interaction.response.send_modal(
+            BetAmountModal(balance=balance, max_bet=MAX_BET_GAMBLING, on_valid=on_valid)
+        )
+
+    return ReplayView(user_id, _OWN_COMMAND, _on_replay, open_modal=_open_modal)
 
 
 class _SlotView(discord.ui.View):
@@ -485,10 +491,24 @@ class _GambleSelectView(EphemeralAutoDeleteView):
     async def _open_bet_modal(
         self, interaction: discord.Interaction, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
     ) -> None:
+        """슬롯머신·승부예측 전용(MAX_BET_GAMBLING 적용) — 더블오어낫띵은 올인/하프
+        선택이라 이 모달을 안 쓴다(_open_double_or_nothing_modal 참고)."""
         self.bump()
         user = await get_user(self.user_id)
         balance = user["coins"] if user is not None else 0
-        await interaction.response.send_modal(BetAmountModal(balance=balance, on_valid=on_valid))
+        await interaction.response.send_modal(
+            BetAmountModal(balance=balance, max_bet=MAX_BET_GAMBLING, on_valid=on_valid)
+        )
+
+    async def _open_double_or_nothing_modal(
+        self, interaction: discord.Interaction, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
+    ) -> None:
+        self.bump()
+        user = await get_user(self.user_id)
+        balance = user["coins"] if user is not None else 0
+        await interaction.response.send_modal(
+            double_or_nothing.AllInHalfModal(balance=balance, on_valid=on_valid)
+        )
 
     # 2026-09-10 — 셋 다 danger(빨강)로 통일했다(舊 슬롯머신만 danger/승부예측 primary/
     # 더블오어낫띵 secondary로 제각각이었음) — /내기의 세 버튼이 전부 primary로
@@ -529,7 +549,7 @@ class _GambleSelectView(EphemeralAutoDeleteView):
             except discord.HTTPException:
                 logging.exception("Failed to delete gamble-select prompt after double-or-nothing start")
 
-        await self._open_bet_modal(interaction, _on_valid)
+        await self._open_double_or_nothing_modal(interaction, _on_valid)
 
 
 async def handle_gamble(interaction: discord.Interaction) -> None:

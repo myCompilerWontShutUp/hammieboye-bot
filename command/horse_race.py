@@ -20,6 +20,8 @@ import discord
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
+    MAX_BET_GAMBLING,
+    BetAmountModal,
     ReplayView,
     build_bet_receipt_embed,
     claim_active_or_reject,
@@ -115,20 +117,88 @@ def compute_final_positions(final_ranking: list[int]) -> dict[int, int]:
     return positions
 
 
+def _interpolate_step(prev: int, target: int, frame_index: int, frames_left: int, r: random.Random) -> int:
+    """말 한 마리의 한 프레임 이동을 계산하는 공용 보간 — 일반 진행과 급발진
+    전/후 구간(compute_frame_positions 참고) 양쪽에서 재사용한다. 직전 프레임
+    대비 이동폭을 [-_MAX_BACKWARD_STEP, +_MAX_FORWARD_STEP]로 클램프하면서,
+    세 제약(이동폭 / 남은 프레임 예산으로 target 도달 가능 / 트랙 범위)의
+    교집합으로 **한 번에** 클램프한다 — 순차적으로 따로따로 클램프하면 마지막
+    클램프가 앞선 경계를 다시 깨버릴 수 있다(실제로 재현된 버그: 목표 지점
+    강제 스냅 직전 프레임이 이동폭 상한을 초과하는 사례)."""
+    baseline = round(target * frame_index / _FRAME_COUNT)
+    jitter = r.randint(-_MAX_BACKWARD_STEP, _MAX_FORWARD_STEP)
+    candidate = baseline + jitter
+    already_finished = prev >= _TRACK_LENGTH
+    lo = max(prev - _MAX_BACKWARD_STEP, target - frames_left * _MAX_FORWARD_STEP, 0)
+    hi = min(prev + _MAX_FORWARD_STEP, target + frames_left * _MAX_BACKWARD_STEP, _TRACK_LENGTH)
+    if target < _TRACK_LENGTH:
+        # 완주 못 하는(비메달권) 말은 아예 결승선에 안 닿게 막는다 — 안 그러면
+        # 마지막 프레임에 target으로 강제 복귀하며 "도착했다가 뒤로 밀려나는"
+        # 것처럼 보인다.
+        hi = min(hi, _TRACK_LENGTH - 1)
+    elif frame_index < _MIN_FINISH_FRAME:
+        hi = min(hi, _TRACK_LENGTH - 1)
+    if already_finished:
+        # 결승선에 닿았던 말은 다시 그 아래로 안 내려간다(결승선 안에서 앞으로
+        # 더 나아가는 것만 허용).
+        lo = max(lo, _TRACK_LENGTH)
+    return max(lo, min(hi, candidate))
+
+
+# "1등 예측이 너무 쉽다"는 피드백(2026-09-10)에 대한 연출 — 절반의 확률로 8~10위
+# 중 한 마리가 뒤처져 있다가 한 프레임 만에 4~5칸을 몰아 뛰어 메달권(1~3위)에
+# 갑자기 끼어든다. `maybe_apply_underdog_burst()`가 순열 스왑으로 구현하므로
+# (완전한 자리 맞바꿈이라 균등분포가 그대로 유지됨 — 특정 햄스터가 유리해지지
+# 않는다, /봇정보-확률공개의 등수별 적중 확률도 그대로 정확하다) 최종 순위
+# 자체는 여전히 매 햄스터가 똑같이 1/10 확률로 각 등수에 오는 공정한 추첨이고,
+# 애니메이션만 "느닷없는 역전"처럼 보이게 만드는 장치다.
+_BURST_CHANCE = 0.5
+_BURST_JUMP_MIN = 4
+_BURST_JUMP_MAX = 5
+
+
+def maybe_apply_underdog_burst(
+    final_ranking: list[int], rng: random.Random | None = None
+) -> tuple[list[int], int | None, int | None]:
+    """50% 확률로 8~10위(인덱스 7~9) 중 하나와 1~3위(인덱스 0~2) 중 하나를
+    무작위로 골라 순위를 맞바꾼다. 반환값은 (최종 순위, 급발진 햄스터 번호 또는
+    None, 그 햄스터가 원래(스왑 전) 있었을 자리의 트랙 위치 또는 None) — 뒤 두
+    값은 compute_frame_positions가 그 햄스터에게만 "늦게까지 하위권에 머물다
+    갑자기 점프"하는 애니메이션을 적용하는 데 쓴다."""
+    r = rng or random
+    if r.random() >= _BURST_CHANCE:
+        return list(final_ranking), None, None
+    original_positions = compute_final_positions(final_ranking)
+    underdog_index = r.randint(7, 9)
+    medal_index = r.randint(0, 2)
+    burst_number = final_ranking[underdog_index]
+    decoy_target = original_positions[burst_number]
+    new_ranking = list(final_ranking)
+    new_ranking[underdog_index], new_ranking[medal_index] = new_ranking[medal_index], new_ranking[underdog_index]
+    return new_ranking, burst_number, decoy_target
+
+
 def compute_frame_positions(
     final_ranking: list[int],
     *,
     rng: random.Random | None = None,
+    burst_number: int | None = None,
+    burst_decoy_target: int | None = None,
 ) -> list[dict[int, int]]:
     """말마다 독립적으로 프레임별 위치를 계산한다(인덱스 0 = 첫 번째 프레임).
     각 말의 최종 목표 칸(compute_final_positions)을 향한 선형 보간에 무작위
     지터를 더하되, 직전 프레임 대비 이동폭을 [-_MAX_BACKWARD_STEP,
-    +_MAX_FORWARD_STEP]로 클램프한다. 마지막 프레임은 지터 없이 target 그대로
-    고정해 도착(3등까지 최종 순위 확정)을 보장한다. `_MIN_FINISH_FRAME` 전에는
-    결승선에 못 닿게 상한을 낮추고, 한 번 결승선에 닿은 말은 이후 그 아래로
-    내려가지 않도록 하한을 고정한다."""
+    +_MAX_FORWARD_STEP]로 클램프한다(_interpolate_step). 마지막 프레임은 지터
+    없이 target 그대로 고정해 도착(3등까지 최종 순위 확정)을 보장한다.
+
+    burst_number가 주어지면(maybe_apply_underdog_burst 참고) 그 햄스터만
+    다르게 움직인다 — `_MIN_FINISH_FRAME` 이상 프레임 중 무작위로 고른
+    burst_frame 전까지는 burst_decoy_target(원래 자리)을 향해 평범하게
+    처지다가, burst_frame 그 프레임에 한 번 4~5칸을 몰아 점프하고, 그 이후는
+    실제 target(메달권)을 향해 다시 평범하게 이어간다."""
     r = rng or random
     final_positions = compute_final_positions(final_ranking)
+    burst_frame = r.randint(_MIN_FINISH_FRAME, _FRAME_COUNT - 1) if burst_number is not None else None
     frames: list[dict[int, int]] = []
     previous = {number: 0 for number in final_positions}
     for frame_index in range(1, _FRAME_COUNT + 1):
@@ -140,34 +210,19 @@ def compute_frame_positions(
             if frame_index == _FRAME_COUNT:
                 current[number] = target
                 continue
-            baseline = round(target * frame_index / _FRAME_COUNT)
-            jitter = r.randint(-_MAX_BACKWARD_STEP, _MAX_FORWARD_STEP)
-            candidate = baseline + jitter
             prev = previous[number]
-            already_finished = prev >= _TRACK_LENGTH
-            # 세 제약(직전 프레임 대비 이동폭 / 남은 프레임 예산으로 target 도달 가능 /
-            # 트랙 범위)의 교집합으로 **한 번에** 클램프한다 — 순차적으로 따로따로
-            # 클램프하면 마지막 클램프가 앞선 클램프의 경계를 다시 깨버릴 수 있다
-            # (실제로 이 버그가 재현돼 오프라인 테스트에서 잡혔다 — 목표 지점 강제
-            # 스냅 직전 프레임이 이동폭 상한을 초과하는 사례). 각 프레임이 항상 이
-            # 교집합 안에 있으면 다음 프레임에서도 다시 도달 가능함이 귀납적으로
-            # 보장된다(직전 프레임 최대 이동폭이 다음 프레임의 도달 가능 범위 하한을
-            # 정확히 커버하도록 설계됨).
-            lo = max(prev - _MAX_BACKWARD_STEP, target - frames_left * _MAX_FORWARD_STEP, 0)
-            hi = min(prev + _MAX_FORWARD_STEP, target + frames_left * _MAX_BACKWARD_STEP, _TRACK_LENGTH)
-            if target < _TRACK_LENGTH:
-                # 완주 못 하는(비메달권) 말은 아예 결승선에 안 닿게 막는다 —
-                # 안 그러면 마지막 프레임에 target으로 강제 복귀하며 "도착했다가
-                # 뒤로 밀려나는" 것처럼 보인다.
-                hi = min(hi, _TRACK_LENGTH - 1)
-            elif frame_index < _MIN_FINISH_FRAME:
-                hi = min(hi, _TRACK_LENGTH - 1)
-            if already_finished:
-                # 결승선에 닿았던 말은 다시 그 아래로 안 내려간다(결승선 안에서
-                # 앞으로 더 나아가는 것만 허용).
-                lo = max(lo, _TRACK_LENGTH)
-            candidate = max(lo, min(hi, candidate))
-            current[number] = candidate
+            if number == burst_number:
+                if frame_index < burst_frame:
+                    candidate = _interpolate_step(prev, burst_decoy_target, frame_index, frames_left, r)
+                elif frame_index == burst_frame:
+                    jump = r.randint(_BURST_JUMP_MIN, _BURST_JUMP_MAX)
+                    hi_cap = _TRACK_LENGTH if frame_index >= _MIN_FINISH_FRAME else _TRACK_LENGTH - 1
+                    candidate = min(prev + jump, hi_cap, target)
+                else:
+                    candidate = _interpolate_step(prev, target, frame_index, frames_left, r)
+                current[number] = candidate
+                continue
+            current[number] = _interpolate_step(prev, target, frame_index, frames_left, r)
         frames.append(current)
         previous = current
     return frames
@@ -341,8 +396,10 @@ _QUICK_RULES_FIELD_VALUE = (
 )
 
 
-def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
-    embed = discord.Embed(title="🐹 햄스터 경마 승부예측", color=GAMBLING_EMBED_COLOR)
+def _predictions_field_value(predictions: dict[int, int], final_ranking: list[int] | None) -> str:
+    """예측 현황 한 줄씩("N등 예측: 1️⃣ 잠보") — final_ranking이 주어지면(=결과가
+    나온 뒤) 각 줄 끝에 적중 여부(✅/❌)를 붙인다. 예측 단계 임베드(description)와
+    경주 애니메이션/정산 임베드(필드)가 이 함수 하나를 공유해 같은 형식을 유지한다."""
     lines = []
     for rank in (1, 2, 3):
         number = predictions.get(rank)
@@ -350,8 +407,16 @@ def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
             label = f"{_LANE_NUMBER_EMOJI[number - 1]} {_HAMSTERS_BY_NUMBER[number].name}"
         else:
             label = "???"
-        lines.append(f"{rank}등 예측: {label}")
-    embed.description = "\n".join(lines)
+        line = f"{rank}등 예측: {label}"
+        if final_ranking is not None and number is not None:
+            line += " ✅" if final_ranking[rank - 1] == number else " ❌"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
+    embed = discord.Embed(title="🐹 햄스터 경마 승부예측", color=GAMBLING_EMBED_COLOR)
+    embed.description = _predictions_field_value(predictions, None)
     embed.add_field(name="🔢 배율 안내", value=_QUICK_RULES_FIELD_VALUE, inline=False)
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     return embed
@@ -361,8 +426,16 @@ def _prediction_content(challenger_name: str) -> str:
     return f"## 🎯 도전자: {challenger_name}\n" + random.choice(_PREDICTION_INTRO_LINES)
 
 
-def _build_race_embed(positions: dict[int, int], finished_order: list[int]) -> discord.Embed:
+def _build_race_embed(
+    positions: dict[int, int],
+    finished_order: list[int],
+    predictions: dict[int, int],
+    final_ranking: list[int] | None = None,
+) -> discord.Embed:
+    """예측 현황을 필드로 넣어 경주 애니메이션 중에도(그리고 정산 시 ✅/❌와 함께)
+    상시 보이게 한다(2026-09-10) — footer는 트랙 그림 전용으로 그대로 둔다."""
     embed = discord.Embed(title="🐹 햄스터 경마", color=GAMBLING_EMBED_COLOR)
+    embed.add_field(name="🎯 예측 현황", value=_predictions_field_value(predictions, final_ranking), inline=False)
     track_text = render_track(positions, finished_order)
     embed.set_footer(text=f"{track_text}\n{format_footer_time(datetime.now(KST))}")
     return embed
@@ -416,16 +489,25 @@ class _PredictionView(discord.ui.View):
         self.predictions: dict[int, int] = {}
         self.message: discord.Message | None = None
 
+        self._rank_buttons: dict[int, discord.ui.Button] = {}
         for rank in (1, 2, 3):
-            button = discord.ui.Button(
-                label=f"{rank}등 예측하기", style=discord.ButtonStyle.primary, row=0
-            )
+            button = discord.ui.Button(label=f"{rank}등 예측", style=discord.ButtonStyle.primary, row=0)
             button.callback = self._make_rank_callback(rank, button)
+            self._rank_buttons[rank] = button
             self.add_item(button)
 
         info_button = discord.ui.Button(label="선수 정보 보기", style=discord.ButtonStyle.secondary, row=1)
         info_button.callback = self._show_info
         self.add_item(info_button)
+
+        # "경기 시작"은 2026-09-10부터 처음부터 자리 잡고 있다(舊에는 3개 예측이
+        # 다 채워진 뒤에야 동적으로 추가됐다) — 그 전까지는 회색+비활성 상태로
+        # 눌러도 반응하지 않고, 3등까지 다 고르면 초록+활성으로 바뀐다.
+        self._start_button = discord.ui.Button(
+            label="경기 시작", style=discord.ButtonStyle.secondary, disabled=True, row=1
+        )
+        self._start_button.callback = self._start_race
+        self.add_item(self._start_button)
 
     def _make_rank_callback(
         self, rank: int, button: discord.ui.Button
@@ -440,9 +522,13 @@ class _PredictionView(discord.ui.View):
 
             async def _on_pick(modal_interaction: discord.Interaction, number: int) -> None:
                 self.predictions[rank] = number
-                self.remove_item(button)
+                # 舊에는 버튼을 아예 제거했지만, 2026-09-10부터는 회색+비활성으로만
+                # 바꾸고 남겨둔다 — 뭘 골랐는지 버튼 배치로도 한눈에 보이게 하기 위함.
+                button.style = discord.ButtonStyle.secondary
+                button.disabled = True
                 if len(self.predictions) == 3:
-                    self._add_start_button()
+                    self._start_button.style = discord.ButtonStyle.success
+                    self._start_button.disabled = False
                 # embeds=는 배열을 통째로 교체하므로 영수증(current=None)을
                 # 매번 다시 만들어 함께 넘겨야 한다(slot.py::_spin_row와 동일).
                 receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, None)
@@ -461,19 +547,15 @@ class _PredictionView(discord.ui.View):
         embed.set_footer(text=format_footer_time(datetime.now(KST)))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    def _add_start_button(self) -> None:
-        button = discord.ui.Button(label="경기 시작", style=discord.ButtonStyle.success, row=0)
-
-        async def _callback(interaction: discord.Interaction) -> None:
-            if not await reject_if_already_resolved(self, interaction):
-                return
-            if not await reject_if_wrong_user_with_cta(interaction, self.challenger_id, _OWN_COMMAND):
-                return
-            self.stop()
-            await _run_race(self, interaction)
-
-        button.callback = _callback
-        self.add_item(button)
+    async def _start_race(self, interaction: discord.Interaction) -> None:
+        # disabled 버튼은 클라이언트가 클릭 자체를 안 보내므로 이 콜백은 3등까지
+        # 다 골랐을 때만 실제로 불린다 — 별도의 "아직 다 안 골랐어" 방어는 불필요.
+        if not await reject_if_already_resolved(self, interaction):
+            return
+        if not await reject_if_wrong_user_with_cta(interaction, self.challenger_id, _OWN_COMMAND):
+            return
+        self.stop()
+        await _run_race(self, interaction)
 
     async def on_timeout(self) -> None:
         """10분 동안 못 채운 등수는 무작위(중복 없이)로 채운 뒤 곧바로 경주를
@@ -505,7 +587,12 @@ def _build_replay_view(user_id: int) -> ReplayView:
             except discord.HTTPException:
                 logging.exception("Failed to clear old horse race message buttons after replay")
 
-    return ReplayView(user_id, _OWN_COMMAND, _on_replay)
+    async def _open_modal(interaction: discord.Interaction, balance: int, on_valid) -> None:
+        await interaction.response.send_modal(
+            BetAmountModal(balance=balance, max_bet=MAX_BET_GAMBLING, on_valid=on_valid)
+        )
+
+    return ReplayView(user_id, _OWN_COMMAND, _on_replay, open_modal=_open_modal)
 
 
 async def _run_race(view: _PredictionView, trigger_interaction: discord.Interaction | None) -> None:
@@ -517,7 +604,8 @@ async def _run_race(view: _PredictionView, trigger_interaction: discord.Interact
     view.message.edit()으로 진행한다(타임아웃 경로는 애초에 살아있는 인터랙션이
     없어 처음부터 message.edit()만 쓴다)."""
     final_ranking = compute_final_ranking()
-    frames = compute_frame_positions(final_ranking)
+    final_ranking, burst_number, burst_decoy_target = maybe_apply_underdog_burst(final_ranking)
+    frames = compute_frame_positions(final_ranking, burst_number=burst_number, burst_decoy_target=burst_decoy_target)
     empty_view = discord.ui.View()  # 애니메이션 중엔 상호작용 불가(중복 시작 방지)
     finished_order: list[int] = []
 
@@ -526,7 +614,7 @@ async def _run_race(view: _PredictionView, trigger_interaction: discord.Interact
     # 장면 없이 바로 달리는 중인 모습부터 보이는 문제가 있었다. 여기서 전부
     # 0(트랙 맨 앞)인 프레임을 애니메이션 맨 앞에 명시적으로 하나 더 보여준다.
     start_positions = {h.number: 0 for h in HAMSTERS}
-    start_embed = _build_race_embed(start_positions, finished_order)
+    start_embed = _build_race_embed(start_positions, finished_order, view.predictions)
     start_content = f"## 🎯 도전자: {view.challenger_name}\n{random.choice(_RACE_START_LINES)}"
 
     if trigger_interaction is not None:
@@ -557,7 +645,7 @@ async def _run_race(view: _PredictionView, trigger_interaction: discord.Interact
         for number in final_ranking:
             if positions[number] >= _TRACK_LENGTH and number not in finished_order:
                 finished_order.append(number)
-        embed = _build_race_embed(positions, finished_order)
+        embed = _build_race_embed(positions, finished_order, view.predictions)
         content = f"## 🎯 도전자: {view.challenger_name}\n{random.choice(_RACE_RUNNING_LINES)}"
 
         if view.message is None:
@@ -579,14 +667,6 @@ async def _run_race(view: _PredictionView, trigger_interaction: discord.Interact
 async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
     multiplier = evaluate_payout(view.predictions, final_ranking)
 
-    result_lines = []
-    for rank in (1, 2, 3):
-        predicted_number = view.predictions.get(rank)
-        actual_number = final_ranking[rank - 1]
-        mark = "✅" if predicted_number == actual_number else "❌"
-        predicted_name = _HAMSTERS_BY_NUMBER[predicted_number].name if predicted_number else "???"
-        result_lines.append(f"{rank}등 예측: {predicted_name} {mark}")
-
     if multiplier == 0:
         user = await get_user(view.challenger_id)
         current_coins = user["coins"] if user is not None else view.before_coins - view.bet
@@ -606,14 +686,18 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
         # 처리되므로 여기서는 부여만 시도한다.
         await maybe_award_legendary_multiplier(view.challenger_id, multiplier)
 
-    content = f"## 🎯 도전자: {view.challenger_name}\n{text}\n\n" + "\n".join(result_lines)
+    content = f"## 🎯 도전자: {view.challenger_name}\n{text}"
 
     if view.message is None:
         mark_inactive(view.challenger_id)
         return
     # 영수증 임베드와 나란히 붙여야 해서(embeds=[...]는 배열 전체 교체) 마지막
-    # 프레임을 재구성한다 — final_ranking[:3]이 곧 결승선 도달 순서다.
-    race_embed = _build_race_embed(compute_final_positions(final_ranking), final_ranking[:3])
+    # 프레임을 재구성한다 — final_ranking[:3]이 곧 결승선 도달 순서다. 예측
+    # 현황 필드에 final_ranking을 넘겨 적중 여부(✅/❌)를 함께 보여준다(舊
+    # content의 "N등 예측: 이름 ✅" 텍스트는 이 필드와 중복이라 제거했다).
+    race_embed = _build_race_embed(
+        compute_final_positions(final_ranking), final_ranking[:3], view.predictions, final_ranking=final_ranking
+    )
     replay_view = _build_replay_view(view.challenger_id)
     try:
         await view.message.edit(content=content, embeds=[race_embed, receipt_embed], view=replay_view)

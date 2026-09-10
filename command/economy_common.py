@@ -58,19 +58,20 @@ async def reject_if_already_resolved(view: discord.ui.View, interaction: discord
         return False
     return True
 
-# 슬롯머신(/도박) 최대 배율(세븐 8라인 동시 완성 = 77^8 = 1,235,736,291,547,681)을
-# 곱해도 Postgres bigint 상한(9,223,372,036,854,775,807, 약 7,463배 여유)을 넘지
-# 않도록 배팅액 자체에 안전 상한을 둔다. /내기·/도박의 BetAmountModal이 이 값으로
-# 직접 범위 검증을 한다 — 슬래시 파라미터가 아니라 모달 입력이라 app_commands.Range는
-# 안 쓴다.
-MAX_BET = 1_000
+# /내기와 /도박은 배팅 상한 자체가 다르다(2026-09-10) — 위험도가 낮은 /내기는
+# 100코인, 크게 걸 수 있는 /도박(슬롯머신·승부예측)은 1,000,000코인. 배율은 이미
+# 최종 지급 전에 하드 캡되므로(슬롯머신 MAX_MULTIPLIER=77, 승부예측
+# JACKPOT_MULTIPLIER=100) `배팅액 x 배율`은 최대 1억 수준 — Postgres bigint
+# 상한(약 9.2 x 10^18)과 비교해 넉넉히 안전하다. BetAmountModal이 이 값으로 직접
+# 범위 검증을 한다(모달 입력이라 app_commands.Range는 안 씀). 더블오어낫띵은
+# 올인/하프만 선택하므로 이 상한 자체가 적용되지 않는다(AllInHalfModal 참고).
+MAX_BET_BETTING = 100
+MAX_BET_GAMBLING = 1_000_000
 
 
 # "다시하기" 버튼은 게임 자체(60초)보다 훨씬 짧게 준다 — 이미 한 판을 끝낸 뒤라 오래
 # 붙잡아둘 이유가 없다. /내기·/도박이 공유.
 REPLAY_TIMEOUT_SECONDS = 10
-
-INVALID_AMOUNT_RESPONSE = f"1~{MAX_BET} 사이의 숫자로 적어줘!! _(갸웃)_"
 
 # 유저별 "진행 중인 판" 추적(2026-09-09 신규) — /내기·/도박(슬롯머신·승부예측 전부
 # 포함)은 서로 크로스로 막는다: 이미 한쪽에서 판이 진행 중이면(정산 후 "다시하기"
@@ -176,19 +177,24 @@ async def reject_if_wrong_user_with_cta(
 
 
 class BetAmountModal(discord.ui.Modal):
-    """배팅 금액 입력 전용 모달 — 게임 종류 선택 버튼과 "다시하기" 버튼이 공유한다
-    (/내기·/도박 공통). on_valid(interaction, amount)는 검증을 통과한 정수 금액을 받아
-    실제로 판을 시작하는 콜백이다."""
+    """배팅 금액 입력 전용 모달 — 게임 종류 선택 버튼과 "다시하기" 버튼이 공유한다.
+    max_bet은 호출부가 넘긴다(/내기=MAX_BET_BETTING, /도박=MAX_BET_GAMBLING —
+    더블오어낫띵은 이 모달 자체를 안 씀, AllInHalfModal 참고). on_valid(interaction,
+    amount)는 검증을 통과한 정수 금액을 받아 실제로 판을 시작하는 콜백이다."""
 
-    def __init__(self, *, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]) -> None:
+    def __init__(
+        self, *, balance: int, max_bet: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
+    ) -> None:
         super().__init__(title="배팅 금액 입력")
         self._on_valid = on_valid
+        self._max_bet = max_bet
+        self._invalid_amount_response = f"1~{max_bet} 사이의 숫자로 적어줘!! _(갸웃)_"
         # TextInput(label=...)는 discord.py 2.6부터 deprecated — 대신 Label로 감싼다
         # (모달 전용 최상위 레이아웃 컴포넌트, text가 곧 입력칸 위에 뜨는 라벨).
         self.amount_input = discord.ui.TextInput(
-            placeholder=f"1~{MAX_BET} 사이 숫자로 입력",
+            placeholder=f"1~{max_bet} 사이 숫자로 입력",
             required=True,
-            max_length=len(str(MAX_BET)),
+            max_length=len(str(max_bet)),
         )
         self.add_item(
             discord.ui.Label(
@@ -200,10 +206,10 @@ class BetAmountModal(discord.ui.Modal):
         try:
             amount = int(self.amount_input.value.strip())
         except ValueError:
-            await interaction.response.send_message(INVALID_AMOUNT_RESPONSE, ephemeral=True)
+            await interaction.response.send_message(self._invalid_amount_response, ephemeral=True)
             return
-        if not (1 <= amount <= MAX_BET):
-            await interaction.response.send_message(INVALID_AMOUNT_RESPONSE, ephemeral=True)
+        if not (1 <= amount <= self._max_bet):
+            await interaction.response.send_message(self._invalid_amount_response, ephemeral=True)
             return
         await self._on_valid(interaction, amount)
 
@@ -223,18 +229,30 @@ class ReplayView(discord.ui.View):
     mark_inactive()를 호출해 이 유저가 다시 /내기·/도박을 새로 시작할 수 있게
     한다. 버튼을 눌러 다시하기를 선택하면 on_replay가 곧바로 다음 판을 시작하며
     (mark_active가 그 안에서 다시 호출됨) 이 시점엔 절대 mark_inactive를 호출하지
-    않는다 — 계속 "진행 중" 상태로 이어진다."""
+    않는다 — 계속 "진행 중" 상태로 이어진다.
+
+    open_modal(interaction, balance, on_valid)는 실제로 어떤 모달을 띄울지
+    호출부가 결정한다(2026-09-10 신규) — 게임마다 배팅 방식이 달라졌기 때문
+    (`/내기`는 `BetAmountModal(max_bet=MAX_BET_BETTING)`, 슬롯머신·승부예측은
+    `BetAmountModal(max_bet=MAX_BET_GAMBLING)`, 더블오어낫띵은
+    `double_or_nothing.AllInHalfModal` — 셋 다 최초 진입과 다시하기가 동일한
+    open_modal을 공유해 로직이 갈리지 않는다)."""
 
     def __init__(
         self,
         user_id: int,
         own_command: str,
         on_replay: Callable[[discord.Interaction, int, "discord.Message | None"], Awaitable[None]],
+        *,
+        open_modal: Callable[
+            [discord.Interaction, int, Callable[[discord.Interaction, int], Awaitable[None]]], Awaitable[None]
+        ],
     ) -> None:
         super().__init__(timeout=REPLAY_TIMEOUT_SECONDS)
         self.user_id = user_id
         self.own_command = own_command
         self._on_replay = on_replay
+        self._open_modal = open_modal
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
@@ -257,9 +275,7 @@ class ReplayView(discord.ui.View):
         async def _on_valid(modal_interaction: discord.Interaction, amount: int) -> None:
             await self._on_replay(modal_interaction, amount, old_message)
 
-        await interaction.response.send_modal(
-            BetAmountModal(balance=balance, on_valid=_on_valid)
-        )
+        await self._open_modal(interaction, balance, _on_valid)
 
 
 class PurchaseConfirmModal(discord.ui.Modal):
@@ -303,7 +319,7 @@ class PurchaseConfirmModal(discord.ui.Modal):
 
 # RulesView/_RuleButton은 2026-09-10 command/rules_info.py(`/봇정보-규칙`)로
 # 이전했다 — 그 시점부터 이 클래스들의 유일한 소비자가 됐다(舊 /내기-규칙·
-# /도박-규칙은 폐지). GAMBLING_EMBED_COLOR/MAX_BET 등 다른 경제 상수는 이
+# /도박-규칙은 폐지). GAMBLING_EMBED_COLOR/MAX_BET_BETTING/MAX_BET_GAMBLING 등 다른 경제 상수는 이
 # 파일에 그대로 있고, 뷰 자체만 옮겼다.
 
 

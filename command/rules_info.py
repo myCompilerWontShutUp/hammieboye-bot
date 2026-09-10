@@ -8,7 +8,7 @@ import command.double_or_nothing as double_or_nothing
 import command.horse_race as horse_race
 import command.slot as slot
 from command.bet import ODD_EVEN_RULE_TEXT, RPS_RULE_TEXT, UPDOWN_RULE_TEXT
-from command.economy_common import GAMBLING_EMBED_COLOR, MAX_BET
+from command.economy_common import GAMBLING_EMBED_COLOR, MAX_BET_BETTING, MAX_BET_GAMBLING
 from events.scheduler import KST, format_footer_time
 
 # `/봇정보-규칙`(舊 /내기-규칙·/도박-규칙 통합) — 내기·도박의 게임별 규칙을
@@ -92,10 +92,11 @@ _INTRO_LINES = (
 # 고정한다(§22-4).
 _OVERVIEW_TEXT = (
     "동전을 걸고 즐기는 미니게임 모음입니다.\n\n"
-    "- 내기: 홀짝 · 가위바위보 · 업다운 (비교적 안전하게 즐길 수 있는 게임)\n"
-    "- 도박: 슬롯머신 · 승부예측 · 더블오어낫띵 (위험한 만큼 크게 벌 수 있는 게임)\n\n"
-    f"배팅액은 1~{MAX_BET}동전까지 걸 수 있고, 게임 진행 중 10분 동안 아무것도 "
-    "고르지 않으면 포기한 것으로 간주해 배팅액을 모두 잃습니다.\n\n"
+    f"- 내기: 홀짝 · 가위바위보 · 업다운 (비교적 안전, 배팅액 1~{MAX_BET_BETTING}동전)\n"
+    f"- 도박: 슬롯머신 · 승부예측 (위험한 만큼 크게 벌 수 있음, 배팅액 "
+    f"1~{MAX_BET_GAMBLING:,}동전) · 더블오어낫띵(올인 또는 하프 중 선택, 상한 없음)\n\n"
+    "게임 진행 중 10분 동안 아무것도 고르지 않으면 포기한 것으로 간주해 배팅액을 "
+    "모두 잃습니다.\n\n"
     "아래 버튼에서 원하는 게임을 골라주세요."
 )
 

@@ -9,6 +9,7 @@
 
 import logging
 import random
+from typing import Awaitable, Callable
 
 import discord
 
@@ -87,6 +88,8 @@ _CASHOUT_LINES = (
 # /봇정보-규칙(command/rules_info.py)이 그대로 넘기는 규칙 본문(§22-4 정중체).
 DOUBLE_OR_NOTHING_RULE_TEXT = (
     "📦 더블오어낫띵\n\n"
+    "- 시작 판돈은 직접 입력하지 않고 \"올인\"(보유 동전 전부) 또는 \"하프\"(절반) "
+    "중 하나를 선택합니다.\n"
     "- 상자를 열면 50% 확률로 판돈이 2배가 되고, 50% 확률로 폭탄을 만나 판돈을 "
     "전부 잃습니다.\n"
     "- 판돈이 2배가 되면 \"한 판 더\"로 계속 도전하거나 \"여기까지\"로 그 자리에서 "
@@ -96,6 +99,47 @@ DOUBLE_OR_NOTHING_RULE_TEXT = (
     "- 상자 열기(또는 한 판 더/여기까지 선택)를 10분 안에 하지 않으면 포기한 "
     "것으로 간주해 결과 확인 없이 판돈을 모두 잃습니다."
 )
+
+
+class AllInHalfModal(discord.ui.Modal):
+    """더블오어낫띵 전용 시작 판돈 선택 모달(2026-09-10 신규) — 다른 5개 게임과
+    달리 직접 금액을 입력하지 않고, "올인"(보유 동전 전부) 또는 "하프"(절반, 내림)
+    중 정확히 하나만 체크해야 진행된다(체크박스 2개, `BetAmountModal`과 달리
+    상한 자체가 없다 — 슬롯머신·승부예측 전용 MAX_BET_GAMBLING 대상이 아니다).
+    slot.py의 게임 선택 버튼과 이 파일의 `_build_replay_view` 둘 다 공유한다."""
+
+    _NONE_CHECKED_RESPONSE = "올인 또는 하프 중 하나를 체크해야 진행돼!! _(갸웃)_"
+    _BOTH_CHECKED_RESPONSE = "올인과 하프 중 하나만 체크해줘!! _(갸웃)_"
+
+    def __init__(self, *, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]) -> None:
+        super().__init__(title="더블오어낫띵 판돈 선택")
+        self._balance = balance
+        self._on_valid = on_valid
+        self._all_in = discord.ui.Checkbox(default=False)
+        self._half = discord.ui.Checkbox(default=False)
+        self.add_item(
+            discord.ui.Label(
+                text="올인", description=f"보유 동전 전부({balance:,}코인)를 겁니다.", component=self._all_in
+            )
+        )
+        self.add_item(
+            discord.ui.Label(
+                text="하프",
+                description=f"보유 동전의 절반({balance // 2:,}코인)을 겁니다.",
+                component=self._half,
+            )
+        )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if self._all_in.value == self._half.value:  # 둘 다 False거나 둘 다 True
+            response = self._BOTH_CHECKED_RESPONSE if self._all_in.value else self._NONE_CHECKED_RESPONSE
+            await interaction.response.send_message(response, ephemeral=True)
+            return
+        amount = self._balance if self._all_in.value else self._balance // 2
+        if amount < 1:
+            await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
+            return
+        await self._on_valid(interaction, amount)
 
 
 def _build_replay_view(user_id: int) -> ReplayView:
@@ -113,7 +157,12 @@ def _build_replay_view(user_id: int) -> ReplayView:
             except discord.HTTPException:
                 logging.exception("Failed to clear old double-or-nothing message buttons after replay")
 
-    return ReplayView(user_id, _OWN_COMMAND, _on_replay)
+    async def _open_modal(
+        interaction: discord.Interaction, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
+    ) -> None:
+        await interaction.response.send_modal(AllInHalfModal(balance=balance, on_valid=on_valid))
+
+    return ReplayView(user_id, _OWN_COMMAND, _on_replay, open_modal=_open_modal)
 
 
 class _BoxView(discord.ui.View):

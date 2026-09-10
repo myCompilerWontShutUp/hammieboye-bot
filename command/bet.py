@@ -9,6 +9,7 @@ from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
+    MAX_BET_BETTING,
     TIMEOUT_SECONDS,
     BetAmountModal,
     ReplayView,
@@ -297,7 +298,12 @@ def _build_replay_view(user_id: int, game_kind: str) -> ReplayView:
             except discord.HTTPException:
                 logging.exception("Failed to clear old bet message buttons after replay")
 
-    return ReplayView(user_id, _OWN_COMMAND, _on_replay)
+    async def _open_modal(interaction: discord.Interaction, balance: int, on_valid) -> None:
+        await interaction.response.send_modal(
+            BetAmountModal(balance=balance, max_bet=MAX_BET_BETTING, on_valid=on_valid)
+        )
+
+    return ReplayView(user_id, _OWN_COMMAND, _on_replay, open_modal=_open_modal)
 
 
 async def _start_round(
@@ -305,7 +311,7 @@ async def _start_round(
 ) -> None:
     """모달에서 유효한 금액을 받은 뒤 실제 판을 새 공개 메시지로 연다 — 첫 판이든
     "다시하기"든 항상 새 메시지다(2026-09-07, 이전엔 다시하기가 같은 메시지를
-    고쳐써서 이전 판 기록이 사라졌다). 금액 검증(1~MAX_BET)은 모달이 이미 끝냈으니
+    고쳐써서 이전 판 기록이 사라졌다). 금액 검증(1~max_bet)은 모달이 이미 끝냈으니
     여기서는 잔액만 확인한다.
 
     is_replay=False(신규 진입, 게임 선택 버튼)일 때만 claim_active_or_reject로
@@ -622,7 +628,9 @@ class _GameSelectView(EphemeralAutoDeleteView):
             except discord.HTTPException:
                 logging.exception("Failed to delete game-select prompt after game start")
 
-        await interaction.response.send_modal(BetAmountModal(balance=balance, on_valid=_on_valid))
+        await interaction.response.send_modal(
+            BetAmountModal(balance=balance, max_bet=MAX_BET_BETTING, on_valid=_on_valid)
+        )
 
     @discord.ui.button(label="홀짝", style=discord.ButtonStyle.primary)
     async def odd_even(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
