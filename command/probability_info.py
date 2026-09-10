@@ -1,4 +1,3 @@
-import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -7,7 +6,7 @@ import discord
 import command.horse_race as horse_race
 import command.slot as slot
 from command.black_market_catalog import SNACK_ITEMS as _BLACK_MARKET_SNACKS
-from core.base import SYSTEM_EMBED_COLOR, reject_if_wrong_invoker
+from core.base import SYSTEM_EMBED_COLOR, clear_on_timeout, reject_if_wrong_invoker
 from events.scheduler import KST, format_footer_time
 
 # `/봇정보-확률공개` — 확률형 콘텐츠(내기·도박·암시장)의 확률을 전부 공개하는 상시
@@ -184,10 +183,7 @@ class _ProbabilityInfoView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear probability info buttons on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="probability info buttons")
 
     async def _go(self, interaction: discord.Interaction, step: int) -> None:
         if not await reject_if_wrong_invoker(interaction, self.user_id):

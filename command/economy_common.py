@@ -1,10 +1,10 @@
-import logging
 import random
 from typing import Awaitable, Callable
 
 import discord
 
 import achievements
+from core.base import clear_on_timeout
 from core.korean import josa
 from db.achievements import award as award_achievement
 from db.users import get_user
@@ -259,10 +259,7 @@ class ReplayView(discord.ui.View):
         mark_inactive(self.user_id)
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear replay button on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="replay button")
 
     @discord.ui.button(label="다시하기", style=discord.ButtonStyle.success)
     async def replay(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

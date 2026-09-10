@@ -1,11 +1,10 @@
-import logging
 import random
 from datetime import datetime
 
 import discord
 
 import achievements
-from core.base import EMBED_COLOR, LIST_EMBED_COLOR, reject_if_wrong_invoker
+from core.base import EMBED_COLOR, LIST_EMBED_COLOR, clear_on_timeout, reject_if_wrong_invoker
 from events.scheduler import KST, format_footer_time
 from db.achievements import get_earned
 
@@ -191,10 +190,7 @@ class _AchievementListView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear achievement list buttons on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="achievement list buttons")
 
     async def _go(self, interaction: discord.Interaction, step: int) -> None:
         if not await reject_if_wrong_invoker(interaction, self.user_id):

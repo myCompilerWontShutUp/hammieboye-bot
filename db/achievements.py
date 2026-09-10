@@ -1,3 +1,5 @@
+import logging
+
 import aiohttp
 
 import achievements
@@ -47,8 +49,24 @@ async def award(user_id: int, achievement_id: str) -> dict:
 
     module = achievements.REGISTRY[achievement_id]
     bonus = _LEGENDARY_XP if module.RARITY == achievements.LEGENDARY else _NORMAL_XP
-    await apply_xp_and_check_levelup(user_id, bonus)
-    await broadcast_achievement_unlock(user_id, module)
+    # award_achievement(...)는 프로젝트 전역에서 "fire-and-forget"으로 호출되는 게
+    # 원칙(CLAUDE.md §23-1)이지만, 이 시점까지는 업적 자체가 이미 DB에 기록된 뒤라 —
+    # 아래 XP 지급/레벨업 판정/방송은 순수 부수 효과다. 이 부수 효과에서 예외가 새면
+    # (예: 레벨업 코인 지급 실패 등) 호출부 전부가 그 예외를 그대로 맞아 정작 하려던
+    # 일(자연어 응답, 배팅 정산, 취침 전 인사 방송 등)이 중단되는 사고가 실제로 있었다
+    # (2026-09-11 — 취침 전 최다 대화자 방송이 이 경로에서 죽어서 하루 통째로 누락됨).
+    # 업적 기록 자체는 이미 끝났으니, 부수 효과 실패는 로그만 남기고 삼켜서 호출부를
+    # 절대 방해하지 않는다.
+    try:
+        await apply_xp_and_check_levelup(user_id, bonus)
+        await broadcast_achievement_unlock(user_id, module)
+    except Exception:
+        logging.exception(
+            "Failed to grant XP/broadcast for achievement %r (user %s) — the achievement "
+            "itself was still recorded",
+            achievement_id,
+            user_id,
+        )
     return {"earned": True}
 
 

@@ -1,4 +1,3 @@
-import logging
 import random
 from datetime import datetime
 
@@ -9,6 +8,7 @@ import command.horse_race as horse_race
 import command.slot as slot
 from command.bet import ODD_EVEN_RULE_TEXT, RPS_RULE_TEXT, UPDOWN_RULE_TEXT
 from command.economy_common import GAMBLING_EMBED_COLOR, MAX_BET_BETTING, MAX_BET_GAMBLING
+from core.base import clear_on_timeout
 from events.scheduler import KST, format_footer_time
 
 # `/봇정보-규칙`(舊 /내기-규칙·/도박-규칙 통합) — 내기·도박의 게임별 규칙을
@@ -61,10 +61,7 @@ class RulesView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear rules view buttons on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="rules view buttons")
 
 _TITLE = "🎲🎰 내기 · 도박 규칙"
 

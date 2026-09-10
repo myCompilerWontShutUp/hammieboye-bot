@@ -33,6 +33,17 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.4.6",
+        commit_hash="PENDING",
+        date="2026-09-11",
+        changes=(
+            "일시적인 서버 오류가 겹치면 버튼을 눌러도 반응이 없고 시간이 지나도 "
+            "버튼이 사라지지 않던 문제가 수정되었습니다.",
+            "예약된 안내 방송(취침 전 인사 등)이 드물게 누락되던 문제도 함께 "
+            "수정되었습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.4.5",
         commit_hash="a4fabd1",
         date="2026-09-10",

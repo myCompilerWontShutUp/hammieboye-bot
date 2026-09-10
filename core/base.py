@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import random
+from typing import Awaitable, Callable
 
 import discord
 
@@ -11,6 +13,37 @@ from db.guild_channels import touch
 EMBED_COLOR = 0xFFCC99  # 개인 정보 계열 — /내정보·/니정보의 모든 카테고리 결과.
 SYSTEM_EMBED_COLOR = 0x95A5A6  # 시스템 공지성 임베드 — 헬프 미/디저트 타임 안내, ann update 등.
 LIST_EMBED_COLOR = 0x9B59B6  # 특정 도메인에 안 속하는 카탈로그/순위형 — 업적 리스트, 랭킹.
+
+_TIMEOUT_CLEAR_RETRIES = 2
+_TIMEOUT_CLEAR_BACKOFF_SECONDS = 2.0
+
+
+async def clear_on_timeout(action: Callable[[], Awaitable[None]], *, log_label: str) -> None:
+    """View.on_timeout()에서 "버튼(또는 메시지) 지우기" 딱 한 번만 시도하고 실패하면
+    그냥 로그만 남기던 기존 패턴(vending/black_market/info/ranking/achievements/
+    probability_info/level_info/rules_info 등 9곳이 전부 동일하게 이 형태였다)을
+    공용화한 헬퍼(2026-09-11 신규). 단발성 `discord.HTTPException`(레이트리밋, 일시적
+    5xx 등) 한 번에 버튼이 영구히 안 지워진 채(눌러도 반응 없음) 남는 사고가 실제로
+    있었다 — 그날 Supabase REST가 504를 내던 것과 겹치는 시간대라 같은 네트워크
+    불안정 구간의 여파로 추정된다. `on_timeout()`은 딱 한 번만 호출되고 재시도되지
+    않으므로, 짧은 재시도를 여기서 대신 흡수한다 — 그래도 전부 실패하면 이전과
+    동일하게 로그만 남기고 포기한다(사용자에게는 여전히 "다시 명령어를 실행해달라"는
+    안내가 필요할 수 있음, 이건 코드로 강제할 수 없다).
+
+    action은 인자 없는 콜백(예: `lambda: message.edit(view=None)`)이어야 한다 — 매
+    시도마다 새 코루틴을 만들어야 해서(코루틴은 한 번만 await 가능) 이미 만들어진
+    코루틴 객체가 아니라 호출 가능한 함수를 받는다."""
+    for attempt in range(_TIMEOUT_CLEAR_RETRIES + 1):
+        try:
+            await action()
+            return
+        except discord.HTTPException:
+            if attempt == _TIMEOUT_CLEAR_RETRIES:
+                logging.exception(
+                    "Failed to clear %s on timeout after %d attempt(s)", log_label, attempt + 1
+                )
+                return
+            await asyncio.sleep(_TIMEOUT_CLEAR_BACKOFF_SECONDS * (attempt + 1))
 
 
 def normalize(text: str) -> str:
@@ -78,7 +111,4 @@ class EphemeralAutoDeleteView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.interaction is None:
             return
-        try:
-            await self.interaction.delete_original_response()
-        except discord.HTTPException:
-            logging.exception("Failed to delete ephemeral message on timeout")
+        await clear_on_timeout(self.interaction.delete_original_response, log_label="ephemeral message")

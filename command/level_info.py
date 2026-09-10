@@ -1,10 +1,9 @@
-import logging
 from datetime import datetime
 
 import discord
 
 import levels
-from core.base import SYSTEM_EMBED_COLOR, reject_if_wrong_invoker
+from core.base import SYSTEM_EMBED_COLOR, clear_on_timeout, reject_if_wrong_invoker
 from events.scheduler import KST, format_footer_time
 
 # `/봇정보-레벨`(2026-09-10 신규) — 레벨 시스템(CLAUDE.md §23)의 단계별 혜택을
@@ -126,10 +125,7 @@ class _LevelInfoView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear level info dropdown on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="level info dropdown")
 
 
 def build_view(user_id: int) -> tuple[discord.Embed, discord.ui.View]:

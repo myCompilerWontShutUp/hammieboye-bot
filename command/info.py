@@ -1,12 +1,11 @@
 import asyncio
-import logging
 import random
 from datetime import datetime
 
 import discord
 
 import levels
-from core.base import EMBED_COLOR, reject_if_wrong_invoker
+from core.base import EMBED_COLOR, clear_on_timeout, reject_if_wrong_invoker
 from core.korean import josa
 from events.scheduler import KST, format_footer_time
 from events.special_days import get_help_me_event_count
@@ -365,10 +364,7 @@ class _InfoView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear info category buttons on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="info category buttons")
 
 
 async def handle_self(interaction: discord.Interaction) -> tuple[str, discord.Embed, discord.ui.View]:

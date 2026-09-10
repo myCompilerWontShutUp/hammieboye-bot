@@ -1,11 +1,10 @@
 import asyncio
-import logging
 import random
 from datetime import datetime
 
 import discord
 
-from core.base import LIST_EMBED_COLOR, reject_if_wrong_invoker
+from core.base import LIST_EMBED_COLOR, clear_on_timeout, reject_if_wrong_invoker
 from core.discord_names import resolve_real_name
 from events.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates, get_top_coin_candidates
@@ -166,10 +165,7 @@ class _RankingView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear ranking list buttons on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="ranking list buttons")
 
 
 async def handle(user_id: int, client: discord.Client) -> tuple[str, discord.Embed, discord.ui.View]:

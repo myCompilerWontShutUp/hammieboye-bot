@@ -130,14 +130,37 @@ def format_footer_time(now: datetime) -> str:
     return f"{now.strftime('%Y. %m. %d.')} {now.strftime('%I:%M')} {period}"
 
 
+def _guarded(callback: _DailyCallback) -> _DailyCallback:
+    """`discord.ext.tasks.Loop`는 콜백에서 처리되지 않은 예외가 새면(설령 `.error()`
+    핸들러를 따로 달아도) 그 반복 자체를 영구히 멈춘다 — 프로세스가 재시작되기 전까지는
+    다시 안 돈다(2026-09-11 발견 — 이 안전장치가 없어서 취침 전 최다 대화자 방송(§3-5)이
+    하루 통째로 누락된 사고가 있었다). 그날그날의 우연한 예외 하나가 그 태스크를
+    영구히 죽여버리는 걸 막기 위해, `start_daily`/`start_interval`이 등록하는 모든
+    콜백을 여기서 한 번 감싸 예외를 로그만 남기고 삼킨다 — 다음 주기에 다시 정상
+    실행된다."""
+
+    async def _wrapped() -> None:
+        try:
+            await callback()
+        except Exception:
+            logging.exception(
+                "Unhandled exception in scheduled task %r — this occurrence was skipped, "
+                "next scheduled run is unaffected",
+                getattr(callback, "__name__", callback),
+            )
+
+    return _wrapped
+
+
 def start_daily(hour: int, minute: int, callback: _DailyCallback) -> tasks.Loop:
     """매일 한국시간 hour:minute에 callback을 한 번 실행하는 백그라운드 태스크를 시작한다.
 
     헬프 미 이벤트/아침 인사(하루 06:30 기상 시각에 실행)와 취침 이벤트(00:00) 둘 다
-    이 함수 위에서 등록한다.
+    이 함수 위에서 등록한다. `_guarded`로 감싸므로 callback 내부에서 예외가 나도
+    이 일일 반복 자체는 계속 살아있다.
     """
     kst_time = time(hour=hour, minute=minute, tzinfo=KST)
-    loop = tasks.loop(time=kst_time)(callback)
+    loop = tasks.loop(time=kst_time)(_guarded(callback))
     loop.start()
     return loop
 
@@ -146,8 +169,9 @@ def start_interval(seconds: float, callback: _DailyCallback) -> tasks.Loop:
     """seconds 간격으로 callback을 반복 실행하는 백그라운드 태스크를 시작한다.
 
     헬프 미 이벤트의 "예정 시각이 됐는지" / "만료됐는데 무응답인지" 주기 점검에 쓴다.
+    `_guarded`로 감싸므로 callback 내부에서 예외가 나도 이 반복 자체는 계속 살아있다.
     """
-    loop = tasks.loop(seconds=seconds)(callback)
+    loop = tasks.loop(seconds=seconds)(_guarded(callback))
     loop.start()
     return loop
 

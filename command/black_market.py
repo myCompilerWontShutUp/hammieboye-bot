@@ -4,7 +4,7 @@ from datetime import datetime
 
 import discord
 
-from core.base import reject_if_wrong_invoker
+from core.base import clear_on_timeout, reject_if_wrong_invoker
 from core.korean import josa
 from command.economy_common import (
     INSUFFICIENT_FUNDS_LINES,
@@ -328,10 +328,7 @@ class _BlackMarketView(discord.ui.View):
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        try:
-            await self.message.edit(view=None)
-        except discord.HTTPException:
-            logging.exception("Failed to clear black market buttons on timeout")
+        await clear_on_timeout(lambda: self.message.edit(view=None), log_label="black market buttons")
 
 
 async def handle(user_id: int) -> tuple[str, discord.Embed, discord.ui.View]:
