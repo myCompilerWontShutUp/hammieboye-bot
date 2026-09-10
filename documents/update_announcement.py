@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.2",
-        commit_hash="PENDING",
+        commit_hash="88ce606",
         date="2026-09-10",
         changes=(
             "`/내정보`·`/니정보`의 레벨 진행 바 모양이 더 또렷하게 바뀌었고, "
