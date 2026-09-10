@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.6",
-        commit_hash="PENDING",
+        commit_hash="41fc10d",
         date="2026-09-11",
         changes=(
             "일시적인 서버 오류가 겹치면 버튼을 눌러도 반응이 없고 시간이 지나도 "
