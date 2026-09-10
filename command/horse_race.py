@@ -5,7 +5,7 @@
 연동한다.
 
 전체 골격은 슬롯머신/내기와 동일한 부품(economy_common.py의 BetAmountModal/
-ReplayView/format_bet_receipt/reject_if_wrong_user_with_cta)을 그대로 재사용한다.
+ReplayView/build_bet_receipt_embed/reject_if_wrong_user_with_cta)을 그대로 재사용한다.
 관리자 개입은 전혀 없다 — 전 과정이 유저 혼자 `/도박` 안에서 시작·완결한다."""
 
 import asyncio
@@ -21,8 +21,8 @@ from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
     ReplayView,
+    build_bet_receipt_embed,
     claim_active_or_reject,
-    format_bet_receipt,
     mark_active,
     mark_inactive,
     maybe_award_legendary_multiplier,
@@ -62,10 +62,17 @@ _HAMSTERS_BY_NUMBER: dict[int, Hamster] = {h.number: h for h in HAMSTERS}
 
 # 트랙 디자인 변수(요청사항 — 바로바로 바꿀 수 있게 전부 상수로 뺌).
 _TRACK_LENGTH = 12
-_FRAME_COUNT = 5
+_FRAME_COUNT = 10
 _FRAME_INTERVAL_SECONDS = 3
-_MAX_FORWARD_STEP = 5
-_MAX_BACKWARD_STEP = 2
+# 전진 폭 2는 시뮬레이션으로 정한 값 — 5였을 때는 메달권 말이 결승선 앞에
+# 일찍 도달해(_MIN_FINISH_FRAME 전) 몇 프레임씩 멈춰 기다리는 것처럼 보이는
+# 현상이 3,000회 중 48%였는데, 2로 줄이자 0%가 됐다.
+_MAX_FORWARD_STEP = 2
+_MAX_BACKWARD_STEP = 1
+# 결승선(_TRACK_LENGTH) 도착은 이 프레임(1-indexed)부터만 허용 — 그 전엔 지터가
+# 커도 안 닿게 상한을 클램프한다. 최종 프레임은 항상 target을 강제하므로 이
+# 제약과 무관하게 최종 순위(3등까지)가 확정된다.
+_MIN_FINISH_FRAME = 7
 _TRACK_EMPTY = "⬜"
 _TRACK_BOUNDARY = "⬛"
 _LANE_NUMBER_EMOJI = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
@@ -113,12 +120,13 @@ def compute_frame_positions(
     *,
     rng: random.Random | None = None,
 ) -> list[dict[int, int]]:
-    """말마다 완전히 독립적으로 프레임별 위치를 계산한다(리스트 인덱스 0 = 첫 번째
-    프레임). 각 말의 최종 목표 칸(compute_final_positions)을 먼저 정해두고, 프레임
-    1~(N-1)은 그 목표를 향한 선형 보간 기준값에 무작위 지터를 더해 계산하되 직전
-    프레임 대비 이동폭을 [-_MAX_BACKWARD_STEP, +_MAX_FORWARD_STEP]로 클램프한다 —
-    "최대 앞으로 5칸, 뒤로도 허용" 요청을 정확히 구현한다. 마지막 프레임은 지터 없이
-    목표 칸 그대로 고정해 반드시 도착을 보장한다."""
+    """말마다 독립적으로 프레임별 위치를 계산한다(인덱스 0 = 첫 번째 프레임).
+    각 말의 최종 목표 칸(compute_final_positions)을 향한 선형 보간에 무작위
+    지터를 더하되, 직전 프레임 대비 이동폭을 [-_MAX_BACKWARD_STEP,
+    +_MAX_FORWARD_STEP]로 클램프한다. 마지막 프레임은 지터 없이 target 그대로
+    고정해 도착(3등까지 최종 순위 확정)을 보장한다. `_MIN_FINISH_FRAME` 전에는
+    결승선에 못 닿게 상한을 낮추고, 한 번 결승선에 닿은 말은 이후 그 아래로
+    내려가지 않도록 하한을 고정한다."""
     r = rng or random
     final_positions = compute_final_positions(final_ranking)
     frames: list[dict[int, int]] = []
@@ -136,6 +144,7 @@ def compute_frame_positions(
             jitter = r.randint(-_MAX_BACKWARD_STEP, _MAX_FORWARD_STEP)
             candidate = baseline + jitter
             prev = previous[number]
+            already_finished = prev >= _TRACK_LENGTH
             # 세 제약(직전 프레임 대비 이동폭 / 남은 프레임 예산으로 target 도달 가능 /
             # 트랙 범위)의 교집합으로 **한 번에** 클램프한다 — 순차적으로 따로따로
             # 클램프하면 마지막 클램프가 앞선 클램프의 경계를 다시 깨버릴 수 있다
@@ -146,6 +155,17 @@ def compute_frame_positions(
             # 정확히 커버하도록 설계됨).
             lo = max(prev - _MAX_BACKWARD_STEP, target - frames_left * _MAX_FORWARD_STEP, 0)
             hi = min(prev + _MAX_FORWARD_STEP, target + frames_left * _MAX_BACKWARD_STEP, _TRACK_LENGTH)
+            if target < _TRACK_LENGTH:
+                # 완주 못 하는(비메달권) 말은 아예 결승선에 안 닿게 막는다 —
+                # 안 그러면 마지막 프레임에 target으로 강제 복귀하며 "도착했다가
+                # 뒤로 밀려나는" 것처럼 보인다.
+                hi = min(hi, _TRACK_LENGTH - 1)
+            elif frame_index < _MIN_FINISH_FRAME:
+                hi = min(hi, _TRACK_LENGTH - 1)
+            if already_finished:
+                # 결승선에 닿았던 말은 다시 그 아래로 안 내려간다(결승선 안에서
+                # 앞으로 더 나아가는 것만 허용).
+                lo = max(lo, _TRACK_LENGTH)
             candidate = max(lo, min(hi, candidate))
             current[number] = candidate
         frames.append(current)
@@ -282,18 +302,22 @@ _JACKPOT_LINES = (
     "우와아아!! 셋 다 정확히!! 잭팟이야!! _(흥분)_",
 )
 
-# RulesView가 embed.description으로 그대로 보여주는 문구라 시스템 정중체로 고정한다
-# (§22-4).
+# /봇정보-규칙(command/rules_info.py)이 그대로 넘기는 규칙 본문(§22-4 정중체).
 HORSE_RACE_RULE_TEXT = (
     "🐹 승부예측\n\n"
-    "햄스터 10마리 중 1등·2등·3등을 예측하는 경마 게임입니다. \"1등 예측하기\"·"
-    "\"2등 예측하기\"·\"3등 예측하기\" 버튼으로 각 등수에 들어올 햄스터를 하나씩 "
-    "고르면 됩니다(같은 햄스터를 두 등수에 중복으로 고를 수 없습니다).\n\n"
-    "적중한 등수의 배율은 서로 곱해집니다 — 3위 적중 x2, 2위 적중 x4, 1위 적중 x6"
-    "(예: 1위·3위를 모두 맞히면 x12). 세 등수를 전부 정확히 맞히면 다른 계산과 "
-    "무관하게 항상 x100을 받습니다. 하나도 맞히지 못하면 배팅액을 전부 잃습니다.\n\n"
-    "예측은 10분 안에 완료해야 하며, 완료하지 않으면 남은 등수가 무작위로 채워진 "
-    "뒤 자동으로 경주가 시작됩니다."
+    "- 햄스터 10마리 중 1등·2등·3등을 예측하는 경마 게임입니다.\n"
+    "- \"1등 예측하기\"·\"2등 예측하기\"·\"3등 예측하기\" 버튼으로 각 등수에 "
+    "들어올 햄스터를 하나씩 고릅니다(같은 햄스터를 두 등수에 중복으로 고를 수 "
+    "없습니다).\n\n"
+    "적중 배율:\n"
+    "- 3위 적중: x2\n"
+    "- 2위 적중: x4\n"
+    "- 1위 적중: x6\n"
+    "(적중한 배율끼리 서로 곱해집니다 — 예: 1위·3위 적중 시 x12)\n\n"
+    "- 세 등수 모두 적중: x100 (잭팟, 다른 계산과 무관하게 항상 적용)\n"
+    "- 하나도 못 맞히면 배팅액 전액 손실\n\n"
+    "- 예측은 10분 안에 완료해야 하며, 완료하지 않으면 남은 등수가 무작위로 "
+    "채워진 뒤 자동으로 경주가 시작됩니다."
 )
 
 
@@ -308,8 +332,12 @@ def _roster_field_value() -> str:
 # "선수 정보 보기" 버튼을 안 눌러도 참가 선수 소개가 통째로 나와 있었는데, 그 정보는
 # 그 버튼을 눌러야만 보이는 게 맞다는 지적으로 여기서는 규칙/배수만 짧게 안내한다.
 _QUICK_RULES_FIELD_VALUE = (
-    "적중한 등수의 배율은 서로 곱해집니다 — 3위 x2, 2위 x4, 1위 x6. 세 등수를 전부 "
-    "맞히면 x100(잭팟)입니다. 하나도 못 맞히면 배팅액을 전부 잃습니다."
+    "- 3위 적중: x2\n"
+    "- 2위 적중: x4\n"
+    "- 1위 적중: x6\n"
+    "(적중한 배율끼리 서로 곱해집니다)\n\n"
+    "- 세 등수 모두 적중: x100 (잭팟)\n"
+    "- 하나도 못 맞히면 배팅액 전액 손실"
 )
 
 
@@ -318,7 +346,10 @@ def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
     lines = []
     for rank in (1, 2, 3):
         number = predictions.get(rank)
-        label = f"{number}번 {_HAMSTERS_BY_NUMBER[number].name}" if number else "???"
+        if number:
+            label = f"{_LANE_NUMBER_EMOJI[number - 1]} {_HAMSTERS_BY_NUMBER[number].name}"
+        else:
+            label = "???"
         lines.append(f"{rank}등 예측: {label}")
     embed.description = "\n".join(lines)
     embed.add_field(name="🔢 배율 안내", value=_QUICK_RULES_FIELD_VALUE, inline=False)
@@ -326,13 +357,8 @@ def _prediction_embed(predictions: dict[int, int]) -> discord.Embed:
     return embed
 
 
-def _prediction_content(challenger_name: str, before_coins: int, bet: int) -> str:
-    return (
-        f"## 🎯 도전자: {challenger_name}\n"
-        + random.choice(_PREDICTION_INTRO_LINES)
-        + "\n\n"
-        + format_bet_receipt(before_coins, bet, None)
-    )
+def _prediction_content(challenger_name: str) -> str:
+    return f"## 🎯 도전자: {challenger_name}\n" + random.choice(_PREDICTION_INTRO_LINES)
 
 
 def _build_race_embed(positions: dict[int, int], finished_order: list[int]) -> discord.Embed:
@@ -417,7 +443,12 @@ class _PredictionView(discord.ui.View):
                 self.remove_item(button)
                 if len(self.predictions) == 3:
                     self._add_start_button()
-                await modal_interaction.response.edit_message(embed=_prediction_embed(self.predictions), view=self)
+                # embeds=는 배열을 통째로 교체하므로 영수증(current=None)을
+                # 매번 다시 만들어 함께 넘겨야 한다(slot.py::_spin_row와 동일).
+                receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, None)
+                await modal_interaction.response.edit_message(
+                    embeds=[_prediction_embed(self.predictions), receipt_embed], view=self
+                )
 
             await interaction.response.send_modal(_RankPickModal(rank, remaining, _on_pick))
 
@@ -560,14 +591,14 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
         user = await get_user(view.challenger_id)
         current_coins = user["coins"] if user is not None else view.before_coins - view.bet
         text = random.choice(_LOSE_LINES)
-        receipt = format_bet_receipt(view.before_coins, view.bet, current_coins)
+        receipt_embed = build_bet_receipt_embed(view.before_coins, view.bet, current_coins)
     else:
         result = await add_coins(view.challenger_id, view.bet * multiplier, method="horse_race_win")
         if multiplier >= _JACKPOT_MULTIPLIER:
             text = random.choice(_JACKPOT_LINES)
         else:
             text = random.choice(_WIN_LINES).format(multiplier=multiplier)
-        receipt = format_bet_receipt(view.before_coins, view.bet, result["new_coins"])
+        receipt_embed = build_bet_receipt_embed(view.before_coins, view.bet, result["new_coins"])
 
         # "제작자는 이 업적이..." 전설 업적이 /도박 전체 공용(배율 64 이상)으로 확장됨에
         # 따라 승부예측도 대상에 포함(사실상 잭팟(x100)만 해당). 2026-09-10부로 업적
@@ -575,22 +606,17 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
         # 처리되므로 여기서는 부여만 시도한다.
         await maybe_award_legendary_multiplier(view.challenger_id, multiplier)
 
-    content = (
-        f"## 🎯 도전자: {view.challenger_name}\n{text}\n\n"
-        + "\n".join(result_lines)
-        + "\n\n"
-        + receipt
-    )
+    content = f"## 🎯 도전자: {view.challenger_name}\n{text}\n\n" + "\n".join(result_lines)
 
     if view.message is None:
         mark_inactive(view.challenger_id)
         return
+    # 영수증 임베드와 나란히 붙여야 해서(embeds=[...]는 배열 전체 교체) 마지막
+    # 프레임을 재구성한다 — final_ranking[:3]이 곧 결승선 도달 순서다.
+    race_embed = _build_race_embed(compute_final_positions(final_ranking), final_ranking[:3])
     replay_view = _build_replay_view(view.challenger_id)
     try:
-        # embed는 일부러 안 넘긴다 — 마지막 애니메이션 프레임(결승선 트랙)이 그대로
-        # 남아있는 게 자연스럽다(vending.py 등이 정산 후에도 영수증 embed를 그대로
-        # 남겨두는 것과 동일한 원칙).
-        await view.message.edit(content=content, view=replay_view)
+        await view.message.edit(content=content, embeds=[race_embed, receipt_embed], view=replay_view)
         replay_view.message = view.message
     except discord.HTTPException:
         # ReplayView가 메시지에 못 붙으면 그 on_timeout이 영영 안 불려
@@ -631,8 +657,9 @@ async def start_round(
     challenger_name = interaction.user.display_name
 
     view = _PredictionView(user_id, challenger_name, before_coins, bet)
-    content = _prediction_content(challenger_name, before_coins, bet)
+    content = _prediction_content(challenger_name)
     embed = _prediction_embed(view.predictions)
+    receipt_embed = build_bet_receipt_embed(before_coins, bet, None)
 
-    await interaction.response.send_message(content=content, embed=embed, view=view)
+    await interaction.response.send_message(content=content, embeds=[embed, receipt_embed], view=view)
     view.message = await interaction.original_response()

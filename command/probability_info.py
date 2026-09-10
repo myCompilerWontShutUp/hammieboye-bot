@@ -163,11 +163,11 @@ def _build_pages() -> list[discord.Embed]:
 class _ProbabilityInfoView(discord.ui.View):
     """실행자 본인만 페이지를 넘길 수 있다(command/achievements.py
     ::_AchievementListView와 동일한 원칙). ephemeral 응답이라 굳이
-    EphemeralAutoDeleteView를 쓰지 않고(achievements 리스트와 동일하게) 60초
-    무클릭 시 버튼만 제거한다 — 내용 자체는 다시 읽을 수 있게 남겨둔다."""
+    EphemeralAutoDeleteView를 쓰지 않고 10분 무클릭 시 버튼만 제거한다(§23-11) —
+    내용 자체는 다시 읽을 수 있게 남겨둔다."""
 
     def __init__(self, user_id: int, pages: list[discord.Embed]) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=600)
         self.user_id = user_id
         self.pages = pages
         self.page = 0

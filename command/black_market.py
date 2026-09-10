@@ -270,7 +270,7 @@ class _BuyButton(discord.ui.Button):
 
 class _BlackMarketView(discord.ui.View):
     def __init__(self, user_id: int, counts: dict[str, int]) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=600)
         self.user_id = user_id
         self.message: discord.Message | None = None
         self.active_category = _DEFAULT_CATEGORY

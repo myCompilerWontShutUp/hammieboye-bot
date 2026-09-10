@@ -9,13 +9,11 @@ from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
     GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
-    MAX_BET,
     TIMEOUT_SECONDS,
     BetAmountModal,
     ReplayView,
-    RulesView,
+    build_bet_receipt_embed,
     claim_active_or_reject,
-    format_bet_receipt,
     mark_active,
     mark_inactive,
     reject_if_already_playing,
@@ -68,53 +66,29 @@ _GAME_SELECT_INTRO_LINES = (
     "좋아, 이번엔 내가 이길 거야!! _(자신감)_",
 )
 
-_RULES_INTRO_LINES = (
-    "내기 규칙 알려줄게!! _(진지)_",
-    "이렇게 하면 이길 수 있어!! _(자신감)_",
-    "내기 하는 법 설명할게!! _(친절)_",
-    "규칙부터 익히고 시작하자!! _(꼼꼼)_",
-    "내기, 이렇게 굴러가!! _(설명)_",
-    "먼저 규칙 확인해볼래?? _(권유)_",
-    "내기 공략법이야!! _(자랑)_",
-    "이거 알면 유리해!! 규칙이야!! _(웃음)_",
-    "내기 설명서 가져왔어!! _(뿌듯)_",
-    "규칙 모르면 손해야!! 알려줄게!! _(진지)_",
-    "내기는 이렇게 하는 거야!! _(설명)_",
-    "짜잔, 내기 규칙!! _(공개)_",
-    "이거 읽고 도전해봐!! _(응원)_",
-    "내기 하기 전에 이거부터!! _(추천)_",
-    "규칙 요약해줄게!! _(친절)_",
-    "내기 룰 정리했어!! _(정리)_",
-    "이렇게 승부가 갈려!! _(설명)_",
-    "내기, 알고 하면 더 재밌어!! _(웃음)_",
-    "규칙 확인하고 배팅해봐!! _(권유)_",
-    "내기 가이드 여기 있어!! _(안내)_",
+# /봇정보-규칙(command/rules_info.py)이 그대로 넘기는 규칙 본문 — embed.description에
+# 쓰이므로 페르소나 말투 없는 시스템 정중체로 고정한다(§22-4).
+ODD_EVEN_RULE_TEXT = (
+    "🪙 홀짝\n\n"
+    "- 홀 또는 짝 중 하나를 고릅니다.\n"
+    "- 맞히면 배팅액의 2배를 받습니다.\n"
+    "- 틀리면 배팅액을 전부 잃습니다."
 )
-
-# RulesView가 embed.description으로 그대로 보여주는 문구라 시스템 정중체로 고정한다
-# (2026-09-09 — "~이야!!"/"~있어!!" 같은 페르소나 말투가 섞여 있던 걸 발견해 정정,
-# command/black_market.py와 동일한 원칙).
-_RULES_OVERVIEW_TEXT = (
-    "동전을 걸고 하는 미니게임입니다. 지금은 세 가지가 있으며(앞으로 더 늘어날 수도 "
-    "있습니다) 아래 버튼에서 원하는 게임을 골라주세요.\n\n"
-    f"배팅액은 1~{MAX_BET}동전까지 걸 수 있고, 게임 진행 중 10분 동안 아무것도 "
-    "고르지 않으면 포기한 것으로 간주해 배팅액을 모두 잃습니다."
+RPS_RULE_TEXT = (
+    "✂️ 가위바위보\n\n"
+    "- 가위·바위·보 중 하나를 냅니다.\n"
+    "- 이기면 배팅액의 2배를 받습니다.\n"
+    "- 비기면 배팅액을 그대로 돌려받습니다(번 것은 아닙니다).\n"
+    "- 지면 배팅액을 전부 잃습니다."
 )
-
-_ODD_EVEN_RULE_TEXT = (
-    "🪙 홀짝\n\n홀 또는 짝을 골라서 맞히면 배팅액의 2배를 받고, 틀리면 배팅액을 전부 "
-    "잃습니다."
-)
-_RPS_RULE_TEXT = (
-    "✂️ 가위바위보\n\n가위/바위/보 중 하나를 내서 햄미를 이기면 배팅액의 2배, 비기면 "
-    "배팅액을 그대로 돌려받고(번 것이 아니라 순수 반환), 지면 배팅액을 전부 "
-    "잃습니다."
-)
-_UPDOWN_RULE_TEXT = (
-    "🔢 업다운\n\n햄미가 1~20 사이의 숫자를 하나 생각합니다. 셀렉트 메뉴로 숫자를 "
-    "골라 맞히면 되고, 기회는 3번입니다. 고른 숫자보다 정답이 크면 \"업\", 작으면 "
-    "\"다운\" 힌트가 나오고 다음 셀렉트에는 그 범위의 숫자만 남습니다. 3번째 안에 "
-    "맞히면 배팅액의 3배를 받고, 끝까지 못 맞히면 배팅액을 전부 잃습니다."
+UPDOWN_RULE_TEXT = (
+    "🔢 업다운\n\n"
+    "- 햄미가 1~20 사이의 숫자를 하나 생각합니다.\n"
+    "- 셀렉트 메뉴에서 숫자를 골라 맞히면 되고, 기회는 3번입니다.\n"
+    "- 정답이 고른 숫자보다 크면 \"업\", 작으면 \"다운\" 힌트가 나오고, 다음 "
+    "셀렉트에는 그 범위의 숫자만 남습니다.\n"
+    "- 3번 안에 맞히면 배팅액의 3배를 받습니다.\n"
+    "- 끝까지 못 맞히면 배팅액을 전부 잃습니다."
 )
 
 # 2026-09-09 — 舊 _BET_TIMEOUT_LINES(환불 전제)를 몰수 전제로 전면 교체했다.
@@ -360,7 +334,7 @@ async def _start_round(
     # 반환하지 않아서, 차감 후 조회한 잔액에 배팅액을 다시 더해 "기존 금액"을 구한다.
     user = await get_user(user_id)
     before_coins = user["coins"] + bet
-    receipt = format_bet_receipt(before_coins, bet, None)
+    receipt_embed = build_bet_receipt_embed(before_coins, bet, None)
     # 공개 메시지라 누구의 판인지 한눈에 보이게 도전자 이름을 맨 위에 적는다(2026-09-07
     # 신규) — 서버 안이면 그 서버 별명, 아니면 실제 이름(discord.py의 display_name이
     # 알아서 골라줌). interaction.user는 항상 이 판을 시작한 본인(모달을 연 사람)이다.
@@ -370,21 +344,18 @@ async def _start_round(
 
     if game_kind == _ODD_EVEN:
         view: discord.ui.View = _OddEvenView(user_id, bet, before_coins, interaction.user.display_name)
-        content = f"{challenger_line}\n홀?? 짝?? 골라봐!! (배팅: {bet}동전) _(두근)_\n\n{receipt}"
+        content = f"{challenger_line}\n홀?? 짝?? 골라봐!! _(두근)_"
     elif game_kind == _RPS:
         view = _RPSView(user_id, bet, before_coins, interaction.user.display_name)
-        content = f"{challenger_line}\n가위?? 바위?? 보?? 골라봐!! (배팅: {bet}동전) _(긴장)_\n\n{receipt}"
+        content = f"{challenger_line}\n가위?? 바위?? 보?? 골라봐!! _(긴장)_"
     else:
         target = random.randint(1, 20)
         view = _UpDownView(
             user_id, bet, before_coins, interaction.user.display_name, target, 1, 20, 0
         )
-        content = (
-            f"{challenger_line}\n1~20 사이 숫자를 하나 골라봐!! (배팅: {bet}동전, "
-            f"기회 3번) _(두근)_\n\n{receipt}"
-        )
+        content = f"{challenger_line}\n1~20 사이 숫자를 하나 골라봐!! (기회 3번) _(두근)_"
 
-    await interaction.response.send_message(content=content, view=view)
+    await interaction.response.send_message(content=content, embed=receipt_embed, view=view)
     view.message = await interaction.original_response()
 
 
@@ -413,19 +384,19 @@ class _OddEvenView(discord.ui.View):
         if guess == actual:
             result = await add_coins(self.user_id, self.bet * 2, method="bet_odd_even_win")
             text = random.choice(_ODD_EVEN_WIN_LINES).format(actual=actual)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             await _maybe_award_win_achievement(self.user_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, user["coins"])
         text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
 
         replay_view = _build_replay_view(self.user_id, _ODD_EVEN)
         try:
-            await interaction.response.edit_message(content=text, view=replay_view)
+            await interaction.response.edit_message(content=text, embed=receipt_embed, view=replay_view)
             replay_view.message = await interaction.original_response()
         except discord.HTTPException:
             # ReplayView가 메시지에 못 붙으면 그 on_timeout이 영영 안 불려
@@ -472,23 +443,23 @@ class _RPSView(discord.ui.View):
         if choice == actual:
             result = await add_coins(self.user_id, self.bet, method="bet_rps_draw", count_as_earned=False)
             text = random.choice(_RPS_DRAW_LINES).format(actual=actual_bold)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
         elif self._BEATS[choice] == actual:
             result = await add_coins(self.user_id, self.bet * 2, method="bet_rps_win")
             text = random.choice(_RPS_WIN_LINES).format(actual=actual_bold)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             await _maybe_award_win_achievement(self.user_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, user["coins"])
         text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
 
         replay_view = _build_replay_view(self.user_id, _RPS)
         try:
-            await interaction.response.edit_message(content=text, view=replay_view)
+            await interaction.response.edit_message(content=text, embed=receipt_embed, view=replay_view)
             replay_view.message = await interaction.original_response()
         except discord.HTTPException:
             logging.exception("Failed to edit rock-paper-scissors settlement message")
@@ -568,14 +539,14 @@ class _UpDownView(discord.ui.View):
         if guess == self.target:
             result = await add_coins(self.user_id, self.bet * 3, method="bet_updown_win")
             text = random.choice(_UPDOWN_WIN_LINES).format(target=self.target)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, result["new_coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
             await _maybe_award_win_achievement(self.user_id)
             text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
             replay_view = _build_replay_view(self.user_id, _UP_DOWN)
             try:
-                await interaction.response.edit_message(content=text, view=replay_view)
+                await interaction.response.edit_message(content=text, embed=receipt_embed, view=replay_view)
                 replay_view.message = await interaction.original_response()
             except discord.HTTPException:
                 logging.exception("Failed to edit up-down win settlement message")
@@ -587,11 +558,11 @@ class _UpDownView(discord.ui.View):
             # 다르다. 실제로 선택을 했으니 "다시하기"가 정상적으로 뜬다.
             user = await get_user(self.user_id)
             text = random.choice(_UPDOWN_LOSE_LINES).format(target=self.target)
-            text += "\n\n" + format_bet_receipt(self.before_coins, self.bet, user["coins"])
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, user["coins"])
             text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
             replay_view = _build_replay_view(self.user_id, _UP_DOWN)
             try:
-                await interaction.response.edit_message(content=text, view=replay_view)
+                await interaction.response.edit_message(content=text, embed=receipt_embed, view=replay_view)
                 replay_view.message = await interaction.original_response()
             except discord.HTTPException:
                 logging.exception("Failed to edit up-down lose settlement message")
@@ -606,11 +577,8 @@ class _UpDownView(discord.ui.View):
             new_low, new_high = self.low, guess - 1
 
         remaining = 3 - attempts_used
-        receipt = format_bet_receipt(self.before_coins, self.bet, None)
-        content = (
-            f"## 🎯 도전자: {self.challenger_name}\n{hint} (남은 기회: {remaining}번)"
-            f"\n\n{receipt}"
-        )
+        receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, None)
+        content = f"## 🎯 도전자: {self.challenger_name}\n{hint} (남은 기회: {remaining}번)"
         new_view = _UpDownView(
             self.user_id,
             self.bet,
@@ -622,7 +590,7 @@ class _UpDownView(discord.ui.View):
             attempts_used,
         )
         try:
-            await interaction.response.edit_message(content=content, view=new_view)
+            await interaction.response.edit_message(content=content, embed=receipt_embed, view=new_view)
             new_view.message = await interaction.original_response()
         except discord.HTTPException:
             # 여기서 실패하면 self.stop()은 이미 호출된 뒤라 이 뷰는 더 이상
@@ -684,7 +652,7 @@ async def handle_bet(interaction: discord.Interaction) -> None:
     embed.description = (
         f"현재 보유 동전 : {balance}개\n"
         "햄미와 내기를 하여 승리 시 배팅 금액의 2배, 패배 시 모두 잃습니다.\n"
-        "자세한 규칙은 `/내기-규칙` 을 통해 확인할 수 있습니다."
+        "자세한 규칙은 `/봇정보-규칙`을 통해 확인할 수 있습니다."
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
@@ -693,16 +661,3 @@ async def handle_bet(interaction: discord.Interaction) -> None:
         content=random.choice(_GAME_SELECT_INTRO_LINES), embed=embed, view=view
     )
     view.interaction = interaction
-
-
-async def handle_rules() -> tuple[str, discord.Embed, discord.ui.View]:
-    """/내기-규칙 진입점 — ephemeral. 개요 임베드 + 게임별 버튼(RulesView)을 보여주고,
-    버튼을 누르면 그 게임의 상세 규칙으로 임베드만 바꿔치기한다."""
-    embed = discord.Embed(title="🎲 내기 규칙", description=_RULES_OVERVIEW_TEXT, color=GAMBLING_EMBED_COLOR)
-    embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    view = RulesView(
-        "🎲 내기 규칙",
-        {"홀짝": _ODD_EVEN_RULE_TEXT, "가위바위보": _RPS_RULE_TEXT, "업다운": _UPDOWN_RULE_TEXT},
-        color=GAMBLING_EMBED_COLOR,
-    )
-    return random.choice(_RULES_INTRO_LINES), embed, view

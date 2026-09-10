@@ -150,10 +150,14 @@ async def _render_info(
     next_level = levels.get_next_level(level)
     level_lines = [f"- 레벨 {level.number} ({level.name})"]
     if next_level is not None:
-        level_lines.append(f"- 경험치: **{user['total_xp']}** / {next_level.xp_required}")
+        span = next_level.xp_required - level.xp_required
+        progress = user["total_xp"] - level.xp_required
+        level_lines.append(
+            f"- 경험치: **{progress}** / {span} (총 {user['total_xp']})"
+        )
     else:
         level_lines.append(f"- 경험치: **{user['total_xp']}** (최고 레벨)")
-    level_lines.append(levels.xp_progress_bar(user["total_xp"], level, next_level))
+    level_lines.append(f"- {levels.xp_progress_bar(user['total_xp'], level, next_level)}")
     embed.add_field(name="🎖️ 레벨", value="\n".join(level_lines), inline=False)
 
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
@@ -336,8 +340,9 @@ class _CategoryButton(discord.ui.Button):
 
 class _InfoView(discord.ui.View):
     """공개(모두에게 보이는) 카테고리 탭 뷰 — 이 명령어를 실행한 사람(user_id)만 탭을
-    바꿀 수 있다. 1분간 무클릭이면 버튼만 지운다(내용은 그대로 유지, /자판기-리스트와
-    동일한 원칙). subject_id는 정보의 대상(본인 또는 /니정보의 상대방), user_id는
+    바꿀 수 있다. 10분간 무클릭이면 버튼만 지운다(내용은 그대로 유지 — 자주
+    재배포되는 이 프로젝트 특성상 60초는 너무 짧아 재배포 직후 죽은 버튼으로 자주
+    남았다, §23-11). subject_id는 정보의 대상(본인 또는 /니정보의 상대방), user_id는
     명령어를 실행한 사람 — /니정보에서는 이 둘이 서로 다르다."""
 
     def __init__(
@@ -348,7 +353,7 @@ class _InfoView(discord.ui.View):
         target_name: str | None,
         guild: discord.Guild | None,
     ) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=600)
         self.user_id = user_id
         self.subject_id = subject_id
         self.target_name = target_name

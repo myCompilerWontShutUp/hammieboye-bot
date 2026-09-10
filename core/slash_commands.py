@@ -10,8 +10,10 @@ import command.bet as bet
 import command.black_market as black_market
 import command.coin as coin
 import command.intro as intro
+import command.level_info as level_info
 import command.probability_info as probability_info
 import command.ranking as ranking
+import command.rules_info as rules_info
 import command.slot as slot
 import command.use as use_item
 import command.vending as vending
@@ -105,6 +107,26 @@ def register(tree: app_commands.CommandTree) -> None:
         await touch_channel(interaction)
         embed, view = probability_info.build_view(interaction.user.id)
         await interaction.edit_original_response(embed=embed, view=view)
+        view.message = await interaction.original_response()
+
+    @tree.command(name="봇정보-레벨", description="레벨 시스템의 단계별 혜택을 안내한다")
+    async def level_info_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer(ephemeral=True)
+        await touch_channel(interaction)
+        embed, view = level_info.build_view(interaction.user.id)
+        await interaction.edit_original_response(embed=embed, view=view)
+        view.message = await interaction.original_response()
+
+    @tree.command(name="봇정보-규칙", description="내기·도박의 게임별 규칙을 안내한다")
+    async def rules_info_command(interaction: discord.Interaction) -> None:
+        if interaction.user.bot:
+            return
+        await interaction.response.defer(ephemeral=True)
+        await touch_channel(interaction)
+        text, embed, view = rules_info.build_view()
+        await interaction.edit_original_response(content=text, embed=embed, view=view)
         view.message = await interaction.original_response()
 
     @tree.command(name="탈퇴", description="햄미가 모은 내 정보를 삭제한다")
@@ -230,18 +252,6 @@ def register(tree: app_commands.CommandTree) -> None:
             return
         await bet.handle_bet(interaction)
 
-    @tree.command(name="내기-규칙", description="내기 규칙을 확인한다")
-    async def bet_rules_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer(ephemeral=True)
-        if not await _prepare(interaction):
-            return
-        text, embed, view = await bet.handle_rules()
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed, view=view)
-        view.interaction = interaction
-
     @tree.command(name="도박", description="동전을 걸고 도박을 한다")
     async def gamble_command(interaction: discord.Interaction) -> None:
         if interaction.user.bot:
@@ -254,18 +264,6 @@ def register(tree: app_commands.CommandTree) -> None:
         if not await _require_level(interaction, "gambling_allowed"):
             return
         await slot.handle_gamble(interaction)
-
-    @tree.command(name="도박-규칙", description="도박 규칙을 확인한다")
-    async def gamble_rules_command(interaction: discord.Interaction) -> None:
-        if interaction.user.bot:
-            return
-        await interaction.response.defer(ephemeral=True)
-        if not await _prepare(interaction):
-            return
-        text, embed, view = await slot.handle_rules()
-        text = sleep_guard.wrap_text_if_asleep(interaction.channel_id, text)
-        await interaction.edit_original_response(content=text, embed=embed, view=view)
-        view.interaction = interaction
 
     @tree.command(name="사용", description="가방에 있는 아이템을 사용한다")
     @app_commands.describe(아이템="사용할 아이템")

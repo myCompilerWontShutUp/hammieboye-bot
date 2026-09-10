@@ -1,23 +1,20 @@
 import logging
 import random
-from datetime import datetime
 from typing import Awaitable, Callable
 
 import discord
 
 import achievements
-from core.base import EphemeralAutoDeleteView
 from core.korean import josa
 from db.achievements import award as award_achievement
 from db.users import get_user
-from events.scheduler import KST, format_footer_time
 
 # /자판기 전용 색(하늘색) — command/info.py 등의 EMBED_COLOR(연주황색)와
 # 구분해 자판기만의 색으로 쓴다. /암시장은 별도로 discord.Color.dark_purple()을 쓴다
 # (같은 "상점" 계열이지만 밤에만 여는 다른 컨셉이라 색을 분리).
 VENDING_EMBED_COLOR = 0x87CEEB
 
-# /내기·/내기-규칙·/도박·/도박-규칙(및 그 안의 모든 게임 뷰) 전용 색(밝은 노란색,
+# /내기·/도박(및 그 안의 모든 게임 뷰, /봇정보-규칙 포함) 전용 색(밝은 노란색,
 # 2026-09-06 舊 command/slot.py::_SLOT_EMBED_COLOR를 여기로 옮기고 이름을 바꿔
 # 도박 도메인 전체가 공유하게 함 — 자판기와는 다른 도메인이라 색을 분리한다).
 GAMBLING_EMBED_COLOR = 0xFFEB3B
@@ -304,43 +301,10 @@ class PurchaseConfirmModal(discord.ui.Modal):
         await self._on_confirm(interaction)
 
 
-class _RuleButton(discord.ui.Button):
-    """RulesView 안의 게임별 규칙 버튼 — 누르면 그 게임의 상세 규칙으로 임베드만
-    바꿔치기한다(다른 버튼도 그대로 남아 있어 자유롭게 오갈 수 있다). 2026-09-10 —
-    지금 보고 있는 게임은 초록(success), 나머지는 회색(secondary)으로 칠한다
-    (/자판기·/암시장·/내정보·/랭킹의 카테고리 탭과 동일한 배색 원칙으로 통일 —
-    舊 전부 primary 고정이라 "지금 뭘 보고 있는지" 구분이 안 됐다). 개요 화면
-    (아직 아무 버튼도 안 누른 상태)에서는 전부 회색으로 시작한다."""
-
-    def __init__(self, label: str, text: str, embed_title: str, color: int, *, active: bool) -> None:
-        style = discord.ButtonStyle.success if active else discord.ButtonStyle.secondary
-        super().__init__(label=label, style=style)
-        self._text = text
-        self._embed_title = embed_title
-        self._color = color
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        view: RulesView = self.view
-        view.bump()
-        for child in view.children:
-            if isinstance(child, _RuleButton):
-                child.style = discord.ButtonStyle.success if child is self else discord.ButtonStyle.secondary
-        embed = discord.Embed(title=self._embed_title, description=self._text, color=self._color)
-        embed.set_footer(text=format_footer_time(datetime.now(KST)))
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class RulesView(EphemeralAutoDeleteView):
-    """/내기-규칙·/도박-규칙이 공유하는 게임별 규칙 버튼 뷰 — ephemeral 전용(본인만
-    봄)이라 wrong-user 체크가 불필요하다. game_rules는 {버튼 라벨: 규칙 본문} — 게임이
-    하나뿐이어도(예: /도박-규칙의 슬롯머신) 나중에 늘어날 걸 감안해 버튼 형태를
-    유지한다. color는 버튼을 눌러 바뀌는 상세 규칙 임베드에도 그대로 쓰인다(도메인
-    전용 색과 통일 — 개요 임베드와 다른 색으로 바뀌면 안 되므로)."""
-
-    def __init__(self, embed_title: str, game_rules: dict[str, str], *, color: int) -> None:
-        super().__init__(timeout=TIMEOUT_SECONDS)
-        for label, text in game_rules.items():
-            self.add_item(_RuleButton(label, text, embed_title, color, active=False))
+# RulesView/_RuleButton은 2026-09-10 command/rules_info.py(`/봇정보-규칙`)로
+# 이전했다 — 그 시점부터 이 클래스들의 유일한 소비자가 됐다(舊 /내기-규칙·
+# /도박-규칙은 폐지). GAMBLING_EMBED_COLOR/MAX_BET 등 다른 경제 상수는 이
+# 파일에 그대로 있고, 뷰 자체만 옮겼다.
 
 
 # 잔액 부족 안내 — /자판기·/내기·/도박이 전부 공유(다들 spend_coins 실패 시 이
@@ -366,17 +330,27 @@ def format_coin_notice(delta: int, new_coins: int) -> str:
     return f"\n🪙 동전 {sign}{delta} ({before} → {new_coins})"
 
 
-def format_bet_receipt(before: int, bet: int, current: int | None) -> str:
-    """`/자판기` 구매 영수증(기존 금액/사용 금액/현재 금액)과 동일한 형식을 배팅
-    게임(/내기·/도박)에 적용한 버전(2026-09-07) — 판이 시작될 때 먼저 이 블록을
-    보여주고(current=None -> "???"), 정산되면 같은 메시지를 고쳐써서 current를
-    채운다. /내기·/도박이 공유. 승패가 갈리기 전엔 최종 잔액을 알 수 없어 "사용
-    금액" 대신 "배팅 금액"(아직 확정 안 된 위험 부담)이라는 라벨을 쓴다."""
+# 배팅 정산 임베드(build_bet_receipt_embed) 전용 색 — /내기·/도박 6개 게임이 전부
+# 공유하지만, 이 임베드에서만 쓰고 다른 곳에서는 안 쓴다(2026-09-10).
+BET_RECEIPT_EMBED_COLOR = 0x2ECC71
+
+
+def build_bet_receipt_embed(before: int, bet: int, current: int | None) -> discord.Embed:
+    """`/자판기` 구매 영수증과 동일한 형식(기존/배팅/현재 금액)의 배팅 정산
+    임베드 — /내기·/도박 6개 게임이 공유한다. 판 시작 시 current=None("???")로
+    먼저 보여주고, 정산 시 채운 새 임베드로 교체한다. 승패 전엔 확정 잔액이
+    없어 "배팅 금액"이라는 라벨을 쓴다. 게임판 임베드(슬롯머신 그리드 등)와
+    `embeds=[...]`로 나란히 붙으므로 footer는 안 붙인다(게임판 쪽 footer와
+    중복 방지)."""
     current_label = f"{current:,}코인" if current is not None else "???"
-    return (
-        f"- 기존 금액: {before:,}코인\n"
-        f"- 배팅 금액: {bet:,}코인\n"
-        f"- 현재 금액: {current_label}"
+    return discord.Embed(
+        title="💰 배팅 정산",
+        description=(
+            f"- 기존 금액: {before:,}코인\n"
+            f"- 배팅 금액: {bet:,}코인\n"
+            f"- 현재 금액: {current_label}"
+        ),
+        color=BET_RECEIPT_EMBED_COLOR,
     )
 
 
@@ -388,13 +362,9 @@ LEGENDARY_MULTIPLIER_THRESHOLD = 64
 
 async def maybe_award_legendary_multiplier(user_id: int, multiplier: int) -> dict | None:
     """실현된 배율이 LEGENDARY_MULTIPLIER_THRESHOLD 이상이면 전설 업적 지급을
-    시도하고 db/achievements.py::award()의 원본 결과 dict({earned})를 그대로
-    반환한다 — 미달이면 None. earned가 False일 수도 있다(이미 보유 중이라 멱등하게
-    무시된 경우). 2026-09-10부로 award()가 XP 지급+글로벌 방송을 전부 내부에서
-    처리하므로(호감도 보너스는 폐지), 호출부는 알림 문구를 더 이상 조립하지 않고
-    이 함수를 그냥 fire-and-forget으로 호출하면 된다. 실제 지급이 확정된
-    시점에서만 호출해야 한다(폭탄으로 잃거나 무응답으로 몰수된 판은 "실제로 딴 게
-    없다"는 원칙상 대상이 아니다)."""
+    시도한다 — XP 지급+글로벌 방송은 award() 내부가 알아서 처리하므로
+    fire-and-forget으로 호출하면 된다. 실제 지급이 확정된 시점에서만 호출할 것
+    (폭탄으로 잃거나 무응답 몰수된 판은 대상 아님)."""
     if multiplier < LEGENDARY_MULTIPLIER_THRESHOLD:
         return None
     return await award_achievement(user_id, achievements.dev_never_tested_this.ID)

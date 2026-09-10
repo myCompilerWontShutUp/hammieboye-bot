@@ -13,11 +13,10 @@ import random
 import discord
 
 from command.economy_common import (
-    GAMBLING_EMBED_COLOR,
     INSUFFICIENT_FUNDS_LINES,
     ReplayView,
+    build_bet_receipt_embed,
     claim_active_or_reject,
-    format_bet_receipt,
     mark_active,
     mark_inactive,
     maybe_award_legendary_multiplier,
@@ -85,17 +84,17 @@ _CASHOUT_LINES = (
     "욕심부리지 않고 딱 여기까지!! _(현명)_",
 )
 
-# RulesView가 embed.description으로 그대로 보여주는 문구라 시스템 정중체로 고정한다
-# (§22-4).
+# /봇정보-규칙(command/rules_info.py)이 그대로 넘기는 규칙 본문(§22-4 정중체).
 DOUBLE_OR_NOTHING_RULE_TEXT = (
     "📦 더블오어낫띵\n\n"
-    "상자를 열면 50% 확률로 판돈이 2배가 되고, 50% 확률로 폭탄을 만나 판돈을 전부 "
-    "잃습니다. 판돈이 2배가 되면 \"한 판 더\"로 계속 도전하거나 \"여기까지\"로 "
-    "그 자리에서 정산받을 수 있습니다.\n\n"
-    "판돈에는 상한이 없어 계속 반복할수록 배당이 커지지만, 그만큼 폭탄을 만날 "
-    "위험도 매번 새로 50%씩 적용됩니다.\n\n"
-    "상자 열기(또는 한 판 더/여기까지 선택)를 10분 안에 하지 않으면 포기한 것으로 "
-    "간주해 결과 확인 없이 판돈을 모두 잃습니다."
+    "- 상자를 열면 50% 확률로 판돈이 2배가 되고, 50% 확률로 폭탄을 만나 판돈을 "
+    "전부 잃습니다.\n"
+    "- 판돈이 2배가 되면 \"한 판 더\"로 계속 도전하거나 \"여기까지\"로 그 자리에서 "
+    "정산받을 수 있습니다.\n"
+    "- 판돈에는 상한이 없어 반복할수록 배당이 커지지만, 폭탄 확률은 매번 새로 "
+    "50%가 적용됩니다.\n\n"
+    "- 상자 열기(또는 한 판 더/여기까지 선택)를 10분 안에 하지 않으면 포기한 "
+    "것으로 간주해 결과 확인 없이 판돈을 모두 잃습니다."
 )
 
 
@@ -172,12 +171,12 @@ class _BoxView(discord.ui.View):
                 logging.exception("Failed to edit double-or-nothing money reveal")
                 mark_inactive(self.user_id)
         else:
-            content = f"## 🎯 도전자: {self.challenger_name}\n{random.choice(_BOX_BOMB_LINES)}\n\n"
+            content = f"## 🎯 도전자: {self.challenger_name}\n{random.choice(_BOX_BOMB_LINES)}"
             current = self.before_coins - self.original_bet
-            content += format_bet_receipt(self.before_coins, self.original_bet, current)
+            receipt_embed = build_bet_receipt_embed(self.before_coins, self.original_bet, current)
             replay_view = _build_replay_view(self.user_id)
             try:
-                await interaction.response.edit_message(content=content, view=replay_view)
+                await interaction.response.edit_message(content=content, embed=receipt_embed, view=replay_view)
                 replay_view.message = await interaction.original_response()
             except discord.HTTPException:
                 logging.exception("Failed to edit double-or-nothing bomb settlement")
@@ -248,11 +247,11 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
         multiplier = self.pot // self.original_bet
         await maybe_award_legendary_multiplier(self.user_id, multiplier)
 
-        content = f"## 🎯 도전자: {self.challenger_name}\n{text}\n\n"
-        content += format_bet_receipt(self.before_coins, self.original_bet, result["new_coins"])
+        content = f"## 🎯 도전자: {self.challenger_name}\n{text}"
+        receipt_embed = build_bet_receipt_embed(self.before_coins, self.original_bet, result["new_coins"])
         replay_view = _build_replay_view(self.user_id)
         try:
-            await interaction.response.edit_message(content=content, view=replay_view)
+            await interaction.response.edit_message(content=content, embed=receipt_embed, view=replay_view)
             replay_view.message = await interaction.original_response()
         except discord.HTTPException:
             logging.exception("Failed to edit double-or-nothing cash-out settlement")

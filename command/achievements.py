@@ -173,11 +173,11 @@ def _build_list_embed(page: int, earned_ids: set[str]) -> discord.Embed:
 
 class _AchievementListView(discord.ui.View):
     """실행자 본인만 페이지를 넘길 수 있다(2026-09-06 신규 — 이전엔 이 명령어 자체가
-    페이지네이션이 없어서 검증할 대상도 없었음). 60초 무클릭 시 버튼만 제거(다른
-    쿨타임 명시 없음, 기본 규칙)."""
+    페이지네이션이 없어서 검증할 대상도 없었음). 10분간 무클릭 시 버튼만 제거한다
+    (§23-11)."""
 
     def __init__(self, user_id: int, earned_ids: set[str]) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=600)
         self.user_id = user_id
         self.earned_ids = earned_ids
         self.page = 0

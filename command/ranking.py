@@ -5,7 +5,7 @@ from datetime import datetime
 
 import discord
 
-from core.base import EMBED_COLOR, LIST_EMBED_COLOR, reject_if_wrong_invoker
+from core.base import LIST_EMBED_COLOR, reject_if_wrong_invoker
 from core.discord_names import resolve_real_name
 from events.scheduler import KST, format_footer_time
 from db.ranking import get_last_increase_time, get_top_candidates, get_top_coin_candidates
@@ -153,11 +153,11 @@ class _CategoryButton(discord.ui.Button):
 
 
 class _RankingView(discord.ui.View):
-    """1분간 상호작용이 없으면 버튼만 지운다(내용은 그대로 둠) — 명령어 실행자
-    (user_id) 외에는 카테고리 버튼을 못 누른다(자판기-리스트와 동일한 원칙)."""
+    """10분간 상호작용이 없으면 버튼만 지운다(내용은 그대로 둠, §23-11) — 명령어
+    실행자(user_id) 외에는 카테고리 버튼을 못 누른다(자판기-리스트와 동일한 원칙)."""
 
     def __init__(self, user_id: int) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=600)
         self.user_id = user_id
         self.message: discord.Message | None = None
         for kind in _CATEGORY_ORDER:

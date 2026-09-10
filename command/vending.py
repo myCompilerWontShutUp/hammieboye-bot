@@ -309,12 +309,12 @@ class _BuyButton(discord.ui.Button):
 
 
 class _VendingView(discord.ui.View):
-    """1분간 상호작용이 없으면 버튼만 지운다(내용은 그대로 둠) — 명령어 실행자
-    (user_id) 외에는 카테고리/선택 버튼을 못 누르고, 구매 버튼도 CTA 포함 거절을
-    받는다."""
+    """10분간 상호작용이 없으면 버튼만 지운다(내용은 그대로 둠, §23-11) — 명령어
+    실행자(user_id) 외에는 카테고리/선택 버튼을 못 누르고, 구매 버튼도 CTA 포함
+    거절을 받는다."""
 
     def __init__(self, user_id: int, counts: dict[str, int]) -> None:
-        super().__init__(timeout=60)
+        super().__init__(timeout=600)
         self.user_id = user_id
         self.message: discord.Message | None = None
         self.active_category = _DEFAULT_CATEGORY
