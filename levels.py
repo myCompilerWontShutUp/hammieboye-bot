@@ -77,18 +77,19 @@ def min_level_for(feature: str) -> Level:
     return LEVELS[-1]
 
 
-_BAR_LENGTH = 15
+_BAR_LENGTH = 20
 _BAR_FILLED = "◼"
 _BAR_EMPTY = "◻"
 
 
 def xp_progress_bar(total_xp: int, level: Level, next_level: Level | None) -> str:
-    """레벨 구간 안에서의 진행률을 15칸 텍스트 바로 시각화한다. 최고 레벨이면
-    꽉 찬 바 + "MAX". 칸 수/퍼센트 둘 다 반드시 내림(버림)한다(2026-09-11 사용자
-    지시 — 舊 반올림 방식은 예를 들어 ratio=0.996이면 99.6%가 100%로, 14.94칸이
-    15칸(꽉 참)으로 반올림돼 아직 레벨업 전인데도 다 채워진 것처럼 보였다). 내림을
-    쓰면 ratio가 1.0 미만인 한(다음 레벨에 도달하기 전엔 항상 그렇다) 아무리 99%에
-    가까워도 15칸 중 최소 한 칸은 항상 빈 채로 남는다."""
+    """레벨 구간 안에서의 진행률을 20칸 텍스트 바로 시각화한다(2026-09-11 사용자
+    지시로 10→15→20칸 순으로 조정). 최고 레벨이면 꽉 찬 바 + "MAX". 칸 수/퍼센트
+    둘 다 반드시 내림(버림)한다 — 舊 반올림 방식은 예를 들어 ratio=0.996이면
+    99.6%가 100%로, 19.92칸이 20칸(꽉 참)으로 반올림돼 아직 레벨업 전인데도 다
+    채워진 것처럼 보였다. 내림을 쓰면 ratio가 1.0 미만인 한(다음 레벨에 도달하기
+    전엔 항상 그렇다) 아무리 99%에 가까워도 20칸 중 최소 한 칸은 항상 빈 채로
+    남는다."""
     if next_level is None:
         return _BAR_FILLED * _BAR_LENGTH + " MAX"
     span = next_level.xp_required - level.xp_required

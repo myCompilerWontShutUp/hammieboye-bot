@@ -34,10 +34,10 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.7",
-        commit_hash="27755c4",
+        commit_hash="PENDING",
         date="2026-09-11",
         changes=(
-            "레벨 진행바가 10칸에서 15칸으로 늘어나고, 99%여도 항상 한 칸 이상 "
+            "레벨 진행바가 10칸에서 20칸으로 늘어나고, 99%여도 항상 한 칸 이상 "
             "남도록 표시 방식이 개선되었습니다.",
             "취침 중 맨션 이벤트의 결과 확률이 이전 수치로 되돌아갔습니다.",
         ),
