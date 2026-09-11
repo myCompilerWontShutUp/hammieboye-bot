@@ -29,7 +29,6 @@ from core.base import touch_channel
 from db.daily_stats import increment_messages_today, increment_slash_count
 from db.users import get_user
 from events import sleep_guard
-from events.announcements import grant_daily_base_xp, grant_slash_xp
 
 
 async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -> bool:
@@ -64,11 +63,11 @@ async def _prepare(interaction: discord.Interaction, *, deferred: bool = True) -
     # chat_count(총 대화 횟수)는 슬래시 명령어를 제외하므로 여기선 messages_today만 집계한다.
     await increment_messages_today(interaction.user.id)
     # 레벨/XP 시스템(2026-09-10) — 슬래시 명령어 사용 횟수 집계(단순 조회 명령어
-    # 포함, /내정보 "오늘 기록" 표시 + XP 하루 5회 상한 판정용) + 그날 첫 활동 시
-    # 기본 XP.
+    # 포함, /내정보 "오늘 기록" 표시 전용). 2026-09-11부로 슬래시 명령어는 어떤
+    # 경로로도 XP를 전혀 안 준다(그날 첫 활동 기본 XP 포함) — XP는 오직 자연어
+    # 대화에서만 나온다(core/chat.py::handle_natural_language의 grant_daily_base_xp/
+    # grant_nl_xp). increment_slash_count는 순수 표시용 집계라 그대로 유지.
     await increment_slash_count(interaction.user.id)
-    await grant_daily_base_xp(interaction.user.id)
-    await grant_slash_xp(interaction.user.id)
     return True
 
 

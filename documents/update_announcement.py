@@ -33,6 +33,19 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.4.8",
+        commit_hash="PENDING",
+        date="2026-09-11",
+        changes=(
+            "더블오어낫띵의 상자 열기에 결과를 공개하기 전 짧은 연출이 추가되었습니다.",
+            "슬래시 명령어(`/`로 시작하는 명령어) 사용으로는 더 이상 경험치를 얻을 수 "
+            "없습니다.",
+            "더블오어낫띵의 '여기까지' 버튼 색상이 조정되었습니다.",
+            "더블오어낫띵의 '하프' 판돈이 항상 1개 이상이 되도록 계산 방식이 "
+            "조정되었고, 올인과 금액이 같을 때는 하프 선택지가 보이지 않습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.4.7",
         commit_hash="d48dca9",
         date="2026-09-11",

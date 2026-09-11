@@ -19,7 +19,7 @@ from config import ALLOWED_GUILD_IDS
 from core.discord_names import resolve_real_name
 from db.users import get_user
 from db.wallet import add_coins
-from db.xp import add_xp, claim_affection_xp, claim_daily_base_xp, claim_nl_xp, claim_slash_xp
+from db.xp import add_xp, claim_affection_xp, claim_daily_base_xp, claim_nl_xp
 from events.scheduler import broadcast_to_guilds
 
 _client: discord.Client | None = None
@@ -116,8 +116,10 @@ async def apply_xp_and_check_levelup(
 
 
 async def grant_daily_base_xp(user_id: int) -> None:
-    """그날 첫 활동(자연어 또는 슬래시 커맨드) 시 1회만 +1 — 자연어/슬래시 양쪽
-    진입점에서 호출."""
+    """그날 첫 자연어 대화 시 1회만 +1 — core/chat.py에서만 호출한다. 2026-09-11부로
+    슬래시 명령어는 어떤 경로로도 XP를 안 주므로(core/slash_commands.py::_prepare()가
+    이 함수를 더 이상 호출하지 않음), "그날 첫 활동"의 기준이 자연어 대화로
+    좁혀졌다."""
     applied, new_total = await claim_daily_base_xp(user_id)
     if applied > 0:
         await _handle_levelup(user_id, new_total - applied, new_total, broadcast=True)
@@ -140,13 +142,5 @@ async def grant_nl_xp(user_id: int) -> None:
     """자연어 대화 1번 XP(하루 5회 상한) — 실제로 생성까지 도달한 메시지에서만
     호출(over_cap/반복 페널티/이벤트 오버라이드 경로는 호출 안 함)."""
     applied, new_total = await claim_nl_xp(user_id)
-    if applied > 0:
-        await _handle_levelup(user_id, new_total - applied, new_total, broadcast=True)
-
-
-async def grant_slash_xp(user_id: int) -> None:
-    """슬래시 명령어 1번 XP(하루 5회 상한, 단순 조회 명령어 포함) — core/slash_commands.py
-    ::_prepare()를 거치는 모든 명령어 공통."""
-    applied, new_total = await claim_slash_xp(user_id)
     if applied > 0:
         await _handle_levelup(user_id, new_total - applied, new_total, broadcast=True)

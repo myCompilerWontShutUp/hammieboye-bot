@@ -43,7 +43,6 @@ DROP FUNCTION IF EXISTS refresh_daily_conversation_caps();
 DROP FUNCTION IF EXISTS add_xp(bigint, bigint);
 DROP FUNCTION IF EXISTS claim_affection_xp(bigint, integer);
 DROP FUNCTION IF EXISTS claim_nl_xp(bigint);
-DROP FUNCTION IF EXISTS claim_slash_xp(bigint);
 DROP FUNCTION IF EXISTS claim_daily_base_xp(bigint);
 DROP FUNCTION IF EXISTS register_sleep_mention(bigint);
 DROP FUNCTION IF EXISTS add_affection_uncapped(bigint, integer, text);
@@ -216,14 +215,17 @@ CREATE TABLE daily_stats (
 
   -- 레벨/XP 시스템(2026-09-10 신규) — 슬래시 명령어 사용 횟수(신규 추적, /내정보
   -- "오늘 기록"에도 노출)와 소스별 일일 XP 상한 판정용 누적 컬럼들.
-  -- affection_xp_today: 호감도→XP 전환 누적(하루 200 상한). nl_xp_today/
-  -- slash_xp_today: 자연어/슬래시 사용 XP 누적(각각 하루 5 상한) — nl_count/
-  -- slash_count(원본 횟수, 표시용)와 별개로 "이미 XP로 환산된 만큼"만 추적한다.
-  -- daily_base_xp_claimed: "하루 기본 경험치 +1"을 그날 첫 활동 시 1회만 지급.
+  -- affection_xp_today: 호감도→XP 전환 누적(하루 200 상한). nl_xp_today: 자연어
+  -- 사용 XP 누적(하루 5 상한) — nl_count(원본 횟수, 표시용)와 별개로 "이미 XP로
+  -- 환산된 만큼"만 추적한다. daily_base_xp_claimed: "하루 기본 경험치 +1"을 그날
+  -- 첫 자연어 대화 시 1회만 지급.
+  -- slash_xp_today는 2026-09-11부로 슬래시 명령어가 더 이상 XP를 안 주게 되며
+  -- 죽은 컬럼이 됐다(舊 nl_cap과 동일한 원칙으로 데이터는 안 지우고 그대로 둔다) —
+  -- slash_count(사용 횟수 표시용)는 별개 기능이라 계속 쓰인다.
   slash_count                        integer NOT NULL DEFAULT 0,
   affection_xp_today                 integer NOT NULL DEFAULT 0,
   nl_xp_today                        integer NOT NULL DEFAULT 0,
-  slash_xp_today                     integer NOT NULL DEFAULT 0,
+  slash_xp_today                     integer NOT NULL DEFAULT 0,  -- 죽은 컬럼, 더 이상 안 씀
   daily_base_xp_claimed              boolean NOT NULL DEFAULT false,
 
   created_at                         timestamptz NOT NULL DEFAULT now(),
@@ -794,11 +796,13 @@ $$;
 -- ------------------------------------------------------------
 -- 16-2. 레벨/XP 시스템 RPC (2026-09-10 신규, CLAUDE.md §23)
 --     add_xp: 무조건 누적(업적/헬프미 이벤트/디저트 타임/관리자 exp 명령어 전용,
---     일일 상한 없음). claim_affection_xp/claim_nl_xp/claim_slash_xp/
---     claim_daily_base_xp: 각각 daily_stats의 캡 컬럼을 원자적으로 확인+갱신한
---     뒤 실제로 적용 가능한 만큼만 total_xp에 반영하고 그 적용량을 반환한다
---     (claim_coin_daily_use와 동일한 "조건부 UPDATE" idiom, 호감도 add_affection
---     RPC와 동일한 "행 잠금 후 클램프 계산" idiom).
+--     일일 상한 없음). claim_affection_xp/claim_nl_xp/claim_daily_base_xp: 각각
+--     daily_stats의 캡 컬럼을 원자적으로 확인+갱신한 뒤 실제로 적용 가능한
+--     만큼만 total_xp에 반영하고 그 적용량을 반환한다(claim_coin_daily_use와
+--     동일한 "조건부 UPDATE" idiom, 호감도 add_affection RPC와 동일한 "행 잠금 후
+--     클램프 계산" idiom). claim_slash_xp는 2026-09-11부로 슬래시 명령어가 더
+--     이상 XP를 안 주게 되면서 삭제됐다(舊 slash_xp_today 컬럼은 다른 舊 컬럼
+--     nl_cap과 동일한 원칙으로 데이터 자체는 안 지우고 죽은 컬럼으로 남겨둔다).
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION add_xp(p_user_id bigint, p_amount bigint)
@@ -873,37 +877,6 @@ BEGIN
 
   IF v_applied > 0 THEN
     UPDATE daily_stats SET nl_xp_today = nl_xp_today + v_applied
-    WHERE user_id = p_user_id AND stat_date = v_stat_date;
-
-    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;
-  END IF;
-
-  RETURN v_applied;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION claim_slash_xp(p_user_id bigint)
-RETURNS integer
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  v_stat_date date := kst_today();
-  v_current integer;
-  v_applied integer;
-BEGIN
-  INSERT INTO daily_stats (user_id, stat_date)
-  VALUES (p_user_id, v_stat_date)
-  ON CONFLICT (user_id, stat_date) DO NOTHING;
-
-  SELECT slash_xp_today INTO v_current
-  FROM daily_stats
-  WHERE user_id = p_user_id AND stat_date = v_stat_date
-  FOR UPDATE;
-
-  v_applied := LEAST(1, GREATEST(5 - v_current, 0));
-
-  IF v_applied > 0 THEN
-    UPDATE daily_stats SET slash_xp_today = slash_xp_today + v_applied
     WHERE user_id = p_user_id AND stat_date = v_stat_date;
 
     UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;

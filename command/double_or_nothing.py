@@ -7,6 +7,7 @@
 그 안에 넣지 않고 `command/horse_race.py`와 동일한 원칙으로 별 파일에 전부 구현한
 뒤 `slot.py`에서 얇게 연동한다."""
 
+import asyncio
 import logging
 import random
 from typing import Awaitable, Callable
@@ -35,6 +36,8 @@ _OWN_COMMAND = "/도박"
 # "10분 무응답 = 몰수" 원칙과 일관되게 동일하게 적용한다 — 실제로 지급된 적 없는
 # 가상 판돈이라 몰수해도 상태가 꼬이지 않는다.
 _BOX_TIMEOUT_SECONDS = 600
+# 상자 클릭 → 흔들림 연출 → 결과 공개 사이의 대기 시간(2026-09-11 신규).
+_BOX_SHAKE_SECONDS = 1.5
 
 _BOX_OPEN_INTRO_LINES = (
     "상자가 하나 있어!! 열어볼래?? _(두근)_",
@@ -46,6 +49,24 @@ _BOX_OPEN_INTRO_LINES = (
     "이 상자... 돈일까 폭탄일까?? _(긴장)_",
     "상자가 기다리고 있어!! _(두근)_",
 )
+# 상자를 누른 직후, 결과(돈/폭탄)를 바로 공개하지 않고 한 번 더 서스펜스를 주는
+# 중간 연출(2026-09-11 사용자 지시 — 슬롯머신의 줄별 스핀, 승부예측의 프레임별
+# 애니메이션과 동일한 원칙, 이 게임은 판정이 한 번뿐이라 프레임 여러 개 대신
+# "흔들리는 상자" 단계 하나만 넣는다). `_BOX_SHAKE_HEADING`은 이 단계 전용 큰 제목,
+# 결과가 아직 안 정해졌다는 걸 보여주기 위해 상자 이모지만 쓴다.
+_BOX_SHAKE_HEADING = "## 📦 달그락달그락..."
+_BOX_SHAKE_LINES = (
+    "상자가 흔들리기 시작해!! _(두근두근)_",
+    "안에서 달그락 소리가 나!! _(긴장)_",
+    "뭔가 움직이는 것 같아!! _(조마조마)_",
+    "상자 뚜껑이 들썩거려!! _(떨림)_",
+    "두구두구두구... 곧 열려!! _(긴장감)_",
+    "안에서 정체를 알 수 없는 소리가!! _(두근)_",
+)
+# 결과 공개 순간 전용 큰 제목(2026-09-11 신규) — `##` 헤딩이라 이모지가 크게
+# 렌더링된다(슬롯머신 그리드·승부예측 트랙과 동일한 원칙, CLAUDE.md §21-1 참고).
+_MONEY_REVEAL_HEADING = "## 💰✨ 대박!! ✨💰"
+_BOMB_REVEAL_HEADING = "## 💣💥 펑!! 💥💣"
 _BOX_MONEY_LINES = (
     "짜잔, 돈이었어!! 판돈이 2배가 됐어!! _(환호)_",
     "우와, 돈이야!! 두 배로 불어났어!! _(흥분)_",
@@ -88,8 +109,9 @@ _CASHOUT_LINES = (
 # /봇정보-규칙(command/rules_info.py)이 그대로 넘기는 규칙 본문(§22-4 정중체).
 DOUBLE_OR_NOTHING_RULE_TEXT = (
     "📦 더블오어낫띵\n\n"
-    "- 시작 판돈은 직접 입력하지 않고 \"올인\"(보유 동전 전부) 또는 \"하프\"(절반) "
-    "중 하나를 선택합니다.\n"
+    "- 시작 판돈은 직접 입력하지 않고 \"올인\"(보유 동전 전부) 또는 \"하프\"(절반, "
+    "홀수면 올림) 중 하나를 선택합니다(둘의 금액이 같으면 하프는 선택지에서 "
+    "빠집니다).\n"
     "- 상자를 열면 50% 확률로 판돈이 2배가 되고, 50% 확률로 폭탄을 만나 판돈을 "
     "전부 잃습니다.\n"
     "- 판돈이 2배가 되면 \"한 판 더\"로 계속 도전하거나 \"여기까지\"로 그 자리에서 "
@@ -103,39 +125,58 @@ DOUBLE_OR_NOTHING_RULE_TEXT = (
 
 class AllInHalfModal(discord.ui.Modal):
     """더블오어낫띵 전용 시작 판돈 선택 모달(2026-09-10 신규) — 다른 5개 게임과
-    달리 직접 금액을 입력하지 않고, "올인"(보유 동전 전부) 또는 "하프"(절반, 내림)
+    달리 직접 금액을 입력하지 않고, "올인"(보유 동전 전부) 또는 "하프"(절반, 올림)
     중 정확히 하나만 체크해야 진행된다(체크박스 2개, `BetAmountModal`과 달리
     상한 자체가 없다 — 슬롯머신·승부예측 전용 MAX_BET_GAMBLING 대상이 아니다).
-    slot.py의 게임 선택 버튼과 이 파일의 `_build_replay_view` 둘 다 공유한다."""
+    slot.py의 게임 선택 버튼과 이 파일의 `_build_replay_view` 둘 다 공유한다.
+
+    하프는 내림이 아니라 **올림**으로 계산한다(2026-09-11 사용자 지시) — 내림이면
+    보유 동전이 1개일 때 하프가 0개가 되어 아무것도 못 거는 상태가 생긴다. 올림
+    (`ceil(balance / 2)`)이면 보유 동전이 1개 이상인 한 하프도 항상 최소 1개다.
+    그리고 올림 특성상 `ceil(balance / 2) == balance`가 되는 경우는 balance가 0
+    또는 1일 때뿐이다 — 이때는 하프와 올인 금액이 정확히 같아지므로, 의미 없는
+    선택지를 없애기 위해 하프 체크박스 자체를 아예 보여주지 않는다(사용자 지시:
+    "하프와 올인의 가격이 동일할 경우 하프를 표시하지 않는다")."""
 
     _NONE_CHECKED_RESPONSE = "올인 또는 하프 중 하나를 체크해야 진행돼!! _(갸웃)_"
+    _ALL_IN_ONLY_NONE_CHECKED_RESPONSE = "올인을 체크해야 진행돼!! _(갸웃)_"
     _BOTH_CHECKED_RESPONSE = "올인과 하프 중 하나만 체크해줘!! _(갸웃)_"
 
     def __init__(self, *, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]) -> None:
         super().__init__(title="더블오어낫띵 판돈 선택")
         self._balance = balance
         self._on_valid = on_valid
+        # 올림 나눗셈 — balance가 음수일 일이 없어(잔액) 이 형태로 충분하다.
+        self._half_amount = (balance + 1) // 2
         self._all_in = discord.ui.Checkbox(default=False)
-        self._half = discord.ui.Checkbox(default=False)
         self.add_item(
             discord.ui.Label(
                 text="올인", description=f"보유 동전 전부({balance:,}코인)를 겁니다.", component=self._all_in
             )
         )
-        self.add_item(
-            discord.ui.Label(
-                text="하프",
-                description=f"보유 동전의 절반({balance // 2:,}코인)을 겁니다.",
-                component=self._half,
+        self._half: discord.ui.Checkbox | None = None
+        if self._half_amount != balance:
+            self._half = discord.ui.Checkbox(default=False)
+            self.add_item(
+                discord.ui.Label(
+                    text="하프",
+                    description=f"보유 동전의 절반({self._half_amount:,}코인)을 겁니다.",
+                    component=self._half,
+                )
             )
-        )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if self._all_in.value == self._half.value:  # 둘 다 False거나 둘 다 True
-            response = self._BOTH_CHECKED_RESPONSE if self._all_in.value else self._NONE_CHECKED_RESPONSE
-            await interaction.response.send_message(response, ephemeral=True)
-            return
-        amount = self._balance if self._all_in.value else self._balance // 2
+        if self._half is None:
+            if not self._all_in.value:
+                await interaction.response.send_message(self._ALL_IN_ONLY_NONE_CHECKED_RESPONSE, ephemeral=True)
+                return
+            amount = self._balance
+        else:
+            if self._all_in.value == self._half.value:  # 둘 다 False거나 둘 다 True
+                response = self._BOTH_CHECKED_RESPONSE if self._all_in.value else self._NONE_CHECKED_RESPONSE
+                await interaction.response.send_message(response, ephemeral=True)
+                return
+            amount = self._balance if self._all_in.value else self._half_amount
         if amount < 1:
             await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
             return
@@ -202,31 +243,53 @@ class _BoxView(discord.ui.View):
             return
         self.stop()
 
+        # 연출 1단계: 결과를 바로 보여주지 않고 "흔들리는 상자" 프레임을 먼저 한 번
+        # 보여준다(슬롯머신/승부예측과 동일한 원칙 — command/horse_race.py::_run_race
+        # 참고). 버튼 없는 빈 View로 교체해 이 짧은 대기 중 중복 클릭을 막는다.
+        empty_view = discord.ui.View()
+        shake_content = f"## 🎯 도전자: {self.challenger_name}\n{_BOX_SHAKE_HEADING}\n{random.choice(_BOX_SHAKE_LINES)}"
+        try:
+            await interaction.response.edit_message(content=shake_content, embed=None, view=empty_view)
+            self.message = await interaction.original_response()
+        except discord.HTTPException:
+            logging.exception("Failed to edit double-or-nothing shake frame")
+            mark_inactive(self.user_id)
+            return
+
+        await asyncio.sleep(_BOX_SHAKE_SECONDS)
+
+        if self.message is None:
+            mark_inactive(self.user_id)
+            return
+
+        # 연출 2단계: 결과 공개 — 판정 자체는 이 시점에 딱 한 번 굴린다(1단계에서
+        # 이미 결과가 정해져 있는 게 아니라, 흔들림 연출이 끝난 뒤에야 굴린다 —
+        # 어차피 사용자는 그 사이 값을 알 방법이 없어 순서가 결과에 영향을 안 준다).
         if random.random() < 0.5:
             new_pot = self.pot * 2
             content = (
-                f"## 🎯 도전자: {self.challenger_name}\n{random.choice(_BOX_MONEY_LINES)}\n\n"
-                f"현재 판돈: {new_pot:,}코인"
+                f"## 🎯 도전자: {self.challenger_name}\n{_MONEY_REVEAL_HEADING}\n"
+                f"{random.choice(_BOX_MONEY_LINES)}\n\n## 💰 현재 판돈: {new_pot:,}코인"
             )
             choice_view = _DoubleOrNothingChoiceView(
                 self.user_id, self.challenger_name, self.original_bet, new_pot, self.before_coins
             )
             try:
-                await interaction.response.edit_message(content=content, view=choice_view)
-                choice_view.message = await interaction.original_response()
+                await self.message.edit(content=content, view=choice_view)
+                choice_view.message = self.message
             except discord.HTTPException:
                 # self.stop()은 이미 호출된 뒤라 새 view가 못 붙으면 게임이
                 # 통째로 멈춘다 — 잠금을 풀어줘야 새 판을 다시 시작할 수 있다.
                 logging.exception("Failed to edit double-or-nothing money reveal")
                 mark_inactive(self.user_id)
         else:
-            content = f"## 🎯 도전자: {self.challenger_name}\n{random.choice(_BOX_BOMB_LINES)}"
+            content = f"## 🎯 도전자: {self.challenger_name}\n{_BOMB_REVEAL_HEADING}\n{random.choice(_BOX_BOMB_LINES)}"
             current = self.before_coins - self.original_bet
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.original_bet, current)
             replay_view = _build_replay_view(self.user_id)
             try:
-                await interaction.response.edit_message(content=content, embed=receipt_embed, view=replay_view)
-                replay_view.message = await interaction.original_response()
+                await self.message.edit(content=content, embed=receipt_embed, view=replay_view)
+                replay_view.message = self.message
             except discord.HTTPException:
                 logging.exception("Failed to edit double-or-nothing bomb settlement")
                 mark_inactive(self.user_id)
@@ -267,7 +330,7 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
 
         content = (
             f"## 🎯 도전자: {self.challenger_name}\n{random.choice(_BOX_OPEN_INTRO_LINES)}\n\n"
-            f"현재 판돈: {self.pot:,}코인"
+            f"## 💰 현재 판돈: {self.pot:,}코인"
         )
         box_view = _BoxView(self.user_id, self.challenger_name, self.original_bet, self.pot, self.before_coins)
         try:
@@ -277,7 +340,10 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
             logging.exception("Failed to edit double-or-nothing again screen")
             mark_inactive(self.user_id)
 
-    @discord.ui.button(label="여기까지", style=discord.ButtonStyle.success)
+    # 2026-09-11 사용자 지시 — "한 판 더"(danger/빨강)는 그대로 두고 "여기까지"만
+    # secondary(회색)로 바꿔 "위험을 계속 감수" vs "안전하게 멈춤"이 색으로도
+    # 대비되게 했다(舊 success/초록이었으나 danger 옆에서 너무 튀어 보였다).
+    @discord.ui.button(label="여기까지", style=discord.ButtonStyle.secondary)
     async def cash_out(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await reject_if_already_resolved(self, interaction):
             return
@@ -339,7 +405,7 @@ async def start_round(
 
     content = (
         f"## 🎯 도전자: {challenger_name}\n{random.choice(_BOX_OPEN_INTRO_LINES)}\n\n"
-        f"현재 판돈: {bet:,}코인"
+        f"## 💰 현재 판돈: {bet:,}코인"
     )
     view = _BoxView(user_id, challenger_name, bet, bet, before_coins)
     await interaction.response.send_message(content=content, view=view)

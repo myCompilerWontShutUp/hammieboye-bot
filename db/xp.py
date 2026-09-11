@@ -34,11 +34,6 @@ async def claim_nl_xp(user_id: int) -> tuple[int, int]:
     return await _claim_and_fetch_total("claim_nl_xp", {"p_user_id": user_id}, user_id)
 
 
-async def claim_slash_xp(user_id: int) -> tuple[int, int]:
-    """슬래시 명령어 1번 XP(하루 5회 상한, 단순 조회 명령어 포함)."""
-    return await _claim_and_fetch_total("claim_slash_xp", {"p_user_id": user_id}, user_id)
-
-
 async def claim_daily_base_xp(user_id: int) -> tuple[int, int]:
     """그날 첫 활동(자연어 또는 슬래시 커맨드) 시 1회만 지급되는 기본 XP."""
     return await _claim_and_fetch_total("claim_daily_base_xp", {"p_user_id": user_id}, user_id)
