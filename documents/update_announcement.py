@@ -33,6 +33,16 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.4.7",
+        commit_hash="PENDING",
+        date="2026-09-11",
+        changes=(
+            "레벨 진행바가 10칸에서 15칸으로 늘어나고, 99%여도 항상 한 칸 이상 "
+            "남도록 표시 방식이 개선되었습니다.",
+            "취침 중 맨션 이벤트의 결과 확률이 이전 수치로 되돌아갔습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.4.6",
         commit_hash="41fc10d",
         date="2026-09-11",

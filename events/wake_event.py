@@ -10,8 +10,9 @@ from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.guild_sleep_state import register_mention
 
-# "짜증" 분기 확률 — 악몽 확률을 올리려면 이 값을 낮춰야 한다.
-_ANNOYED_PROBABILITY = 0.75
+# "짜증" 분기 확률 — 악몽 확률을 올리려면 이 값을 낮춰야 한다. 2026-09-11 사용자
+# 지시로 90%(악몽 10%)로 롤백 — 한때 75%(악몽 25%)로 조정됐던 적이 있었다.
+_ANNOYED_PROBABILITY = 0.90
 _ANNOYED_DELTA = -5
 _NIGHTMARE_DELTA = 5
 _NIGHTMARE_METHOD = "sleep_wake_nightmare"
