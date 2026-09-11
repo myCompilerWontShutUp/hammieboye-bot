@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.8",
-        commit_hash="PENDING",
+        commit_hash="11e1dbd",
         date="2026-09-11",
         changes=(
             "더블오어낫띵의 상자 열기에 결과를 공개하기 전 짧은 연출이 추가되었습니다.",
