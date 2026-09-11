@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.4.9",
-        commit_hash="PENDING",
+        commit_hash="6a9c912",
         date="2026-09-11",
         changes=(
             "`/내정보`·`/니정보`에 동전 관련 정보를 모아보는 새로운 '자산' 탭이 "
