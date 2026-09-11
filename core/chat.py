@@ -339,7 +339,7 @@ async def handle_natural_language(
     # add_affection의 반환값(new_affection)은 그 순간의 DB 절대값이라, event_delta를
     # 로컬에서 나중에 더하면 이미 반영된 값을 이중으로 더하게 된다 — 반드시 먼저 적용.
     if is_repeat_penalty:
-        _record(await add_affection(user_id, -1))
+        _record(await add_affection(user_id, -1, guild_id=guild_id))
 
     # 생성 경로에서만 직전 맥락이 필요하고, 이번 메시지를 로그에 남기기 전에 가져와야
     # 프롬프트에 같은 메시지가 중복으로 안 들어간다.
@@ -389,6 +389,7 @@ async def handle_natural_language(
             current_affection,
             was_event_response,
             multiplier_eligible=multiplier_eligible,
+            guild_id=guild_id,
         )
 
     if is_repeat_penalty:
@@ -447,7 +448,7 @@ async def handle_natural_language(
     classification, (greeting_delta, greeting_multiplier_eligible), forbidden_book_note = (
         await asyncio.gather(
             intent.classify(text),
-            _apply_greeting_bonuses(user_id, text, stats, today),
+            _apply_greeting_bonuses(user_id, text, stats, today, guild_id=guild_id),
             _maybe_forbidden_book_note(text, active_prompt_text),
         )
     )
@@ -461,7 +462,7 @@ async def handle_natural_language(
         _, message_delta = await asyncio.gather(
             set_detected_emotion(logged_row["id"], classification.emotion),
             _apply_message_effects(
-                user_id, classification.emotion, classification.has_severe_abuse, stats
+                user_id, classification.emotion, classification.has_severe_abuse, stats, guild_id=guild_id
             ),
         )
         total_delta += message_delta
@@ -497,7 +498,7 @@ async def handle_natural_language(
 
     # 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
     # 글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다.
-    await award_achievement(user_id, achievements.first_chat.ID)
+    await award_achievement(user_id, achievements.first_chat.ID, guild_id=guild_id)
 
     # nl_count는 실제 생성까지 도달한 메시지만 증가시킨다. 상한에 정확히 도달하는
     # 메시지라면 답변 뒤에 고정 문구를 이어붙인다.
@@ -506,17 +507,20 @@ async def handle_natural_language(
         response_text = f"{response_text}\n\n{random.choice(_DAILY_LIMIT_PHRASES)}"
 
     if new_nl_count >= _SPEECH_BUBBLE_THRESHOLD:
-        await award_achievement(user_id, achievements.speech_bubble.ID)
+        await award_achievement(user_id, achievements.speech_bubble.ID, guild_id=guild_id)
 
+    # nl_count 갱신/히스토리 로그와 레벨/XP 시스템(2026-09-10) 적립(실제로 생성까지
+    # 도달한 메시지에서만 — over_cap/반복 페널티/이벤트 오버라이드 등 조기 반환
+    # 경로는 여기까지 안 옴)은 서로 다른 daily_stats 컬럼/테이블을 건드리는 독립적인
+    # 부수 효과라 순차로 기다릴 이유가 없다 — 4개를 한 번에 asyncio.gather로 보내
+    # 왕복 시간을 겹친다(2026-09-11, 매 자연어 메시지마다 타는 경로라 체감 지연에
+    # 가장 큰 영향을 주던 지점).
     await asyncio.gather(
         update_daily_stats(user_id, {"nl_count": new_nl_count}),
         log(user_id, guild_id, response_text, role="assistant"),
+        grant_daily_base_xp(user_id, guild_id=guild_id),
+        grant_nl_xp(user_id, guild_id=guild_id),
     )
-
-    # 레벨/XP 시스템(2026-09-10) — 실제로 생성까지 도달한 메시지에서만 적립한다
-    # (over_cap/반복 페널티/이벤트 오버라이드 등 조기 반환 경로는 여기까지 안 옴).
-    await grant_daily_base_xp(user_id)
-    await grant_nl_xp(user_id)
 
     return _finalize(
         response_text, total_delta, current_affection,
@@ -532,6 +536,7 @@ async def _handle_over_cap(
     was_event_response: bool = False,
     *,
     multiplier_eligible: bool = True,
+    guild_id: int | None = None,
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
     # 이 메시지가 헬프 미 이벤트 반응이었다면(긍/부정 무관) 남용 카운터를 건드리지 않는다 —
     # 안 그러면 이벤트 자체의 호감도 변화 위에 남용 페널티까지 겹쳐 붙는다.
@@ -557,7 +562,7 @@ async def _handle_over_cap(
             multiplier_eligible=multiplier_eligible,
         )
 
-    result = await add_affection(user_id, -1)
+    result = await add_affection(user_id, -1, guild_id=guild_id)
     total_delta += result["applied_amount"]
     current_affection = result["new_affection"]
     return _finalize(
@@ -607,7 +612,7 @@ async def _maybe_forbidden_book_note(text: str, active_prompt_text: str | None) 
 
 
 async def _apply_greeting_bonuses(
-    user_id: int, text: str, stats: dict, today: date
+    user_id: int, text: str, stats: dict, today: date, *, guild_id: int | None = None
 ) -> tuple[int, bool]:
     """생일 축하(3-2)/아침 인사(3-6) 자연어 보상. 둘 다 하루 1회, 반복 시엔 추가 지급 없이
     정상 생성 흐름만 그대로 진행한다(생일 쪽은 "이미 줬어" 같은 메타 발언도 없음).
@@ -625,7 +630,9 @@ async def _apply_greeting_bonuses(
         and not stats["birthday_greeting_claimed"]
         and all(keyword in normalized for keyword in _BIRTHDAY_KEYWORDS)
     ):
-        result = await add_affection(user_id, _BIRTHDAY_GREETING_REWARD, _BIRTHDAY_GREETING_METHOD)
+        result = await add_affection(
+            user_id, _BIRTHDAY_GREETING_REWARD, _BIRTHDAY_GREETING_METHOD, guild_id=guild_id
+        )
         delta += result["applied_amount"]
         updates["birthday_greeting_claimed"] = True
 
@@ -634,10 +641,12 @@ async def _apply_greeting_bonuses(
         and not stats["morning_greeting_claimed"]
         and any(keyword in normalized for keyword in _MORNING_GREETING_KEYWORDS)
     ):
-        result = await add_affection(user_id, _MORNING_GREETING_REWARD, _MORNING_GREETING_METHOD)
+        result = await add_affection(
+            user_id, _MORNING_GREETING_REWARD, _MORNING_GREETING_METHOD, guild_id=guild_id
+        )
         delta += result["applied_amount"]
         updates["morning_greeting_claimed"] = True
-        await award_achievement(user_id, achievements.early_bird.ID)
+        await award_achievement(user_id, achievements.early_bird.ID, guild_id=guild_id)
 
     if updates:
         await update_daily_stats(user_id, updates)
@@ -646,17 +655,17 @@ async def _apply_greeting_bonuses(
 
 
 async def _apply_message_effects(
-    user_id: int, emotion: str, has_severe_abuse: bool, stats: dict
+    user_id: int, emotion: str, has_severe_abuse: bool, stats: dict, *, guild_id: int | None = None
 ) -> int:
     updates = {}
     delta = 0
 
     if has_severe_abuse:
-        result = await add_affection(user_id, _SEVERE_ABUSE_PENALTY)
+        result = await add_affection(user_id, _SEVERE_ABUSE_PENALTY, guild_id=guild_id)
         delta += result["applied_amount"]
 
     if emotion == _HAPPY_EMOTION and not stats["happy_emotion_claimed"]:
-        result = await add_affection(user_id, 1, _HAPPY_METHOD)
+        result = await add_affection(user_id, 1, _HAPPY_METHOD, guild_id=guild_id)
         delta += result["applied_amount"]
         updates["happy_emotion_claimed"] = True
 

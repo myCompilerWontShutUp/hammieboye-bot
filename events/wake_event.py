@@ -78,15 +78,15 @@ async def handle_mention(message: discord.Message) -> None:
     user_id = message.author.id
     if random.random() < _ANNOYED_PROBABILITY:
         line1, line2 = random.choice(_ANNOYED_PAIRS)
-        result = await add_affection(user_id, _ANNOYED_DELTA)
+        result = await add_affection(user_id, _ANNOYED_DELTA, guild_id=guild_id)
         notice = format_affection_notice(result["applied_amount"], result["new_affection"])
     else:
         line1, line2 = random.choice(_NIGHTMARE_PAIRS)
-        result = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD)
+        result = await add_affection_uncapped(user_id, _NIGHTMARE_DELTA, _NIGHTMARE_METHOD, guild_id=guild_id)
         notice = format_affection_notice(result["applied_amount"], result["new_affection"])
         # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
         # (호감도 보너스도 폐지) — 인라인 문구는 더 이상 안 붙인다.
-        await award_achievement(user_id, achievements.nightmare_freed.ID)
+        await award_achievement(user_id, achievements.nightmare_freed.ID, guild_id=guild_id)
 
     reply_text = f"{line1}\n{line2}{notice}"
 

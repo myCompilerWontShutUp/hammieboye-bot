@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from db.achievements import maybe_award_affection_milestones
@@ -15,7 +16,12 @@ def _multiplied(amount: int) -> int:
 
 
 async def add_affection(
-    user_id: int, amount: int, method: str | None = None, *, apply_day_multiplier: bool = True
+    user_id: int,
+    amount: int,
+    method: str | None = None,
+    *,
+    apply_day_multiplier: bool = True,
+    guild_id: int | None = None,
 ) -> dict:
     """호감도를 원자적으로 증감시킨다 (일일 획득 상한은 DB 함수가 알아서 처리 — 2026-09-10부로
     상한값 자체가 2147483647(사실상 무제한)로 올라갔지만, 메커니즘은 그대로라 필요하면
@@ -28,6 +34,10 @@ async def add_affection(
 
     apply_day_multiplier=False면 주말/기념일/생일 배율을 건너뛴다 — 업적 달성 보너스
     (db/achievements.py::award())처럼 날짜와 무관하게 항상 고정 수치여야 하는 호출 전용.
+
+    guild_id는 이 호감도 변화를 유발한 활동이 있었던 서버 — 알고 있으면(호출부가
+    interaction/message에서 넘겨주면) 이로 인해 트리거되는 레벨업/업적 전 서버
+    방송에서 그 서버를 가장 먼저 보낸다(2026-09-11).
     """
     if apply_day_multiplier:
         amount = _multiplied(amount)
@@ -36,14 +46,20 @@ async def add_affection(
         {"p_user_id": user_id, "p_amount": amount, "p_method": method},
     )
     result = rows[0]
-    result["achievement_notice"] = await maybe_award_affection_milestones(
-        user_id, result["applied_amount"], result["new_affection"]
+    # 호감도 마일스톤 확인과 XP 적립은 서로 독립적인 부수 효과라(하나는
+    # user_achievements를, 하나는 daily_stats의 XP 캡 컬럼+users.total_xp를 건드림)
+    # 순차로 기다릴 이유가 없다 — asyncio.gather로 동시에 보내 왕복 시간을 겹친다
+    # (2026-09-11, 체감 지연 개선). 레벨/XP 시스템(2026-09-10)이 호감도가 바뀌는
+    # 모든 경로(관리자 fl 조작, 암시장 확률형 간식 uncapped 경로 포함)를 놓치지 않기
+    # 위해 add_affection_uncapped와 함께 이 성공 경로 끝에서 호출한다.
+    # applied_amount<=0이면 grant_affection_xp가 알아서 아무것도 안 한다.
+    achievement_notice, _ = await asyncio.gather(
+        maybe_award_affection_milestones(
+            user_id, result["applied_amount"], result["new_affection"], guild_id=guild_id
+        ),
+        grant_affection_xp(user_id, result["applied_amount"], guild_id=guild_id),
     )
-    # 레벨/XP 시스템(2026-09-10) — 호감도가 바뀌는 모든 경로(관리자 fl 조작, 암시장
-    # 확률형 간식 uncapped 경로 포함)를 놓치지 않기 위해 add_affection_uncapped와
-    # 함께 이 성공 경로 끝에서 호출한다. applied_amount<=0이면 grant_affection_xp가
-    # 알아서 아무것도 안 한다.
-    await grant_affection_xp(user_id, result["applied_amount"])
+    result["achievement_notice"] = achievement_notice
     return result
 
 
@@ -54,6 +70,7 @@ async def add_affection_uncapped(
     *,
     check_achievements: bool = True,
     apply_day_multiplier: bool = True,
+    guild_id: int | None = None,
 ) -> dict:
     """일일 +100 획득 상한 계산을 건너뛰고 무조건 적용한다 (예: 취침 중 깨움 이벤트의 악몽 감사 +5).
 
@@ -68,6 +85,8 @@ async def add_affection_uncapped(
 
     apply_day_multiplier=False면 주말/기념일/생일 배율을 건너뛴다 — `add_affection`과
     동일한 이유(업적 달성 보너스 전용).
+
+    guild_id는 add_affection과 동일 — 전 서버 방송 시 우선 전송할 서버.
     """
     if apply_day_multiplier:
         amount = _multiplied(amount)
@@ -76,15 +95,19 @@ async def add_affection_uncapped(
         {"p_user_id": user_id, "p_amount": amount, "p_method": method},
     )
     new_affection = rows[0]["new_affection"]
-    achievement_notice = (
-        await maybe_award_affection_milestones(user_id, amount, new_affection)
-        if check_achievements
-        else None
-    )
-    # check_achievements 플래그와 무관하게 항상 호출한다 — 업적 마일스톤 재귀 방지와
-    # XP 적립은 서로 다른 관심사다(관리자 fl 조작도 호감도가 실제로 바뀌었으면 XP는
-    # 받는다, 계획 확정 사항).
-    await grant_affection_xp(user_id, amount)
+    # check_achievements 플래그와 무관하게 grant_affection_xp는 항상 호출한다 —
+    # 업적 마일스톤 재귀 방지와 XP 적립은 서로 다른 관심사다(관리자 fl 조작도
+    # 호감도가 실제로 바뀌었으면 XP는 받는다, 계획 확정 사항). 둘 다 필요한 경우
+    # asyncio.gather로 동시에 보내 왕복 시간을 겹친다(2026-09-11, add_affection과
+    # 동일한 이유).
+    if check_achievements:
+        achievement_notice, _ = await asyncio.gather(
+            maybe_award_affection_milestones(user_id, amount, new_affection, guild_id=guild_id),
+            grant_affection_xp(user_id, amount, guild_id=guild_id),
+        )
+    else:
+        achievement_notice = None
+        await grant_affection_xp(user_id, amount, guild_id=guild_id)
     return {
         "applied_amount": amount,
         "new_affection": new_affection,

@@ -114,6 +114,16 @@ def setup_dispatcher(client: discord.Client) -> None:
         # 길드별로 격리 — 하나가 실패(예: applications.commands 스코프 누락)해도 나머지
         # 동기화와 아래 스케줄러 부트스트랩은 계속돼야 한다.
         for guild_id in ALLOWED_GUILD_IDS:
+            # ALLOWED_GUILD_IDS는 "곧 초대할 예정이지만 아직 미확정"인 서버도 미리
+            # 등록해둘 수 있다(2026-09-11 사용자 확인) — 봇이 실제로 그 서버 멤버가
+            # 아니면 sync를 시도해봤자 discord.Forbidden(403, Missing Access)만
+            # 나므로, 아예 시도하지 않고 조용히 건너뛴다(ERROR 로그로 소란 피우지
+            # 않음). 봇이 나중에 실제로 초대되면 다음 재시작 때 자동으로 동기화된다.
+            if client.get_guild(guild_id) is None:
+                logging.info(
+                    "Skipping slash command sync for guild %s — bot is not a member yet", guild_id
+                )
+                continue
             guild = discord.Object(id=guild_id)
             try:
                 tree.copy_global_to(guild=guild)

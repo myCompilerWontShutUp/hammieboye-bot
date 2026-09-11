@@ -23,6 +23,7 @@ DROP TABLE IF EXISTS guild_sleep_state CASCADE;
 DROP TABLE IF EXISTS guild_channels CASCADE;
 DROP TABLE IF EXISTS global_call_events CASCADE;
 DROP TABLE IF EXISTS affection_log CASCADE;
+DROP TABLE IF EXISTS coin_log CASCADE;
 DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
@@ -277,6 +278,27 @@ CREATE TABLE affection_log (
 );
 
 CREATE INDEX idx_affection_log_user_value ON affection_log (user_id, new_value, delta, created_at DESC);
+
+-- ------------------------------------------------------------
+-- 6-2. coin_log — 동전 변경 이력 (신규, 2026-09-11 — "코인 획득 경로를 볼 수 있는
+--    로그" 사용자 요청). 동전이 바뀌는 모든 경로(내기/도박 배팅·승리, /동전, 자판기·
+--    암시장 구매, 관리자 co 조작 전부 포함)에서 한 줄씩 남긴다 — affection_log와
+--    달리 관리자 조작(admin_co_up/down/set/reset)도 예외 없이 기록한다("코인
+--    획득 경로 전체를 보고 싶다"는 요청 취지상 관리자 조작만 사각지대로 남기면
+--    안 되기 때문. affection_log의 舊 la-set/la-reset 제외 원칙과 의도적으로 다름).
+--    add_coins/spend_coins/deduct_coins_clamped/set_coins RPC 안에서 같이 기록된다.
+-- ------------------------------------------------------------
+
+CREATE TABLE coin_log (
+  id           bigserial PRIMARY KEY,
+  user_id       bigint NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  delta          bigint NOT NULL,       -- 이번에 실제 적용된 증감분(양수=증가/음수=감소)
+  new_value      bigint NOT NULL,       -- 적용 후 동전
+  method          text,                   -- 획득/소비 방법 식별자 (있으면)
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_coin_log_user_recent ON coin_log (user_id, created_at DESC);
 
 -- ------------------------------------------------------------
 -- 6-1. admin_command_log — 관리자 콘솔("주인님-가라사대") 명령어 실행 이력 (신규)
@@ -798,39 +820,53 @@ $$;
 --     add_xp: 무조건 누적(업적/헬프미 이벤트/디저트 타임/관리자 exp 명령어 전용,
 --     일일 상한 없음). claim_affection_xp/claim_nl_xp/claim_daily_base_xp: 각각
 --     daily_stats의 캡 컬럼을 원자적으로 확인+갱신한 뒤 실제로 적용 가능한
---     만큼만 total_xp에 반영하고 그 적용량을 반환한다(claim_coin_daily_use와
---     동일한 "조건부 UPDATE" idiom, 호감도 add_affection RPC와 동일한 "행 잠금 후
---     클램프 계산" idiom). claim_slash_xp는 2026-09-11부로 슬래시 명령어가 더
---     이상 XP를 안 주게 되면서 삭제됐다(舊 slash_xp_today 컬럼은 다른 舊 컬럼
---     nl_cap과 동일한 원칙으로 데이터 자체는 안 지우고 죽은 컬럼으로 남겨둔다).
+--     만큼만 total_xp에 반영하고 (적용량, 갱신 후 total_xp)를 함께 반환한다
+--     (claim_coin_daily_use와 동일한 "조건부 UPDATE" idiom, 호감도 add_affection
+--     RPC와 동일한 "행 잠금 후 클램프 계산" idiom). **2026-09-11 반환 형태 변경**
+--     — 舊 `RETURNS integer`(적용량만)였을 때는 Python 쪽(db/xp.py)이 적용량>0일
+--     때마다 새 total_xp를 알려고 별도 get_user() REST 호출을 한 번 더 했다 —
+--     이 두 번째 왕복이 자연어 메시지마다(claim_nl_xp) 거의 매번 발생해 체감
+--     지연의 주범이었다. `UPDATE ... RETURNING total_xp`로 이미 손에 있는 값을
+--     그대로 같이 돌려주면 이 왕복 자체가 사라진다. claim_slash_xp는 2026-09-11부로
+--     슬래시 명령어가 더 이상 XP를 안 주게 되면서 삭제됐다(舊 slash_xp_today
+--     컬럼은 다른 舊 컬럼 nl_cap과 동일한 원칙으로 데이터 자체는 안 지우고 죽은
+--     컬럼으로 남겨둔다).
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION add_xp(p_user_id bigint, p_amount bigint)
-RETURNS bigint
+RETURNS TABLE (old_total bigint, new_total bigint)
 LANGUAGE plpgsql
 AS $$
 DECLARE
+  v_old_xp bigint;
   v_new_xp bigint;
 BEGIN
+  -- apply_xp_and_check_levelup(events/announcements.py)이 레벨업 경계를 넘었는지
+  -- 판정하려면 갱신 전 값도 필요하다 — 舊에는 Python 쪽이 이걸 알려고 별도
+  -- get_user() REST 왕복을 먼저 했는데(2026-09-11 수정), FOR UPDATE로 같은 트랜잭션
+  -- 안에서 한 번에 읽어 돌려주면 그 왕복이 사라진다.
+  SELECT total_xp INTO v_old_xp FROM users WHERE user_id = p_user_id FOR UPDATE;
   UPDATE users
   SET total_xp = GREATEST(total_xp + p_amount, 0)
   WHERE user_id = p_user_id
   RETURNING total_xp INTO v_new_xp;
-  RETURN v_new_xp;
+  RETURN QUERY SELECT v_old_xp, v_new_xp;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION claim_affection_xp(p_user_id bigint, p_raw_amount integer)
-RETURNS integer
+RETURNS TABLE (applied integer, new_total bigint)
 LANGUAGE plpgsql
 AS $$
 DECLARE
   v_stat_date date := kst_today();
   v_current integer;
   v_applied integer;
+  v_new_total bigint;
 BEGIN
   IF p_raw_amount <= 0 THEN
-    RETURN 0;
+    RETURN QUERY SELECT 0, NULL::bigint;
+    RETURN;
   END IF;
 
   INSERT INTO daily_stats (user_id, stat_date)
@@ -848,21 +884,24 @@ BEGIN
     UPDATE daily_stats SET affection_xp_today = affection_xp_today + v_applied
     WHERE user_id = p_user_id AND stat_date = v_stat_date;
 
-    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;
+    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0)
+    WHERE user_id = p_user_id
+    RETURNING total_xp INTO v_new_total;
   END IF;
 
-  RETURN v_applied;
+  RETURN QUERY SELECT v_applied, v_new_total;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION claim_nl_xp(p_user_id bigint)
-RETURNS integer
+RETURNS TABLE (applied integer, new_total bigint)
 LANGUAGE plpgsql
 AS $$
 DECLARE
   v_stat_date date := kst_today();
   v_current integer;
   v_applied integer;
+  v_new_total bigint;
 BEGIN
   INSERT INTO daily_stats (user_id, stat_date)
   VALUES (p_user_id, v_stat_date)
@@ -879,20 +918,23 @@ BEGIN
     UPDATE daily_stats SET nl_xp_today = nl_xp_today + v_applied
     WHERE user_id = p_user_id AND stat_date = v_stat_date;
 
-    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0) WHERE user_id = p_user_id;
+    UPDATE users SET total_xp = GREATEST(total_xp + v_applied, 0)
+    WHERE user_id = p_user_id
+    RETURNING total_xp INTO v_new_total;
   END IF;
 
-  RETURN v_applied;
+  RETURN QUERY SELECT v_applied, v_new_total;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION claim_daily_base_xp(p_user_id bigint)
-RETURNS integer
+RETURNS TABLE (applied integer, new_total bigint)
 LANGUAGE plpgsql
 AS $$
 DECLARE
   v_stat_date date := kst_today();
   v_claimed boolean;
+  v_new_total bigint;
 BEGIN
   INSERT INTO daily_stats (user_id, stat_date)
   VALUES (p_user_id, v_stat_date)
@@ -904,15 +946,18 @@ BEGIN
   FOR UPDATE;
 
   IF v_claimed THEN
-    RETURN 0;
+    RETURN QUERY SELECT 0, NULL::bigint;
+    RETURN;
   END IF;
 
   UPDATE daily_stats SET daily_base_xp_claimed = true
   WHERE user_id = p_user_id AND stat_date = v_stat_date;
 
-  UPDATE users SET total_xp = GREATEST(total_xp + 1, 0) WHERE user_id = p_user_id;
+  UPDATE users SET total_xp = GREATEST(total_xp + 1, 0)
+  WHERE user_id = p_user_id
+  RETURNING total_xp INTO v_new_total;
 
-  RETURN 1;
+  RETURN QUERY SELECT 1, v_new_total;
 END;
 $$;
 
@@ -980,7 +1025,10 @@ $$;
 -- 이 반환 형태에 이미 의존하고 있어 필드는 유지). p_count_as_earned=true(기본값)일
 -- 때만 lifetime_coins_earned를 늘린다 — 무승부/타임아웃 환불처럼 "번 게 아니라
 -- 원금을 그대로 돌려주는" 경우엔 false로 호출해서 누적 통계(및 "티끌 모아 티끌"
--- 업적)가 부풀지 않게 한다.
+-- 업적)가 부풀지 않게 한다. p_amount<>0이면 coin_log에도 한 줄 남긴다(2026-09-11,
+-- "코인 획득 경로를 볼 수 있는 로그" 사용자 요청 — /내기·/도박 승리금, /동전,
+-- 레벨업 보너스, 관리자 co up 등 이 함수를 거치는 모든 지급 경로가 자동으로
+-- 커버된다).
 CREATE OR REPLACE FUNCTION add_coins(
   p_user_id bigint,
   p_amount bigint,
@@ -1003,31 +1051,44 @@ BEGIN
   WHERE user_id = p_user_id
   RETURNING coins, lifetime_coins_earned INTO v_new_coins, v_new_lifetime;
 
+  IF p_amount <> 0 THEN
+    INSERT INTO coin_log (user_id, delta, new_value, method)
+    VALUES (p_user_id, p_amount, v_new_coins, p_method);
+  END IF;
+
   RETURN QUERY SELECT p_amount, v_new_coins, v_new_lifetime;
 END;
 $$;
 
 -- 조건부 차감(잔액 부족 시 실패, boolean 반환) — claim_call_event와 동일한 원자적
--- idiom(단일 UPDATE ... WHERE로 경합을 원천 차단). 배팅/자판기 구매 전용.
-CREATE OR REPLACE FUNCTION spend_coins(p_user_id bigint, p_amount bigint)
+-- idiom(단일 UPDATE ... WHERE로 경합을 원천 차단). 배팅/자판기 구매 전용. p_method는
+-- coin_log 기록용(2026-09-11 신규 파라미터 — 성공했을 때만 로그를 남긴다).
+CREATE OR REPLACE FUNCTION spend_coins(p_user_id bigint, p_amount bigint, p_method text DEFAULT NULL)
 RETURNS boolean
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  v_rows integer;
+  v_new_coins bigint;
 BEGIN
   UPDATE users
   SET coins = coins - p_amount
-  WHERE user_id = p_user_id AND coins >= p_amount;
+  WHERE user_id = p_user_id AND coins >= p_amount
+  RETURNING coins INTO v_new_coins;
 
-  GET DIAGNOSTICS v_rows = ROW_COUNT;
-  RETURN v_rows > 0;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+
+  INSERT INTO coin_log (user_id, delta, new_value, method)
+  VALUES (p_user_id, -p_amount, v_new_coins, p_method);
+
+  RETURN true;
 END;
 $$;
 
 -- 0 밑으로 안 내려가는 차감 — 슬롯머신 햄스터 페널티 전용(항상 성공, 부족하면
--- 있는 만큼만 뗌).
-CREATE OR REPLACE FUNCTION deduct_coins_clamped(p_user_id bigint, p_amount bigint)
+-- 있는 만큼만 뗌). p_method는 coin_log 기록용(2026-09-11 신규 파라미터).
+CREATE OR REPLACE FUNCTION deduct_coins_clamped(p_user_id bigint, p_amount bigint, p_method text DEFAULT NULL)
 RETURNS TABLE (deducted bigint, new_coins bigint)
 LANGUAGE plpgsql
 AS $$
@@ -1047,6 +1108,11 @@ BEGIN
   SET coins = coins - v_deducted
   WHERE user_id = p_user_id
   RETURNING coins INTO v_new_coins;
+
+  IF v_deducted <> 0 THEN
+    INSERT INTO coin_log (user_id, delta, new_value, method)
+    VALUES (p_user_id, -v_deducted, v_new_coins, p_method);
+  END IF;
 
   RETURN QUERY SELECT v_deducted, v_new_coins;
 END;
@@ -1211,15 +1277,31 @@ $$;
 
 -- 관리자 콘솔 co set/co reset 전용 — fl set/fl reset(set_affection)과 동일한 원칙으로
 -- lifetime_coins_earned 등 부수 상태는 안 건드리고 coins만 절대값 SET한다. 2026-09-05
--- 보유 상한(구 max_coins) 폐지로 위쪽 클램프는 없고 0 밑으로만 막는다.
-CREATE OR REPLACE FUNCTION set_coins(p_user_id bigint, p_amount bigint)
+-- 보유 상한(구 max_coins) 폐지로 위쪽 클램프는 없고 0 밑으로만 막는다. affection_log와
+-- 달리 coin_log는 관리자 조작도 기록 대상이라(위 6-2 참고) LANGUAGE sql 단일 문장으로는
+-- 부족해 plpgsql로 바꾸고 갱신 전 값을 먼저 읽는다(2026-09-11).
+CREATE OR REPLACE FUNCTION set_coins(p_user_id bigint, p_amount bigint, p_method text DEFAULT NULL)
 RETURNS bigint
-LANGUAGE sql
+LANGUAGE plpgsql
 AS $$
+DECLARE
+  v_old_coins bigint;
+  v_new_coins bigint;
+BEGIN
+  SELECT coins INTO v_old_coins FROM users WHERE user_id = p_user_id FOR UPDATE;
+
   UPDATE users
   SET coins = GREATEST(p_amount, 0)
   WHERE user_id = p_user_id
-  RETURNING coins;
+  RETURNING coins INTO v_new_coins;
+
+  IF v_new_coins IS DISTINCT FROM v_old_coins THEN
+    INSERT INTO coin_log (user_id, delta, new_value, method)
+    VALUES (p_user_id, v_new_coins - v_old_coins, v_new_coins, p_method);
+  END IF;
+
+  RETURN v_new_coins;
+END;
 $$;
 
 -- /동전의 하루 사용 횟수를 원자적으로 제한한다(하루 최대 3회) — "오늘 아직 3회
@@ -1255,6 +1337,7 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_stats ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE affection_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE coin_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_command_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE global_call_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_channels ENABLE ROW LEVEL SECURITY;

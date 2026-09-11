@@ -378,11 +378,14 @@ def build_bet_receipt_embed(before: int, bet: int, current: int | None) -> disco
 LEGENDARY_MULTIPLIER_THRESHOLD = 64
 
 
-async def maybe_award_legendary_multiplier(user_id: int, multiplier: int) -> dict | None:
+async def maybe_award_legendary_multiplier(
+    user_id: int, multiplier: int, *, guild_id: int | None = None
+) -> dict | None:
     """실현된 배율이 LEGENDARY_MULTIPLIER_THRESHOLD 이상이면 전설 업적 지급을
     시도한다 — XP 지급+글로벌 방송은 award() 내부가 알아서 처리하므로
     fire-and-forget으로 호출하면 된다. 실제 지급이 확정된 시점에서만 호출할 것
-    (폭탄으로 잃거나 무응답 몰수된 판은 대상 아님)."""
+    (폭탄으로 잃거나 무응답 몰수된 판은 대상 아님). guild_id는 이 판이 진행된
+    서버 — 알고 있으면 전 서버 방송에서 그 서버를 가장 먼저 보낸다."""
     if multiplier < LEGENDARY_MULTIPLIER_THRESHOLD:
         return None
-    return await award_achievement(user_id, achievements.dev_never_tested_this.ID)
+    return await award_achievement(user_id, achievements.dev_never_tested_this.ID, guild_id=guild_id)

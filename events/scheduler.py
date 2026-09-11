@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 from datetime import date, datetime, time, timedelta, timezone
@@ -100,28 +101,56 @@ async def broadcast_to_guilds(
     *,
     content: str | None = None,
     embed: discord.Embed | None = None,
+    origin_guild_id: int | None = None,
 ) -> None:
     """모든 허용 서버의 방송 채널(resolve_broadcast_channel_id)에 같은 내용을 보낸다 —
-    헬프 미/취침/기상 3곳이 각자 반복하던 "guild 순회 -> 채널 결정 -> 전송" 패턴을 공용
-    헬퍼로 뽑은 것(현재는 관리자 콘솔의 "ann update"/"ann msg" 공지 전용으로 쓰인다)."""
+    헬프 미/취침/기상/레벨업/업적/관리자 공지 등 전 서버 방송이 전부 공유하는 공용
+    헬퍼(舊에는 관리자 콘솔 공지 전용이었으나 이후 여러 곳이 재사용하게 됨).
+
+    2026-09-11 사용자 지시로 두 가지를 바꿨다:
+    1. **`origin_guild_id`가 주어지면 그 서버에 먼저 보낸다** — 레벨업/업적 달성처럼
+       특정 서버에서 벌어진 행동이 방송을 유발한 경우, 정작 그 행동을 한 사람이
+       속한 서버가 "허용 서버 순회 순서상 마지막"이라 자기 서버 차례가 올 때까지
+       기다려야 하는 체감 지연이 있었다 — 원인이 된 서버를 먼저 보내 즉시 확인할
+       수 있게 한다.
+    2. **나머지 서버는 순차 `await`가 아니라 `asyncio.gather`로 동시에 보낸다** —
+       舊 방식은 서버 수만큼 매번 `await channel.send(...)`를 순서대로 기다려서,
+       서버가 늘어날수록 전체 방송이 끝나는 데 걸리는 시간이 선형으로 늘어났다.
+       기원 서버가 없는 방송(아침 인사/취침 전 언급/디저트 타임처럼 특정 서버가
+       아니라 그날 전역에서 벌어지는 이벤트)도 이 동시 전송만으로 자동으로
+       빨라진다."""
     kwargs: dict = {}
     if content is not None:
         kwargs["content"] = content
     if embed is not None:
         kwargs["embed"] = embed
-    for guild in client.guilds:
-        if guild.id not in allowed_guild_ids:
-            continue
+
+    async def _send_to(guild: discord.Guild) -> None:
         channel_id = resolve_broadcast_channel_id(guild.id, await get_last_channel(guild.id))
         if channel_id is None:
-            continue
+            return
         channel = guild.get_channel(channel_id)
         if channel is None:
-            continue
+            return
         try:
             await channel.send(**kwargs)
         except discord.HTTPException:
             logging.exception("Failed to broadcast message in guild %s", guild.id)
+
+    origin_guild: discord.Guild | None = None
+    rest: list[discord.Guild] = []
+    for guild in client.guilds:
+        if guild.id not in allowed_guild_ids:
+            continue
+        if origin_guild_id is not None and guild.id == origin_guild_id:
+            origin_guild = guild
+        else:
+            rest.append(guild)
+
+    if origin_guild is not None:
+        await _send_to(origin_guild)
+    if rest:
+        await asyncio.gather(*(_send_to(guild) for guild in rest))
 
 
 def format_footer_time(now: datetime) -> str:

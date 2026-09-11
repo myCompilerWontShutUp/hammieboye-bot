@@ -32,10 +32,19 @@ async def clear_on_timeout(action: Callable[[], Awaitable[None]], *, log_label: 
 
     action은 인자 없는 콜백(예: `lambda: message.edit(view=None)`)이어야 한다 — 매
     시도마다 새 코루틴을 만들어야 해서(코루틴은 한 번만 await 가능) 이미 만들어진
-    코루틴 객체가 아니라 호출 가능한 함수를 받는다."""
+    코루틴 객체가 아니라 호출 가능한 함수를 받는다.
+
+    `discord.NotFound`(404 — 메시지/인터랙션이 이미 사라짐)는 재시도해도 똑같이
+    404만 반복되므로 재시도 없이 즉시 조용히 포기한다(2026-09-11 — 라이브에서
+    실제로 발생 확인. 다른 정상 흐름이 이미 그 메시지를 지웠거나, 인터랙션 토큰이
+    다른 이유로 만료된 뒤라는 뜻이라 "실패"라기보다 "이미 해결됨"에 가깝다 —
+    로그도 ERROR가 아니라 그냥 넘어간다). 그 외 일시적 `discord.HTTPException`
+    (레이트리밋, 일시적 5xx 등)만 재시도 대상이다."""
     for attempt in range(_TIMEOUT_CLEAR_RETRIES + 1):
         try:
             await action()
+            return
+        except discord.NotFound:
             return
         except discord.HTTPException:
             if attempt == _TIMEOUT_CLEAR_RETRIES:

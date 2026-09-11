@@ -59,5 +59,6 @@ async def handle(interaction: discord.Interaction, user_id: int, item_name: str)
     if item is None or item.kind != "snack":
         await interaction.edit_original_response(content=_UNUSABLE_ITEM_MESSAGE)
         return
-    text = await eat.handle(user_id, item_name)
+    guild_id = interaction.guild.id if interaction.guild else None
+    text = await eat.handle(user_id, item_name, guild_id=guild_id)
     await interaction.edit_original_response(content=text)

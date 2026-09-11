@@ -119,7 +119,7 @@ _FEED_SUCCESS_LINES = (
 
 
 
-async def handle(user_id: int, snack_name: str) -> str:
+async def handle(user_id: int, snack_name: str, *, guild_id: int | None = None) -> str:
     slot = current_slot()
     if slot is None:
         return random.choice(_NOT_DESSERT_TIME_LINES)
@@ -147,7 +147,7 @@ async def handle(user_id: int, snack_name: str) -> str:
     await increment_snacks_given(user_id)
     # 레벨/XP 시스템(2026-09-10) — "디저트 타임 이벤트" +10xp(슬롯당 1회 제한이 이미
     # 있어 하루 최대 +30, 추가 상한 불필요).
-    await apply_xp_and_check_levelup(user_id, 10)
+    await apply_xp_and_check_levelup(user_id, 10, guild_id=guild_id)
 
     if isinstance(item, BlackMarketItem):
         # 암시장 확률적 간식 — item.good_chance로 결과를 굴린다(2026-09-09 신규,
@@ -171,12 +171,14 @@ async def handle(user_id: int, snack_name: str) -> str:
             delta = magnitude if good else -(magnitude // 2)
         else:
             delta = item.good_delta if good else item.bad_delta
-        result = await add_affection_uncapped(user_id, delta, _METHOD, apply_day_multiplier=False)
+        result = await add_affection_uncapped(
+            user_id, delta, _METHOD, apply_day_multiplier=False, guild_id=guild_id
+        )
         reaction = item.good_reaction if good else item.bad_reaction
         text = f"{item.name} 냠냠... {reaction}"
         multiplier_eligible = False
     else:
-        result = await add_affection(user_id, item.effect, _METHOD)
+        result = await add_affection(user_id, item.effect, _METHOD, guild_id=guild_id)
         text = random.choice(_FEED_SUCCESS_LINES).format(snack=item.name)
         multiplier_eligible = True
 
@@ -187,10 +189,10 @@ async def handle(user_id: int, snack_name: str) -> str:
     # (호감도 보너스도 폐지) — 여기서는 조건이 맞을 때 부여만 시도하고 인라인 문구는
     # 더 이상 안 붙인다.
     if len({dessert_snack_id(v) for v in fed_today.values()}) == 3:
-        await award_achievement(user_id, achievements.three_meals_a_day.ID)
+        await award_achievement(user_id, achievements.three_meals_a_day.ID, guild_id=guild_id)
 
     if item.id == "premium_mealworm":
-        await award_achievement(user_id, achievements.strongest_snack_ever.ID)
+        await award_achievement(user_id, achievements.strongest_snack_ever.ID, guild_id=guild_id)
 
     if total_delta != 0:
         text += format_affection_notice(total_delta, current_affection, multiplier_eligible=multiplier_eligible)

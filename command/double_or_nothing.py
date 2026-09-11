@@ -351,7 +351,12 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
             return
         self.stop()
 
-        result = await add_coins(self.user_id, self.pot, method="double_or_nothing_cashout")
+        # guild_id는 이 정산이 벌어진 인터랙션의 서버에서 바로 뽑는다 — 전 서버
+        # 방송에서 이 서버를 가장 먼저 보낸다(2026-09-11).
+        origin_guild_id = interaction.guild.id if interaction.guild else None
+        result = await add_coins(
+            self.user_id, self.pot, method="double_or_nothing_cashout", guild_id=origin_guild_id
+        )
         text = random.choice(_CASHOUT_LINES)
 
         # "제작자는 이 업적이..." 전설 업적이 /도박 전체 공용(배율 64 이상)으로 확장됨에
@@ -360,7 +365,7 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
         # 부터 해당). 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award()
         # 내부에서 별도 글로벌 방송으로 처리되므로 여기서는 부여만 시도한다.
         multiplier = self.pot // self.original_bet
-        await maybe_award_legendary_multiplier(self.user_id, multiplier)
+        await maybe_award_legendary_multiplier(self.user_id, multiplier, guild_id=origin_guild_id)
 
         content = f"## 🎯 도전자: {self.challenger_name}\n{text}"
         receipt_embed = build_bet_receipt_embed(self.before_coins, self.original_bet, result["new_coins"])
@@ -386,7 +391,7 @@ async def start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
-    if not await spend_coins(user_id, bet):
+    if not await spend_coins(user_id, bet, "double_or_nothing_stake"):
         if not is_replay:
             mark_inactive(user_id)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)

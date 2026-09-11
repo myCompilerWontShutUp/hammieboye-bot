@@ -133,6 +133,13 @@ _current_channel: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
     "_current_channel", default=None
 )
 
+
+def _current_guild_id() -> int | None:
+    """관리자 콘솔 명령이 실행된 서버 id(있으면) — fl/co/exp/ach 등 전 서버 방송을
+    유발하는 명령어가 그 서버를 방송에서 가장 먼저 보내는 데 쓴다(2026-09-11)."""
+    guild = _current_guild.get()
+    return guild.id if guild is not None else None
+
 # 권한자(prime + op 부여 유저) id 캐시. should_intercept가 메시지마다 호출되므로 DB
 # 왕복 없이 O(1)로 판정해야 한다 — bootstrap()에서 채우고 grant/revoke 시 write-through로
 # 갱신한다. prime 여부는 이 캐시와 무관하게 항상 user_id == ADMIN_USER_ID로 고정 판정한다
@@ -420,7 +427,9 @@ async def _handle_fl_up(args: list[str]) -> str:
     async def _apply(user_id: int) -> str:
         user = await _require_registered(user_id)
         # 관리자의 직접 수치 조작으로는 업적이 달성되면 안 된다(fl set/reset은 별도 RPC라 원래 안전).
-        result = await add_affection_uncapped(user_id, amount, "admin_fl_up", check_achievements=False)
+        result = await add_affection_uncapped(
+            user_id, amount, "admin_fl_up", check_achievements=False, guild_id=_current_guild_id()
+        )
         new_affection = result["new_affection"]
         await log_command("fl up", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
         name = await _resolve_name(user_id)
@@ -437,7 +446,9 @@ async def _handle_fl_down(args: list[str]) -> str:
 
     async def _apply(user_id: int) -> str:
         user = await _require_registered(user_id)
-        result = await add_affection_uncapped(user_id, -amount, "admin_fl_down", check_achievements=False)
+        result = await add_affection_uncapped(
+            user_id, -amount, "admin_fl_down", check_achievements=False, guild_id=_current_guild_id()
+        )
         new_affection = result["new_affection"]
         await log_command("fl down", f"{user_id} {amount}", str(user["affection"]), str(new_affection))
         name = await _resolve_name(user_id)
@@ -494,7 +505,9 @@ async def _handle_co_up(args: list[str]) -> str:
         # 안 늘려서 "티끌 모아 티끌" 업적이 관리자 조작으로 달성되지 않게 막는다(fl up/down이
         # check_achievements=False로 막는 것과 동일한 원칙). 2026-09-05부로 보유 상한
         # 자체가 폐지돼 늘 요청한 만큼 그대로 들어간다.
-        result = await add_coins(user_id, amount, method="admin_co_up", count_as_earned=False)
+        result = await add_coins(
+            user_id, amount, method="admin_co_up", count_as_earned=False, guild_id=_current_guild_id()
+        )
         new_coins = result["new_coins"]
         await log_command("co up", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
         name = await _resolve_name(user_id)
@@ -513,7 +526,7 @@ async def _handle_co_down(args: list[str]) -> str:
 
     async def _apply(user_id: int) -> str:
         user = await _require_registered(user_id)
-        result = await deduct_coins_clamped(user_id, amount)
+        result = await deduct_coins_clamped(user_id, amount, "admin_co_down")
         new_coins = result["new_coins"]
         await log_command("co down", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
         name = await _resolve_name(user_id)
@@ -535,7 +548,7 @@ async def _handle_co_set(args: list[str]) -> str:
 
     async def _apply(user_id: int) -> str:
         user = await _require_registered(user_id)
-        new_coins = await set_coins(user_id, amount)
+        new_coins = await set_coins(user_id, amount, "admin_co_set")
         await log_command("co set", f"{user_id} {amount}", str(user["coins"]), str(new_coins))
         name = await _resolve_name(user_id)
         return f"네!! {name}님의 동전을 {amount}로 맞춰드렸어요!! ({user['coins']} → {new_coins})"
@@ -550,7 +563,7 @@ async def _handle_co_reset(args: list[str]) -> str:
 
     async def _apply(user_id: int) -> str:
         user = await _require_registered(user_id)
-        new_coins = await set_coins(user_id, _INITIAL_COINS)
+        new_coins = await set_coins(user_id, _INITIAL_COINS, "admin_co_reset")
         await log_command("co reset", str(user_id), str(user["coins"]), str(_INITIAL_COINS))
         name = await _resolve_name(user_id)
         return f"네!! {name}님의 동전을 0으로 리셋했어요!! ({user['coins']} → {_INITIAL_COINS})"
@@ -581,7 +594,9 @@ async def _bulk_apply_xp(
             user = await _require_registered(user_id)
             before_xp = user["total_xp"]
             delta = compute_delta(user)
-            new_level = await apply_xp_and_check_levelup(user_id, delta, broadcast=not is_bulk)
+            new_level = await apply_xp_and_check_levelup(
+                user_id, delta, broadcast=not is_bulk, guild_id=_current_guild_id()
+            )
             updated_user = await get_user(user_id)
             new_xp = updated_user["total_xp"]
             await log_command(command_name, f"{user_id} {args_repr}", str(before_xp), str(new_xp))
@@ -601,7 +616,7 @@ async def _bulk_apply_xp(
         return last_message
 
     if level_up_events:
-        await broadcast_level_up_batch(level_up_events)
+        await broadcast_level_up_batch(level_up_events, guild_id=_current_guild_id())
     summary = f"네!! 총 {len(targets)}명 중 {success}명의 경험치를 조정했어요!!"
     if failures:
         summary += f" (실패 {len(failures)}명)"
@@ -838,7 +853,7 @@ async def _handle_ach_grant(args: list[str]) -> str:
     if module is None:
         return f"그런 업적 코드는 없어요!!\n{await _handle_ach_code([])}"
     await _require_registered(user_id)
-    result = await award_achievement(user_id, module.ID)
+    result = await award_achievement(user_id, module.ID, guild_id=_current_guild_id())
     name = await _resolve_name(user_id)
     if not result["earned"]:
         return f"{name}님은 이미 '{achievements.format_name(module)}' 업적을 가지고 있어요!!"
@@ -1347,7 +1362,7 @@ async def _handle_ann_msg(raw: str) -> tuple[str, bool]:
     if dm:
         return text, True
     if _client is not None:
-        await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=text)
+        await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=text, origin_guild_id=_current_guild_id())
     return "네!! 모든 서버에 공지했어요!!", False
 
 
@@ -1361,7 +1376,9 @@ async def _handle_ann_update(raw: str) -> tuple[str | tuple[str, discord.Embed],
     if dm:
         return (intro, embed), True
     if _client is not None:
-        await broadcast_to_guilds(_client, ALLOWED_GUILD_IDS, content=intro, embed=embed)
+        await broadcast_to_guilds(
+            _client, ALLOWED_GUILD_IDS, content=intro, embed=embed, origin_guild_id=_current_guild_id()
+        )
     return "네!! 모든 서버에 업데이트 소식을 공지했어요!!", False
 
 

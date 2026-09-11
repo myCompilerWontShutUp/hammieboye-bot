@@ -168,7 +168,7 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
     """결제+지급 실행 — 결과(호감도 증감)는 이 자리에서 정해지지 않는다. 암시장은
     간식을 인벤토리에 넣어줄 뿐이고, 실제 50/50 굴림은 나중에 /사용(디저트 타임)으로
     먹였을 때 일어난다(command/eat.py 참고)."""
-    if not await spend_coins(user_id, item.price):
+    if not await spend_coins(user_id, item.price, "black_market_purchase"):
         return random.choice(INSUFFICIENT_FUNDS_LINES)
 
     new_qty = await add_snack(user_id, item.id, 1)

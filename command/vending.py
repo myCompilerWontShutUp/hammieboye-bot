@@ -173,12 +173,16 @@ async def _build_shop_embed(kind: str, counts: dict[str, int]) -> discord.Embed:
     return embed
 
 
-async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embed]:
+async def _execute_purchase(
+    user_id: int, item, *, guild_id: int | None = None
+) -> str | tuple[str, discord.Embed]:
     """실제 결제+지급을 실행하고 결과 텍스트(+영수증 embed)를 만든다 — 모달 제출
     직후에만 호출되며, 이 시점에 가격을 다시 계산해 그대로 차감한다."""
     counts = await get_purchase_counts(user_id)
     total_cost = _price_from_counts(item, counts)
-    if not await spend_coins(user_id, total_cost):
+    # coin_log 기록용 method(2026-09-11 신규) — item.kind는 "snack"/"coin" 둘 중
+    # 하나만 여기 도달한다("joke"는 _BuyButton에서 이미 걸러져 결제 자체를 안 함).
+    if not await spend_coins(user_id, total_cost, f"vending_purchase_{item.kind}"):
         return random.choice(INSUFFICIENT_FUNDS_LINES)
 
     # embed.description에 들어가는 문구라 시스템 정중체로 고정한다(2026-09-09 —
@@ -202,9 +206,9 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
 
     # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
     # (호감도 보너스도 폐지) — 여기서는 조건이 맞을 때 부여만 시도한다.
-    await award_achievement(user_id, achievements.vending_first_purchase.ID)
+    await award_achievement(user_id, achievements.vending_first_purchase.ID, guild_id=guild_id)
     if item.id in _SAVINGS_START_ELIGIBLE_ITEM_IDS:
-        await award_achievement(user_id, achievements.savings_start.ID)
+        await award_achievement(user_id, achievements.savings_start.ID, guild_id=guild_id)
 
     embed = discord.Embed(title="🛒 구매 완료!!", color=VENDING_EMBED_COLOR)
     embed.description = (
@@ -296,7 +300,8 @@ class _BuyButton(discord.ui.Button):
             return
 
         async def _on_confirm(modal_interaction: discord.Interaction) -> None:
-            result = await _execute_purchase(view.user_id, item)
+            origin_guild_id = modal_interaction.guild.id if modal_interaction.guild else None
+            result = await _execute_purchase(view.user_id, item, guild_id=origin_guild_id)
             if isinstance(result, tuple):
                 text, embed = result
                 await modal_interaction.response.send_message(content=text, embed=embed, ephemeral=True)

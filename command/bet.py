@@ -35,6 +35,10 @@ _ODD_EVEN = "odd_even"
 _RPS = "rps"
 _UP_DOWN = "up_down"
 
+# coin_log 기록용 배팅 method 식별자(2026-09-11 신규, db/wallet.py::_COIN_METHOD_LABELS
+# 참고) — 승리 method(bet_odd_even_win 등)는 이미 있었지만 배팅(차감) 쪽엔 없었다.
+_STAKE_METHOD = {_ODD_EVEN: "bet_odd_even_stake", _RPS: "bet_rps_stake", _UP_DOWN: "bet_updown_stake"}
+
 # 게임 진행 중(홀짝/가위바위보/업다운 선택 대기) 라운드 전용 타임아웃(2026-09-09,
 # 기존 60초 → 10분으로 연장) — command/slot.py::_SLOT_ROUND_TIMEOUT_SECONDS와 동일한
 # 패턴. economy_common.TIMEOUT_SECONDS(60)는 게임 선택 프롬프트 등 다른 용도에
@@ -276,10 +280,10 @@ async def _forfeit_timeout(message: discord.Message, user_id: int, bet: int) -> 
         logging.exception("Failed to edit bet prompt on timeout")
 
 
-async def _maybe_award_win_achievement(user_id: int) -> None:
+async def _maybe_award_win_achievement(user_id: int, *, guild_id: int | None = None) -> None:
     """2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
     글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다."""
-    await award_achievement(user_id, achievements.hammie_ez_noob.ID)
+    await award_achievement(user_id, achievements.hammie_ez_noob.ID, guild_id=guild_id)
 
 
 def _build_replay_view(user_id: int, game_kind: str) -> ReplayView:
@@ -323,7 +327,7 @@ async def _start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
-    if not await spend_coins(user_id, bet):
+    if not await spend_coins(user_id, bet, _STAKE_METHOD[game_kind]):
         if not is_replay:
             mark_inactive(user_id)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
@@ -385,15 +389,16 @@ class _OddEvenView(discord.ui.View):
         if not await reject_if_wrong_user_with_cta(interaction, self.user_id, _OWN_COMMAND):
             return
         self.stop()
+        origin_guild_id = interaction.guild.id if interaction.guild else None
 
         actual = random.choice(("홀", "짝"))
         if guess == actual:
-            result = await add_coins(self.user_id, self.bet * 2, method="bet_odd_even_win")
+            result = await add_coins(self.user_id, self.bet * 2, method="bet_odd_even_win", guild_id=origin_guild_id)
             text = random.choice(_ODD_EVEN_WIN_LINES).format(actual=actual)
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
-            await _maybe_award_win_achievement(self.user_id)
+            await _maybe_award_win_achievement(self.user_id, guild_id=origin_guild_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_ODD_EVEN_LOSE_LINES).format(actual=actual)
@@ -443,20 +448,23 @@ class _RPSView(discord.ui.View):
         if not await reject_if_wrong_user_with_cta(interaction, self.user_id, _OWN_COMMAND):
             return
         self.stop()
+        origin_guild_id = interaction.guild.id if interaction.guild else None
 
         actual = random.choice(("가위", "바위", "보"))
         actual_bold = f"**{actual}**"
         if choice == actual:
-            result = await add_coins(self.user_id, self.bet, method="bet_rps_draw", count_as_earned=False)
+            result = await add_coins(
+                self.user_id, self.bet, method="bet_rps_draw", count_as_earned=False, guild_id=origin_guild_id
+            )
             text = random.choice(_RPS_DRAW_LINES).format(actual=actual_bold)
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
         elif self._BEATS[choice] == actual:
-            result = await add_coins(self.user_id, self.bet * 2, method="bet_rps_win")
+            result = await add_coins(self.user_id, self.bet * 2, method="bet_rps_win", guild_id=origin_guild_id)
             text = random.choice(_RPS_WIN_LINES).format(actual=actual_bold)
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
-            await _maybe_award_win_achievement(self.user_id)
+            await _maybe_award_win_achievement(self.user_id, guild_id=origin_guild_id)
         else:
             user = await get_user(self.user_id)
             text = random.choice(_RPS_LOSE_LINES).format(actual=actual_bold)
@@ -539,16 +547,17 @@ class _UpDownView(discord.ui.View):
         if not await reject_if_wrong_user_with_cta(interaction, self.user_id, _OWN_COMMAND):
             return
         self.stop()
+        origin_guild_id = interaction.guild.id if interaction.guild else None
 
         attempts_used = self.attempts_used + 1
 
         if guess == self.target:
-            result = await add_coins(self.user_id, self.bet * 3, method="bet_updown_win")
+            result = await add_coins(self.user_id, self.bet * 3, method="bet_updown_win", guild_id=origin_guild_id)
             text = random.choice(_UPDOWN_WIN_LINES).format(target=self.target)
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.bet, result["new_coins"])
             if result["achievement_notice"]:
                 text += f"\n{result['achievement_notice']}"
-            await _maybe_award_win_achievement(self.user_id)
+            await _maybe_award_win_achievement(self.user_id, guild_id=origin_guild_id)
             text = f"## 🎯 도전자: {self.challenger_name}\n{text}"
             replay_view = _build_replay_view(self.user_id, _UP_DOWN)
             try:

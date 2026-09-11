@@ -22,8 +22,10 @@ _COOLDOWN_ABUSE_FREE_COUNT = 3
 _DAILY_CLAIM_LIMIT = 3
 
 # 지급량은 이제 고정이다(2026-09-05, 보유 상한 폐지와 함께 랜덤 범위도 폐지) — 기본
-# 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus.
-_BASE_GRANT = 1
+# 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus. 밑줄을 뗀 공개 이름
+# (2026-09-11) — command/assets.py가 "/동전 사용 시 기본 획득량" 표시에 재사용한다
+# (command/eat.py가 use.py에 재사용시킬 때와 동일한 원칙, CLAUDE.md §15 참고).
+BASE_GRANT = 1
 
 # 레벨별 확률로 2배 또는 5배를 물어온다(2026-09-09 2배 신설, 2026-09-10 레벨
 # 시스템 도입으로 고정 10% → levels.Level.double_drop_chance로 레벨업할수록 상승,
@@ -274,7 +276,7 @@ async def handle(user_id: int) -> str:
     await update_daily_stats(user_id, {"cooldown_abuse_counts": _reset_cooldown_abuse(stats)})
 
     user = await get_user(user_id)
-    base_amount = _BASE_GRANT + user["coin_grant_bonus"]
+    base_amount = BASE_GRANT + user["coin_grant_bonus"]
     level = levels.get_level_for_xp(user["total_xp"])
     # 5배/2배는 하나의 굴림을 공유하는 배타적 구간이다 — [0, 5배 확률)이면 5배,
     # 그다음 구간이면 2배, 나머지는 평소 지급(코드 상단 주석 참고).

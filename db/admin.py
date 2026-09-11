@@ -22,6 +22,7 @@ KNOWN_TABLES = (
     "guild_sub_channels",
     "vending_purchases",
     "forbidden_book_entries",
+    "coin_log",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -43,6 +44,7 @@ _ORDER_COLUMN = {
     "guild_sub_channels": "created_at",
     "vending_purchases": "purchased_at",
     "forbidden_book_entries": "created_at",
+    "coin_log": "created_at",
 }
 
 
@@ -51,11 +53,12 @@ async def set_affection(user_id: int, value: int) -> int:
     return await rpc("set_affection", {"p_user_id": user_id, "p_value": value})
 
 
-async def set_coins(user_id: int, value: int) -> int:
+async def set_coins(user_id: int, value: int, method: str | None = None) -> int:
     """co set/co reset 전용: 0 밑으로만 클램프(2026-09-05부로 보유 상한 폐지, 위쪽
     클램프 없음)해 절대값으로 SET (lifetime_coins_earned는 안 건드림 — set_affection이
-    daily_stats를 안 건드리는 것과 동일한 원칙)."""
-    return await rpc("set_coins", {"p_user_id": user_id, "p_amount": value})
+    daily_stats를 안 건드리는 것과 동일한 원칙). method는 coin_log 기록용 식별자
+    (2026-09-11 신규 — affection_log와 달리 coin_log는 관리자 조작도 기록 대상)."""
+    return await rpc("set_coins", {"p_user_id": user_id, "p_amount": value, "p_method": method})
 
 
 async def log_command(command: str, args: str, before: str | None, after: str | None) -> None:

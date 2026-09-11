@@ -274,7 +274,13 @@ def _build_embed(grid: list[str | None]) -> discord.Embed:
 
 
 async def _settle(
-    user_id: int, bet: int, before_coins: int, challenger_name: str, grid: list[str]
+    user_id: int,
+    bet: int,
+    before_coins: int,
+    challenger_name: str,
+    grid: list[str],
+    *,
+    guild_id: int | None = None,
 ) -> tuple[str, discord.Embed, discord.Embed]:
     """세 줄이 모두 채워진 뒤 정산. before_coins는 판 시작 시 역산해둔 배팅 전
     잔액 — 반환하는 두 번째 임베드(그리드)와 세 번째 임베드(영수증)는
@@ -288,10 +294,10 @@ async def _settle(
     challenger_line = f"## 🎯 도전자: {challenger_name}\n"
 
     if hamster_hit:
-        penalty = await deduct_coins_clamped(user_id, bet)
+        penalty = await deduct_coins_clamped(user_id, bet, "slot_hamster_penalty")
         # 햄스터 라인이 뜨면 동전은 잃지만, 그래도 놀아준 성의는 인정해 호감도 +1을
         # 정확히 한 번만 지급한다(햄스터 줄이 몇 개든 penalty처럼 한 번만).
-        affection_result = await add_affection(user_id, 1, "slot_hamster_penalty")
+        affection_result = await add_affection(user_id, 1, "slot_hamster_penalty", guild_id=guild_id)
         text = challenger_line + random.choice(_HAMSTER_PENALTY_LINES)
         receipt_embed = build_bet_receipt_embed(before_coins, bet, penalty["new_coins"])
         if affection_result["applied_amount"] != 0:
@@ -314,10 +320,10 @@ async def _settle(
 
     # 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
     # 글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다.
-    await award_achievement(user_id, achievements.gambling_hotline_1336.ID)
+    await award_achievement(user_id, achievements.gambling_hotline_1336.ID, guild_id=guild_id)
     # 슬롯머신 전용 16배 초과 기준을 /도박 전체 공용 64배 이상 기준으로 대체
     # (economy_common.py::maybe_award_legendary_multiplier가 문턱값을 관리).
-    await maybe_award_legendary_multiplier(user_id, multiplier)
+    await maybe_award_legendary_multiplier(user_id, multiplier, guild_id=guild_id)
 
     return text, embed, receipt_embed
 
@@ -350,12 +356,21 @@ class _SlotView(discord.ui.View):
     """가위바위보/홀짝과 동일한 결의 버튼 게임 — 다만 승부를 "고르는" 게 아니라 세 줄을
     각자 돌려서 "채우는" 방식이라 버튼이 3개 다 눌려야 결과가 나온다(순서는 자유)."""
 
-    def __init__(self, user_id: int, bet: int, before_coins: int, challenger_name: str) -> None:
+    def __init__(
+        self,
+        user_id: int,
+        bet: int,
+        before_coins: int,
+        challenger_name: str,
+        *,
+        guild_id: int | None = None,
+    ) -> None:
         super().__init__(timeout=_SLOT_ROUND_TIMEOUT_SECONDS)
         self.user_id = user_id
         self.bet = bet
         self.before_coins = before_coins
         self.challenger_name = challenger_name
+        self.guild_id = guild_id
         self.grid: list[str | None] = [None] * 9
         self._spun: set[int] = set()
         self.message: discord.Message | None = None
@@ -373,7 +388,12 @@ class _SlotView(discord.ui.View):
                 self._spun.add(row)
                 self.grid[row * 3 : row * 3 + 3] = random.choices(SYMBOLS, k=3)
         text, embed, receipt_embed = await _settle(
-            self.user_id, self.bet, self.before_coins, self.challenger_name, self.grid
+            self.user_id,
+            self.bet,
+            self.before_coins,
+            self.challenger_name,
+            self.grid,
+            guild_id=self.guild_id,
         )
         replay_view = _build_replay_view(self.user_id)
         try:
@@ -414,7 +434,12 @@ class _SlotView(discord.ui.View):
 
         self.stop()
         text, embed, receipt_embed = await _settle(
-            self.user_id, self.bet, self.before_coins, self.challenger_name, self.grid
+            self.user_id,
+            self.bet,
+            self.before_coins,
+            self.challenger_name,
+            self.grid,
+            guild_id=self.guild_id,
         )
         replay_view = _build_replay_view(self.user_id)
         try:
@@ -451,7 +476,7 @@ async def _start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
-    if not await spend_coins(user_id, bet):
+    if not await spend_coins(user_id, bet, "slot_stake"):
         if not is_replay:
             mark_inactive(user_id)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
@@ -470,7 +495,10 @@ async def _start_round(
     # (2026-09-07 신규) — interaction.user는 항상 이 판을 시작한 본인.
     challenger_name = interaction.user.display_name
 
-    view = _SlotView(user_id, bet, before_coins, challenger_name)
+    view = _SlotView(
+        user_id, bet, before_coins, challenger_name,
+        guild_id=interaction.guild.id if interaction.guild else None,
+    )
     content = f"## 🎯 도전자: {challenger_name}\n" + random.choice(_SPIN_PROMPT_LINES)
     embed = _build_embed(view.grid)
     receipt_embed = build_bet_receipt_embed(before_coins, bet, None)

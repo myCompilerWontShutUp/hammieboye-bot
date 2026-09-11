@@ -379,7 +379,16 @@ HORSE_RACE_RULE_TEXT = (
 
 
 def _roster_field_value() -> str:
-    return "\n".join(f"{h.number}번 {h.species} : {h.name} — {h.blurb}" for h in HAMSTERS)
+    """카드형(이름 줄 + 설명 줄, `tools/embed_style_guide.py::GUIDE` 참고) — 舊에는
+    "1번 정글리안 햄스터 : 잠보 — {블러브}"처럼 번호/품종/이름/설명을 구분자(:와 —)
+    두 개로 한 줄에 욱여넣어 10마리 전부가 길게 늘어진 한 줄씩으로 보여 가독성이
+    떨어졌다(2026-09-11 정정). 레인 번호는 예측 버튼/현황 표시와 동일한 숫자
+    이모지(`_LANE_NUMBER_EMOJI`)로 통일하고, 이름을 굵게 강조한 식별 줄과 설명
+    줄을 분리해 카드 사이 빈 줄로 숨 쉴 틈을 줬다."""
+    blocks = [
+        f"{_LANE_NUMBER_EMOJI[h.number - 1]} **{h.name}** ({h.species})\n{h.blurb}" for h in HAMSTERS
+    ]
+    return "\n\n".join(blocks)
 
 
 # 기본(예측 단계) 임베드에 들어가는 간단한 규칙+배수 요약(2026-09-10 신규) — 舊에는
@@ -667,6 +676,9 @@ async def _run_race(view: _PredictionView, trigger_interaction: discord.Interact
 
 async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
     multiplier = evaluate_payout(view.predictions, final_ranking)
+    # guild_id는 view.message(이 판이 벌어진 공개 메시지)에서 바로 뽑는다 — 전 서버
+    # 방송에서 이 서버를 가장 먼저 보낸다(2026-09-11).
+    origin_guild_id = view.message.guild.id if view.message and view.message.guild else None
 
     if multiplier == 0:
         user = await get_user(view.challenger_id)
@@ -674,7 +686,9 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
         text = random.choice(_LOSE_LINES)
         receipt_embed = build_bet_receipt_embed(view.before_coins, view.bet, current_coins)
     else:
-        result = await add_coins(view.challenger_id, view.bet * multiplier, method="horse_race_win")
+        result = await add_coins(
+            view.challenger_id, view.bet * multiplier, method="horse_race_win", guild_id=origin_guild_id
+        )
         if multiplier >= _JACKPOT_MULTIPLIER:
             text = random.choice(_JACKPOT_LINES)
         else:
@@ -685,7 +699,7 @@ async def _settle_race(view: _PredictionView, final_ranking: list[int]) -> None:
         # 따라 승부예측도 대상에 포함(사실상 잭팟(x100)만 해당). 2026-09-10부로 업적
         # 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도 글로벌 방송으로
         # 처리되므로 여기서는 부여만 시도한다.
-        await maybe_award_legendary_multiplier(view.challenger_id, multiplier)
+        await maybe_award_legendary_multiplier(view.challenger_id, multiplier, guild_id=origin_guild_id)
 
     content = f"## 🎯 도전자: {view.challenger_name}\n{text}"
 
@@ -724,7 +738,7 @@ async def start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
-    if not await spend_coins(user_id, bet):
+    if not await spend_coins(user_id, bet, "horse_race_stake"):
         if not is_replay:
             mark_inactive(user_id)
         await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)

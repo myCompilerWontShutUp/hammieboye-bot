@@ -186,17 +186,17 @@ async def _get_recently_claimed_cached() -> list[dict]:
 
 
 async def _grant_already_helped(
-    user_id: int, prompt_text: str
+    user_id: int, prompt_text: str, *, guild_id: int | None = None
 ) -> tuple[int, bool, bool, str | None, str | None]:
     """이미 클레임된 이벤트에 "진짜 도와주려던" relevant 반응이 왔을 때 쓴다 — 클레임
     경쟁에서 근소하게 진 경우와 클레임 후 유예 기간(1분 이내) 둘 다 동일 취급. 도와준
     횟수는 증가시키지만, "햄미의 요청" 업적은 진짜 첫 클레임 성공자만 유지한다."""
-    result = await add_affection(user_id, _ALREADY_HELPED_REWARD, _ALREADY_HELPED_METHOD)
+    result = await add_affection(user_id, _ALREADY_HELPED_REWARD, _ALREADY_HELPED_METHOD, guild_id=guild_id)
     await _try_increment_help_count(user_id)
     lines = _ALREADY_HELPED_LINES_BY_PROMPT.get(prompt_text, _ALREADY_HELPED_LINES_BY_PROMPT[_PROMPT_TEXTS[0]])
     # 레벨/XP 시스템(2026-09-10) — "헬프 햄미 이벤트 1분 안에 들어온 사람" +3xp(일일
     # 상한 없음, 이벤트 자체가 하루 최대 발생 횟수로 이미 제한돼 있어 추가 캡 불필요).
-    await apply_xp_and_check_levelup(user_id, 3)
+    await apply_xp_and_check_levelup(user_id, 3, guild_id=guild_id)
     # 여기서 나가는 delta는 항상 add_affection(배율 적용) 단일 성분이라 배율 분해
     # 대상이다(업적 보너스가 섞이지 않음). 이 경로는 이미 끝난(다른 사람이 클레임한)
     # 이벤트에 대한 위로 보상이라 "지금 진행 중인 활성 이벤트"로 취급하지 않는다 —
@@ -464,18 +464,18 @@ async def handle_potential_response(
     """
     events = await _get_active_events_cached()
     if not events:
-        return await _handle_grace_period(user_id, text)
+        return await _handle_grace_period(user_id, text, guild_id=guild_id)
     event = events[0]
     active_prompt_text = event["prompt_text"]
 
     classification = await _classify_or_default(event["prompt_text"], text)
 
     if classification == "negative":
-        result = await add_affection(user_id, -5)
+        result = await add_affection(user_id, -5, guild_id=guild_id)
         return result["applied_amount"], True, True, None, active_prompt_text
 
     if classification == "irrelevant":
-        result = await add_affection(user_id, _IRRELEVANT_PENALTY)
+        result = await add_affection(user_id, _IRRELEVANT_PENALTY, guild_id=guild_id)
         return (
             result["applied_amount"],
             True,
@@ -495,20 +495,20 @@ async def handle_potential_response(
         # 추가 보상 없이 조용히 끝낸다. 이미 자기가 다 받았으니 이중 지급이면 안 된다.
         if await get_claimed_by(event["id"]) == user_id:
             return 0, True, True, None, active_prompt_text
-        return await _grant_already_helped(user_id, event["prompt_text"])
+        return await _grant_already_helped(user_id, event["prompt_text"], guild_id=guild_id)
 
     _invalidate_active_events_cache()
     await presence.wake_up()
-    result = await add_affection(user_id, reward, "call_event")
+    result = await add_affection(user_id, reward, "call_event", guild_id=guild_id)
     await _try_increment_help_count(user_id)
     await _announce_winner(event, user_id, guild_id)
 
     # 2026-09-10부로 업적 달성 알림(호감도 보너스 포함)은 award() 내부에서 별도
     # 글로벌 방송으로 처리된다 — 여기서는 조건이 맞을 때 부여만 시도한다.
-    await award_achievement(user_id, achievements.call_event_help.ID)
+    await award_achievement(user_id, achievements.call_event_help.ID, guild_id=guild_id)
     # 레벨/XP 시스템 — 헬프 미 이벤트 최초 성공자는 +10xp(일일 상한 없음, 이벤트
     # 자체가 하루 최대 발생 횟수로 이미 제한돼 있어 추가 캡 불필요).
-    await apply_xp_and_check_levelup(user_id, 10)
+    await apply_xp_and_check_levelup(user_id, 10, guild_id=guild_id)
 
     # 오늘 실제로 "이긴"(클레임 성공한) 횟수만 센다 — 유예 기간 콘솔레이션(_grant_already_helped)은
     # 포함하지 않는다. /내정보의 "도움 횟수" 표시와 이 업적이 이 카운터 하나를 공유한다.
@@ -516,13 +516,13 @@ async def handle_potential_response(
     helped_today = stats["help_me_events_helped_today"] + 1
     await update_daily_stats(user_id, {"help_me_events_helped_today": helped_today})
     if helped_today >= _ALONE_ON_HAPPY_DAY_THRESHOLD:
-        await award_achievement(user_id, achievements.alone_on_a_happy_day.ID)
+        await award_achievement(user_id, achievements.alone_on_a_happy_day.ID, guild_id=guild_id)
 
     return result["applied_amount"], True, True, None, active_prompt_text
 
 
 async def _handle_grace_period(
-    user_id: int, text: str
+    user_id: int, text: str, *, guild_id: int | None = None
 ) -> tuple[int, bool, bool, str | None, str | None]:
     """활성 이벤트가 없을 때 클레임된 지 1분 이내인 이벤트가 있는지 확인한다. relevant면
     `_grant_already_helped()`로, 그 외는 이벤트 자체가 없는 것과 동일하게 처리한다.
@@ -539,7 +539,7 @@ async def _handle_grace_period(
     classification = await _classify_or_default(event["prompt_text"], text)
     if classification != "relevant":
         return 0, True, False, None, None
-    return await _grant_already_helped(user_id, event["prompt_text"])
+    return await _grant_already_helped(user_id, event["prompt_text"], guild_id=guild_id)
 
 
 async def _try_increment_help_count(user_id: int) -> None:
