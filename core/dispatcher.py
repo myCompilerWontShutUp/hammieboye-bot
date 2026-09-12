@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+from datetime import date, datetime, timezone
 
 import discord
 
@@ -16,13 +17,16 @@ from db.admin_history import purge_old as purge_old_admin_chat_history
 from db.call_events import purge_old as purge_old_call_events
 from db.forbidden_books import purge_old as purge_old_forbidden_books
 from db.history import purge_old as purge_old_chat_history
+from db.sleep_delay import get_pending_sleep_delay, purge_old_sleep_delay_events
 from db.users import increment_chat_count
 from events import announcements, dessert_time, greeting, help_me_event, presence, sleep_event, wake_event
 from events.scheduler import (
     TEST_GUILD_ID,
+    is_late_sleep_today,
     is_late_wake_today,
     is_sleep_time,
     is_sleep_time_for,
+    mark_late_sleep,
     mark_late_wake,
     start_daily,
     start_interval,
@@ -30,6 +34,7 @@ from events.scheduler import (
 
 _TICK_INTERVAL_SECONDS = 30
 _LATE_WAKE_DELAY_SECONDS = 30 * 60
+_LATE_SLEEP_DELAY_SECONDS = 30 * 60
 
 # 호출 단어가 확인되면(자고 있을 때 제외) 다른 어떤 DB 조회보다도 먼저 이 플레이스홀더가
 # 즉시 떠야 한다 — 그래서 관리는 core/chat.py가 아니라 여기서 한다.
@@ -46,6 +51,15 @@ async def _run_wake_sequence() -> None:
     await help_me_event.schedule_today()
     await refresh_conversation_caps()
     await greeting.post_daily_greeting(tired=tired)
+
+
+async def _run_sleep_sequence() -> None:
+    """매일 00:00(KST) 실행. 쳇바퀴 에너지 드링크(§24)로 그날 취침이 지연됐으면
+    30분(00:30) 늦춰서 진행한다 — _run_wake_sequence와 정확히 대칭인 패턴."""
+    if is_late_sleep_today():
+        await asyncio.sleep(_LATE_SLEEP_DELAY_SECONDS)
+    await presence.enter_sleep()
+    await sleep_event.announce_and_reward()
 
 
 def _strip_call_prefix(content: str) -> str | None:
@@ -146,20 +160,27 @@ def setup_dispatcher(client: discord.Client) -> None:
         tonight_triggered = await any_triggered_tonight()
         if tonight_triggered:
             mark_late_wake()
+        # 쳇바퀴 에너지 드링크(§24)로 지연된 취침도 동일한 이유로 복원한다.
+        pending_sleep_delay = await get_pending_sleep_delay()
+        if pending_sleep_delay is not None:
+            mark_late_sleep(for_date=date.fromisoformat(pending_sleep_delay))
         if is_sleep_time():
             await (presence.enter_dnd() if tonight_triggered else presence.enter_sleep())
         else:
             await presence.wake_up()
 
-        start_daily(0, 0, presence.enter_sleep)
+        # 취침 시퀀스(오프라인 전환+최다 대화자 발표)를 한 함수로 묶는다 — 쳇바퀴
+        # 에너지 드링크로 지연됐으면 전부 30분 늦춰서 함께 실행해야 하기 때문
+        # (_run_wake_sequence와 대칭, §24).
+        start_daily(0, 0, _run_sleep_sequence)
         # 기상 시퀀스(온라인 전환+헬프 미 이벤트 산출+nl_cap 동결+아침 인사)를 한 함수로 묶는다
         # — 방해금지 발동 시 전부 30분 늦춰서 함께 실행해야 하기 때문.
         start_daily(6, 30, _run_wake_sequence)
-        # 00:00 정각 — 내부에서 "어제" 날짜를 명시적으로 계산하므로 자정 직후에 돌아도 정확하다.
-        start_daily(0, 0, sleep_event.announce_and_reward)
         # 헬프 미 이벤트 기록을 30일치만 남긴다(디버깅 목적, 2026-09-08 신규) — 취침
         # 시작 순간(00:00)에 실행. 이벤트는 항상 그날 07:30~22:30에만 예약되고 10분
         # 안에 끝나므로, 30일 전 컷오프가 지금 진행 중인 이벤트와 겹칠 일은 없다.
+        # 지연 취침과 무관하게 정각 00:00 그대로 유지한다(디버깅용 정리 작업이라
+        # 굳이 같이 늦출 필요 없음).
         start_daily(0, 0, purge_old_call_events)
         start_interval(_TICK_INTERVAL_SECONDS, help_me_event.tick)
         # 취침 시간대(한산한 새벽) 중에 30일 지난 채팅 원문을 지운다(2026-09-08 신규) —
@@ -169,6 +190,8 @@ def setup_dispatcher(client: discord.Client) -> None:
         # 금서(§/암시장)는 7일 뒤 조용히 완전히 잊혀진다(2026-09-08 신규) — 같은
         # 한산한 시간대에 정리.
         start_daily(4, 0, purge_old_forbidden_books)
+        # 지난 날짜의 취침 지연 기록도 같은 시간대에 정리한다(§24, 2026-09-12 신규).
+        start_daily(4, 0, purge_old_sleep_delay_events)
 
         # 디저트 타임 하루 3슬롯 x (여는 방송 + 닫는 방송) = 6개 독립 등록. 헬프 미 이벤트
         # 쪽이 schedule_today()에서 이 슬롯들과 안 겹치게 스스로 피해간다(§4-3). 닫는
@@ -246,8 +269,17 @@ def setup_dispatcher(client: discord.Client) -> None:
                 increment_chat_count(message.author.id),
                 increment_messages_today(message.author.id),
             )
+            # H미약(암시장 포션, §24) 보호막 활성 여부 — 이미 조회해둔 user 행에서
+            # 바로 계산해서 넘긴다(추가 DB 왕복 없음).
+            shield_until = user.get("affection_shield_until")
+            shielded = shield_until is not None and datetime.fromisoformat(shield_until) > datetime.now(timezone.utc)
             response = await handle_natural_language(
-                message.author.id, message.guild.id, user_message, user["affection"], user["total_xp"]
+                message.author.id,
+                message.guild.id,
+                user_message,
+                user["affection"],
+                user["total_xp"],
+                shielded=shielded,
             )
         finally:
             await _delete_placeholder(placeholder)

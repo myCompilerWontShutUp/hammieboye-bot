@@ -146,16 +146,30 @@ async def _handle_levelup(
 
 
 async def apply_xp_and_check_levelup(
-    user_id: int, amount: int, *, broadcast: bool = True, guild_id: int | None = None
-) -> "levels.Level | None":
+    user_id: int,
+    amount: int,
+    *,
+    broadcast: bool = True,
+    guild_id: int | None = None,
+    return_totals: bool = False,
+):
     """무조건 누적(add_xp, 일일 상한 없음) + 레벨업 판정을 한 번에 처리하는 단일
     진입점 — 업적(db/achievements.py::award)·헬프미 이벤트·디저트 타임·관리자
     `exp` 명령어가 공유한다. guild_id는 방송 시 우선 전송할 서버(알 수 있으면).
 
     add_xp가 갱신 전/후 total_xp를 한 번에 돌려주므로(2026-09-11) 레벨업 판정을
-    위해 별도로 get_user()를 먼저 부를 필요가 없다."""
+    위해 별도로 get_user()를 먼저 부를 필요가 없다.
+
+    return_totals=True면 `(level, old_total, new_total)` 3튜플을 반환한다 — 추억이
+    담긴 에이드(암시장 포션, §24, 2026-09-12 신규)가 "이번에 몇 경험치가 올랐는지"를
+    알림 문구에 그대로 보여줘야 하는 유일한 호출부라서 추가했다(그 외 모든 호출부는
+    XP 획득을 사용자에게 절대 안 보여주는 게 원칙이라 舊 기본값 `level` 단독 반환을
+    그대로 유지)."""
     old_total, new_total = await add_xp(user_id, amount)
-    return await _handle_levelup(user_id, old_total, new_total, broadcast=broadcast, guild_id=guild_id)
+    level = await _handle_levelup(user_id, old_total, new_total, broadcast=broadcast, guild_id=guild_id)
+    if return_totals:
+        return level, old_total, new_total
+    return level
 
 
 async def grant_daily_base_xp(user_id: int, *, guild_id: int | None = None) -> None:
@@ -187,3 +201,14 @@ async def grant_nl_xp(user_id: int, *, guild_id: int | None = None) -> None:
     applied, new_total = await claim_nl_xp(user_id)
     if applied > 0:
         await _handle_levelup(user_id, new_total - applied, new_total, broadcast=True, guild_id=guild_id)
+
+
+def format_xp_notice(delta: int, new_total_xp: int) -> str:
+    """경험치 획득 알림 — format_coin_notice(command/economy_common.py)와 동일한
+    스타일(델타+갱신 후 총량). **이 프로젝트는 원칙적으로 XP 획득을 사용자에게 절대
+    알리지 않는다**(레벨업 자체만 전 서버 방송) — 이 함수는 추억이 담긴 에이드
+    (암시장 포션, §24, 2026-09-12 신규)가 "경험치 1~100 랜덤 지급, 이때만 예외적으로
+    몇 경험치가 올랐는지 알린다"는 사용자 지시에 따라 만든 유일한 예외 호출부다.
+    다른 곳에서 새로 쓰지 말 것 — XP 알림이 필요한 새 사례가 생기면 이 원칙 자체를
+    먼저 재확인해야 한다."""
+    return f"\n🎖️ 경험치 +{delta} (총 {new_total_xp})"

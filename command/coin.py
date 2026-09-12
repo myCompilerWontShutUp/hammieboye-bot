@@ -9,17 +9,20 @@ from db.users import claim_coin_cooldown, get_user
 from db.wallet import add_coins
 
 # 성공 시엔 쿨타임이 흐르지 않는 /페트병과 달리, /동전은 호출할 때마다 무조건 쿨타임이
-# 시작된다(실패 개념 자체가 없음 — 매번 지급). 1시간이라 /페트병(30초)보다 훨씬 길다.
-_COOLDOWN = timedelta(hours=1)
+# 시작된다(실패 개념 자체가 없음 — 매번 지급). 10분이라 /페트병(30초)보다 길다
+# (2026-09-11 — 舊 1시간에서 사용자 지시로 단축, 하루 사용 횟수 상향(3→10회)과 함께
+# 조정돼 실질적으로 더 자주 받을 수 있게 됐다).
+_COOLDOWN = timedelta(minutes=10)
 _METHOD = "coin"
 
 # 쿨타임 고정 메시지는 이 횟수까지는 그냥 보여주고 그다음부터 남용 페널티 — /페트병과
 # 동일한 원칙(§4-5), 남용 페널티도 동일하게 호감도 -1(동전이 아니라 호감도가 깎인다).
 _COOLDOWN_ABUSE_FREE_COUNT = 3
 
-# 하루 최대 사용 횟수(2026-09-05 신규) — 쿨타임(1시간)과 별개로, 쿨타임이 다 지났어도
-# 오늘 이미 이만큼 벌었으면 더 못 받는다. daily_stats.coin_claims_today로 원자적 판정.
-_DAILY_CLAIM_LIMIT = 3
+# 하루 최대 사용 횟수(2026-09-05 신규, 2026-09-11 3→10회로 상향) — 쿨타임(10분)과
+# 별개로, 쿨타임이 다 지났어도 오늘 이미 이만큼 벌었으면 더 못 받는다.
+# daily_stats.coin_claims_today로 원자적 판정.
+_DAILY_CLAIM_LIMIT = 10
 
 # 지급량은 이제 고정이다(2026-09-05, 보유 상한 폐지와 함께 랜덤 범위도 폐지) — 기본
 # 1개 + 자판기 그랜트 부스터 품목으로 늘린 coin_grant_bonus. 밑줄을 뗀 공개 이름
@@ -155,8 +158,9 @@ _COOLDOWN_WARNING_MESSAGES = (
     "햄미 화나기 직전이야!! 제발 좀 기다려줘!! _(짜증)_",
     "마지막으로 경고할게!! 더 누르면 화낼 거야!! _(화남)_",
 )
-# 쿨타임은 다 지났어도 오늘 이미 3번 다 벌었으면 못 받는다(2026-09-05 신규) — 메타
-# 발언("하루 한도") 없이 힘들어서/피곤해서 못 굴리겠다는 자연스러운 이유로 표현한다.
+# 쿨타임은 다 지났어도 오늘 이미 10번 다 벌었으면 못 받는다(2026-09-05 신규,
+# 2026-09-11 3→10회 상향) — 메타 발언("하루 한도") 없이 힘들어서/피곤해서 못
+# 굴리겠다는 자연스러운 이유로 표현한다.
 _DAILY_LIMIT_LINES = (
     "오늘은 이만큼 굴렸으면 충분해!! 내일 또 굴릴게!! _(만족)_",
     "오늘치 쳇바퀴는 이미 다 굴렸어!! 내일 다시 와줘!! _(뿌듯)_",
@@ -250,7 +254,7 @@ def _with_affection_notice(message: str, delta: int, current: int) -> str:
 async def handle(user_id: int) -> str:
     now = datetime.now(timezone.utc)
 
-    # 쿨타임이 아직 안 지났어도 오늘 3번 다 썼으면 어차피 못 받으니, 먼저 오늘 횟수부터
+    # 쿨타임이 아직 안 지났어도 오늘 10번 다 썼으면 어차피 못 받으니, 먼저 오늘 횟수부터
     # 빠르게 확인한다(불필요한 쿨타임 클레임을 아낀다) — 최종 권한은 아래 원자적
     # claim_coin_daily_use가 가진다(아주 드문 동시 요청 경합 대비).
     stats = await ensure_daily_stats(user_id)
@@ -282,16 +286,18 @@ async def handle(user_id: int) -> str:
     # 그다음 구간이면 2배, 나머지는 평소 지급(코드 상단 주석 참고).
     roll = random.random()
     if roll < level.quintuple_drop_chance:
-        multiplier, bonus_label, text_pool = _SUPER_BONUS_MULTIPLIER, "x5배 (동전 초대박 당첨)", _SUPER_BONUS_GRANT_MESSAGES
+        multiplier, bonus_reason, text_pool = _SUPER_BONUS_MULTIPLIER, "초대박 당첨", _SUPER_BONUS_GRANT_MESSAGES
     elif roll < level.quintuple_drop_chance + level.double_drop_chance:
-        multiplier, bonus_label, text_pool = _BONUS_MULTIPLIER, "x2배 (동전 행운 당첨)", _BONUS_GRANT_MESSAGES
+        multiplier, bonus_reason, text_pool = _BONUS_MULTIPLIER, "대박 당첨", _BONUS_GRANT_MESSAGES
     else:
-        multiplier, bonus_label, text_pool = 1, None, _GRANT_MESSAGES
+        multiplier, bonus_reason, text_pool = 1, None, _GRANT_MESSAGES
     amount = base_amount * multiplier
     result = await add_coins(user_id, amount, method=_METHOD, apply_day_multiplier=True)
 
     text = random.choice(text_pool)
-    text += format_coin_notice(result["applied_amount"], result["new_coins"], bonus_label=bonus_label)
+    text += format_coin_notice(
+        result["applied_amount"], result["new_coins"], multiplier=multiplier, bonus_reason=bonus_reason
+    )
     if result["achievement_notice"]:
         text += f"\n{result['achievement_notice']}"
     return text

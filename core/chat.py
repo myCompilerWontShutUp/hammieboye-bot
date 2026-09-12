@@ -11,7 +11,7 @@ import levels
 from admin import console as admin_console
 from core.base import normalize
 from core import intent
-from events import help_me_event
+from events import dessert_time, help_me_event
 from events.announcements import grant_daily_base_xp, grant_nl_xp
 from events.scheduler import KST, is_within_morning_greeting_window
 from events.special_days import DAY_TYPE_BIRTHDAY, get_day_type
@@ -175,6 +175,45 @@ _HAPPY_METHOD = "happy_emotion"
 # 감지(has_severe_abuse: 욕설/비방/모욕/성희롱/패드립)에만 연동한다.
 _SEVERE_ABUSE_PENALTY = -1
 
+# H미약(암시장 포션, §24, 2026-09-12 신규) 보호막 — 실제 호감도 하락 차단(양수는 x2)은
+# add_affection/add_affection_uncapped RPC 내부에서 이미 처리된다(db/affection.py
+# 참고). 이 노트는 그 중 유일하게 "생성 자체가 살아있는" 경로(severe-language 판정)에서
+# 모델의 답변 톤까지 그에 맞게 다정해지도록 유도하는 보너스 조치 — 나머지 고정 문구
+# 페널티 경로(쿨타임 남용/반복 발화/헬프미 이벤트 부정반응 등)는 델타는 0이 되지만
+# 문구 자체는 그대로 나가는 것으로 확정됐다(사용자 승인된 절충).
+_SHIELD_CONTEXT_NOTE = (
+    "이 유저는 지금 특별한 효과의 영향을 받고 있어서, 무슨 말을 들어도 절대 화내지 "
+    "않고 오히려 애정 표현으로 받아들여. 이번 답장은 평소보다 훨씬 다정하고 너그럽게 써."
+)
+
+# 디저트/드링킹 타임(§24, 2026-09-12 신규)이 열려 있을 때 "햄미야 물마셔"류 급여
+# 선언 자연어를 감지하면(core/intent.py의 feeding_offer 카테고리), 헬프 미 이벤트가
+# 활성 상태가 아닌 한 정상 생성 대신 이 고정 문구로 자판기/암시장에서 제대로 사 오길
+# 자연스럽게 유도한다 — 메타인지 금지 원칙(§13-B)에 따라 `/사용` 등 명령어 이름은
+# 어디에도 쓰지 않는다.
+_FEEDING_OFFER_REDIRECT_LINES = (
+    "그거 말고 제대로 준비된 걸로 받고 싶어!! _(칭얼)_",
+    "음... 그냥 주는 거 말고 어디서 좀 구해와야 할 것 같은데?? _(눈치)_",
+    "그거 진짜야?? 제대로 된 걸로 가져다줘!! _(갸웃)_",
+    "손으로 그냥 주는 거 말고, 좋은 걸로 구해다 줄래?? _(기대)_",
+    "음, 그거 어디서 났어?? 제대로 된 걸로 부탁해!! _(궁금)_",
+    "그냥 주는 척 하지 말고 진짜로 구해다 줘!! _(장난)_",
+    "오호, 마음은 고마운데 제대로 준비해서 줄래?? _(웃음)_",
+    "그거 실제로 있는 거 맞아?? 진짜로 하나 구해줘!! _(호기심)_",
+    "말로만 말고 진짜 가져다줄 수 있어?? _(기대)_",
+    "음... 어디 가면 그런 걸 구할 수 있을까?? _(궁금)_",
+    "그냥 상상만 하지 말고 진짜로 챙겨줘!! _(칭얼)_",
+    "어디서 좋은 걸 구해올 수 있을 것 같은데?? _(눈치)_",
+    "말뿐이면 서운해!! 진짜로 하나 구해다 줄래?? _(삐짐)_",
+    "그거 진짜 주는 거야?? 제대로 준비해줘!! _(설렘)_",
+    "음, 어디서 파는지 알아?? 거기서 구해다 줘!! _(호기심)_",
+    "그냥 말로만이면 안 돼!! 진짜로 챙겨줘!! _(단호)_",
+    "오, 좋은 생각이야!! 근데 제대로 된 걸로 부탁해!! _(신남)_",
+    "어디 가면 그런 게 있을까?? 거기서 사다 줄래?? _(궁금)_",
+    "말만 들으니까 더 먹고 싶어져!! 진짜로 구해줘!! _(칭얼)_",
+    "그거 정말 줄 수 있어?? 제대로 된 걸로 가져다줘!! _(기대)_",
+)
+
 # 햄미 생일 자연어 축하(3-2)/아침 인사(3-6): 둘 다 날짜·시간대로 좁게 게이트되는 1회성
 # 판정이라 core/intent.py의 공용 분류 스키마를 확장하지 않고 키워드 매칭으로 독립 처리한다.
 _BIRTHDAY_GREETING_REWARD = 10
@@ -294,8 +333,12 @@ def _detect_special_link_reaction(text: str) -> str | None:
 
 
 async def handle_natural_language(
-    user_id: int, guild_id: int, text: str, affection: int, total_xp: int
+    user_id: int, guild_id: int, text: str, affection: int, total_xp: int, *, shielded: bool = False
 ) -> str | discord.Embed | tuple[str, discord.Embed]:
+    """shielded=True면 H미약(§24) 보호막이 활성 상태 — 실제 호감도 하락 차단/획득
+    2배는 add_affection 내부(SQL)에서 이미 처리되므로, 여기서는 심각한 유해 표현
+    감지 시 생성 톤을 다정하게 유도하는 컨텍스트 노트만 추가한다(_SHIELD_CONTEXT_NOTE
+    참고)."""
     # 레벨/XP 시스템(2026-09-10) — 이 메시지 내내 쓸 그 순간의 레벨을 한 번만 조회한다
     # (레벨업 즉시 혜택 체감, 舊 "06:30에 그날 몫 동결" 방식 폐지).
     level = levels.get_level_for_xp(total_xp)
@@ -469,6 +512,21 @@ async def handle_natural_language(
         if message_delta:
             current_affection += message_delta
 
+    # 디저트/드링킹 타임 급여 유도 리다이렉트(§24, 2026-09-12 신규) — 헬프 미 이벤트가
+    # 활성 상태가 아니고(그쪽 리다이렉트가 이미 위에서 우선 처리됨), 지금 디저트/드링킹
+    # 타임 슬롯이 열려 있고, 이번 메시지가 급여 선언으로 분류됐으면 정상 생성 대신 이
+    # 고정 문구로 대체한다(API 미호출, nl_count/XP 미증가 — event_override/링크반응/
+    # 생일 헛다리 분기와 동일한 원칙).
+    if (
+        active_prompt_text is None
+        and "feeding_offer" in classification.categories
+        and dessert_time.current_slot() is not None
+    ):
+        return _finalize(
+            random.choice(_FEEDING_OFFER_REDIRECT_LINES), total_delta, current_affection,
+            multiplier_eligible=multiplier_eligible,
+        )
+
     # 관리자 명령어 자연어 설명: 권한자에게만 답하고, 비권한자는 생성 호출 자체를 안 해서
     # 정보가 새지 않는다. 다른 카테고리와 섞이지 않게 단독 분기로 처리한다.
     if "admin_commands" in classification.categories:
@@ -492,6 +550,10 @@ async def handle_natural_language(
         # forbidden_book_note는 _maybe_forbidden_book_note()가 active_prompt_text is not
         # None일 때 이미 None으로 건너뛰어서, 여기서 다시 확인할 필요 없이 그대로 쓴다.
         context_note = f"{context_note}\n\n{forbidden_book_note}" if context_note else forbidden_book_note
+    if shielded and classification.has_severe_abuse:
+        # H미약(§24) 보호막 — 실제 델타 차단은 이미 SQL에서 끝났고, 이건 순수하게
+        # 생성 톤을 다정하게 유도하는 보너스 조치.
+        context_note = f"{context_note}\n\n{_SHIELD_CONTEXT_NOTE}" if context_note else _SHIELD_CONTEXT_NOTE
     response_text = await get_response(
         text, history=context_turns, context_note=context_note, output_char_limit=level.output_char_limit
     )

@@ -279,6 +279,17 @@ _CATEGORY_LABELS: dict[str, str] = {
     "today": "오늘 기록",
     "lifetime": "전체 기록",
 }
+# 버튼 줄 배치(2026-09-11 사용자 지시) — 舊에는 6개 버튼이 discord.py의 자동 줄바꿈에
+# 맡겨져 있었는데, "정보/자산/가방/업적"(조회 카테고리) 한 줄 + "오늘 기록/전체
+# 기록"(기록류) 한 줄로 명시적으로 분리했다.
+_CATEGORY_ROWS: dict[str, int] = {
+    "info": 0,
+    "assets": 0,
+    "bag": 0,
+    "achievements": 0,
+    "today": 1,
+    "lifetime": 1,
+}
 _DEFAULT_CATEGORY = "info"
 
 
@@ -302,7 +313,7 @@ class _CategoryButton(discord.ui.Button):
     def __init__(self, kind: str, *, active: bool) -> None:
         # 활성=초록(success), 비활성=회색(secondary) — /자판기-리스트·/랭킹과 동일한 배색.
         style = discord.ButtonStyle.success if active else discord.ButtonStyle.secondary
-        super().__init__(label=_CATEGORY_LABELS[kind], style=style)
+        super().__init__(label=_CATEGORY_LABELS[kind], style=style, row=_CATEGORY_ROWS[kind])
         self._kind = kind
 
     async def callback(self, interaction: discord.Interaction) -> None:

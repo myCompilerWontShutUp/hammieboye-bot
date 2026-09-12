@@ -71,6 +71,28 @@ _SNACK_PURCHASE_LINES = (
     "이거 먹으면 무슨 일이 생길까?? _(궁금)_",
     "은밀하게 손에 넣은 전리품이야!! _(자랑)_",
 )
+_POTION_PURCHASE_LINES = (
+    "이거 무슨 효과인지 궁금해!! _(호기심)_",
+    "쉿, 특별한 효과가 있대!! _(소곤)_",
+    "이거 쓰면 뭔가 달라질 것 같아!! _(설렘)_",
+    "몰래 챙긴 보람이 있어!! _(뿌듯)_",
+    "이런 물건은 여기서만 구할 수 있어!! _(자랑)_",
+    "언제 써볼지 벌써 기대돼!! _(들뜸)_",
+    "이거 효과가 진짜일까?? _(궁금)_",
+    "은밀하게 손에 넣었어!! _(만족)_",
+    "이 물약, 뭔가 신비로워!! _(황홀)_",
+    "드링킹 타임에 써볼 거야!! _(기대)_",
+    "이거 하나로 뭔가 바뀔 것 같아!! _(긴장)_",
+    "몰래 산 특별한 효과템이야!! _(자랑)_",
+    "이 포션, 완전 신기해 보여!! _(신기)_",
+    "쉿, 아무한테도 말 안 할게!! _(비밀)_",
+    "이거 쓰는 순간이 기대돼!! _(설렘)_",
+    "어둠 속에서 건진 귀한 물약이야!! _(뿌듯)_",
+    "이런 효과, 흔치 않을 거야!! _(자랑)_",
+    "이거 바로 써보고 싶어!! _(들뜸)_",
+    "몰래 하나 더 챙겨둘까?? _(장난)_",
+    "이 포션 덕분에 뭔가 특별해질 것 같아!! _(기대)_",
+)
 _TOOL_PURCHASE_LINES = (
     "이거 쓸 데가 많을 것 같아!! _(기대)_",
     "쉿, 유용한 걸 챙겼어!! _(소곤)_",
@@ -95,7 +117,9 @@ _TOOL_PURCHASE_LINES = (
 )
 
 # 2026-09-09 — 카테고리 이름을 컨셉에 맞게 변경(간식→괴식, 도구→장비, 내부 kind
-# 값은 그대로), "포션" 카테고리 신설(아직 재고 없음). 순서는 괴식-포션-장비.
+# 값은 그대로), "포션" 카테고리 UI를 먼저 만들어두고(당시엔 재고 없음)
+# 2026-09-12 "드링킹 타임"(§24) 신설과 함께 실제 품목 3종을 채워 넣었다. 순서는
+# 괴식-포션-장비.
 _CATEGORY_LABELS: dict[str, str] = {"snack": "괴식", "potion": "포션", "tool": "장비"}
 _CATEGORY_ORDER: tuple[str, ...] = ("snack", "potion", "tool")
 _DEFAULT_CATEGORY = "snack"
@@ -108,6 +132,9 @@ _CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "snack": (
         "위험한 확률 음식입니다. 운이 좋으면 크게 오르지만 나쁘면 오히려 깎일 수 있습니다. "
         "결과는 디저트 타임에 `/사용`으로 먹여야 알 수 있습니다."
+    ),
+    "potion": (
+        "확률 없이 정해진 특수 효과를 부여합니다. 드링킹 타임에만 `/사용`으로 먹일 수 있습니다."
     ),
     "tool": "산 물건은 `/사용`으로 직접 사용해보세요. 한 번에 하나씩만 사용할 수 있습니다.",
 }
@@ -187,7 +214,12 @@ async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embe
         f"- {item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
-    purchase_lines = _SNACK_PURCHASE_LINES if item.kind == "snack" else _TOOL_PURCHASE_LINES
+    if item.kind == "snack":
+        purchase_lines = _SNACK_PURCHASE_LINES
+    elif item.kind == "potion":
+        purchase_lines = _POTION_PURCHASE_LINES
+    else:  # "tool"
+        purchase_lines = _TOOL_PURCHASE_LINES
     return random.choice(purchase_lines), embed
 
 

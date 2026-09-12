@@ -8,6 +8,14 @@ from events.scheduler import KST
 from events.special_days import get_event_label, get_multiplier
 
 
+# H미약(암시장 포션, §24, 2026-09-12 신규) 전용 — users.affection_shield_until이 지금
+# 시각보다 미래인 유저는 이 두 RPC(add_affection/add_affection_uncapped) 내부에서
+# 양수 delta는 x2, 음수 delta는 0으로 바뀐다(SQL 레벨 차단, supabase/schema.sql 참고).
+# Python 쪽엔 별도 분기가 없다 — 이 파일이 사실상 유일한 RPC 호출 지점이라(fl set/
+# fl reset의 set_affection만 예외, 의도적으로 미적용) SQL 한 곳만 고치면 모든 하락
+# 경로(반복발화/쿨타임남용/헬프미이벤트/취침맨션/암시장 괴식 등)가 한 번에 커버된다.
+
+
 def _multiplied(amount: int) -> int:
     """양수(획득)에만 오늘의 주말/기념일/생일 배율을 곱한다. 하락(음수)은 그대로."""
     if amount <= 0:
@@ -74,10 +82,15 @@ async def add_affection_uncapped(
 ) -> dict:
     """일일 +100 획득 상한 계산을 건너뛰고 무조건 적용한다 (예: 취침 중 깨움 이벤트의 악몽 감사 +5).
 
-    반환값은 {applied_amount, new_affection, achievement_notice} — uncapped RPC는 부분지급이
-    없어 배율 적용 후의 amount가 곧 실제 적용량이다(apply_day_multiplier=True면 원래 넘긴
-    amount와 다를 수 있으니, 알림 문구 등에는 파라미터로 받은 원본이 아니라 반드시 이
-    applied_amount를 써야 한다).
+    반환값은 {applied_amount, new_affection, achievement_notice}. **2026-09-12부로
+    applied_amount는 RPC가 실제로 반영한 값을 그대로 돌려받는다** — 舊에는 이 RPC가
+    p_amount를 절대 변형하지 않았으므로 Python이 호출 전 계산해둔 amount를 그대로
+    재사용해도 안전했지만, H미약(§24)의 24시간 호감도 보호막이 RPC 내부에서 p_amount
+    자체를 바꾸게(양수면 x2, 음수면 0으로) 되면서 이 가정이 깨졌다 — RPC가 실제
+    적용량을 안 돌려주면 알림 문구의 "전 → 후" 계산도, 아래 grant_affection_xp에
+    넘기는 양도 전부 틀어진다. 그래서 RPC 자체를 `RETURNS TABLE (applied_amount
+    integer, new_affection bigint)`로 바꿔(add_affection과 동일한 반환 형태) 실제
+    반영량을 명시적으로 받는다(SQL.md/supabase/schema.sql 참고).
 
     check_achievements=False면 마일스톤 확인을 건너뛴다 — 관리자 콘솔의 `fl up`/`fl down`
     전용: 관리자가 직접 수치를 조작하는 명령어로는 업적이 달성되면 안 된다. `fl set`/
@@ -94,7 +107,9 @@ async def add_affection_uncapped(
         "add_affection_uncapped",
         {"p_user_id": user_id, "p_amount": amount, "p_method": method},
     )
-    new_affection = rows[0]["new_affection"]
+    result = rows[0]
+    applied = result["applied_amount"]
+    new_affection = result["new_affection"]
     # check_achievements 플래그와 무관하게 grant_affection_xp는 항상 호출한다 —
     # 업적 마일스톤 재귀 방지와 XP 적립은 서로 다른 관심사다(관리자 fl 조작도
     # 호감도가 실제로 바뀌었으면 XP는 받는다, 계획 확정 사항). 둘 다 필요한 경우
@@ -102,14 +117,14 @@ async def add_affection_uncapped(
     # 동일한 이유).
     if check_achievements:
         achievement_notice, _ = await asyncio.gather(
-            maybe_award_affection_milestones(user_id, amount, new_affection, guild_id=guild_id),
-            grant_affection_xp(user_id, amount, guild_id=guild_id),
+            maybe_award_affection_milestones(user_id, applied, new_affection, guild_id=guild_id),
+            grant_affection_xp(user_id, applied, guild_id=guild_id),
         )
     else:
         achievement_notice = None
-        await grant_affection_xp(user_id, amount, guild_id=guild_id)
+        await grant_affection_xp(user_id, applied, guild_id=guild_id)
     return {
-        "applied_amount": amount,
+        "applied_amount": applied,
         "new_affection": new_affection,
         "achievement_notice": achievement_notice,
     }
