@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.5.1",
-        commit_hash="PENDING",
+        commit_hash="429e6f0",
         date="2026-09-12",
         changes=(
             "하루 세 번의 간식 시간 중 일부가 무작위로 음료를 먹이는 시간으로 바뀌는 "
