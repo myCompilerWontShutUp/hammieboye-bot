@@ -532,12 +532,18 @@ class _GambleSelectView(EphemeralAutoDeleteView):
     async def _open_double_or_nothing_modal(
         self, interaction: discord.Interaction, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
     ) -> None:
-        self.bump()
+        """더블오어낫띵은 올인/하프 버튼 뷰로 고른다(2026-09-11 모달→버튼 전환,
+        `double_or_nothing.AllInHalfView` 참고) — 다른 두 게임처럼 모달을
+        "덮어씌우는" 게 아니라 이 ephemeral 게임 선택 메시지 자체를 그 자리에서
+        버튼 뷰로 갈아끼우므로, 舊 `_GambleSelectView`(self)의 아직 안 끝난 타임아웃
+        태스크를 `stop()`으로 먼저 정리해야 나중에 이미 사라진 메시지를 또 지우려는
+        중복 시도가 안 생긴다."""
         user = await get_user(self.user_id)
         balance = user["coins"] if user is not None else 0
-        await interaction.response.send_modal(
-            double_or_nothing.AllInHalfModal(balance=balance, on_valid=on_valid)
-        )
+        self.stop()
+        picker = double_or_nothing.AllInHalfView(balance=balance, on_valid=on_valid)
+        await interaction.response.edit_message(view=picker)
+        picker.interaction = self.interaction
 
     # 2026-09-10 — 셋 다 danger(빨강)로 통일했다(舊 슬롯머신만 danger/승부예측 primary/
     # 더블오어낫띵 secondary로 제각각이었음) — /내기의 세 버튼이 전부 primary로

@@ -78,8 +78,10 @@ def _invalidate_active_events_cache() -> None:
     _active_events_cache_until = None
 
 
+# 물/목마름 프롬프트 2개(舊 "목말라... 물이 다 떨어졌어"/"물통이 비었어... 채워줄
+# 사람?")는 2026-09-12 "드링킹 타임"(§24) 신설과 함께 제거됐다 — 이제 그 역할을
+# 드링킹 타임이 대신한다. 15개에서 13개로 줄었다.
 _PROMPT_TEXTS = (
-    "목말라... 물이 다 떨어졌어",
     "심심해... 같이 놀아줄 사람 없어??",
     "심심하다 심심해... 뭐라도 재밌는 거 없을까",
     "쳇바퀴 좀 돌려줄 사람 없나... 다리가 근질근질해",
@@ -87,7 +89,6 @@ _PROMPT_TEXTS = (
     "쳇바퀴가 삐걱거려... 손 좀 봐줄 사람?",
     "숨숨집이 좁아진 것 같아... 넓혀줄 사람?",
     "털 손질 좀 도와줄 사람 없어?",
-    "물통이 비었어... 채워줄 사람?",
     "낮잠 잘 자리 좀 만들어줄 사람 없나...",
     "모래 목욕하고 싶은데 모래가 다 뭉쳐써... 새로 갈아줄 사람?",
     "이빨 갈이용 나무토막이 다 닳았어... 새 거 놓아줄 사람?",
@@ -111,8 +112,6 @@ _recently_claimed_cache_until: datetime | None = None
 # (놀아주기/손질 등)를 나눠 어울리는 동사 템플릿을 쓴다. _PROMPT_TEXTS와 1:1 대응해야
 # 하므로 아래 assert로 검증한다.
 _ALREADY_HELPED_GIVE_ITEMS = {
-    "목말라... 물이 다 떨어졌어": "물",
-    "물통이 비었어... 채워줄 사람?": "물통에 채울 물",
     "이빨 갈이용 나무토막이 다 닳았어... 새 거 놓아줄 사람?": "이빨 갈이용 나무토막",
     "둥지에 깔 포근한 솜이 부족해... 좀 챙겨줄 사람?": "둥지에 깔 솜",
     "요즘 좀 쌀쌀한데 담요 하나 덮어줄 사람 없나?": "담요",
@@ -130,6 +129,12 @@ _ALREADY_HELPED_DO_ITEMS = {
     "모래 목욕하고 싶은데 모래가 다 뭉쳐써... 새로 갈아줄 사람?": "모래 갈아주는 것",
 }
 assert set(_ALREADY_HELPED_GIVE_ITEMS) | set(_ALREADY_HELPED_DO_ITEMS) == set(_PROMPT_TEXTS)
+
+# _grant_already_helped()가 알 수 없는 prompt_text를 받았을 때(이론상 안 생기지만
+# 안전망) 쓰는 폴백 — 이름 있는 상수로 고정해 앞으로 _PROMPT_TEXTS를 편집해도
+# 안전하다(2026-09-12, 물 프롬프트 2개 제거 과정에서 舊 위치 참조 `_PROMPT_TEXTS[0]`가
+# 취약하다는 지적으로 정리).
+_ALREADY_HELPED_FALLBACK_PROMPT = "심심해... 같이 놀아줄 사람 없어??"
 
 _ALREADY_HELPED_GIVE_TEMPLATES = (
     "{item}{은는} 이미 딴 친구가 줘써!! 그래도 챙겨주려던 맘은 고마워!! _(뭉클)_",
@@ -193,7 +198,9 @@ async def _grant_already_helped(
     횟수는 증가시키지만, "햄미의 요청" 업적은 진짜 첫 클레임 성공자만 유지한다."""
     result = await add_affection(user_id, _ALREADY_HELPED_REWARD, _ALREADY_HELPED_METHOD, guild_id=guild_id)
     await _try_increment_help_count(user_id)
-    lines = _ALREADY_HELPED_LINES_BY_PROMPT.get(prompt_text, _ALREADY_HELPED_LINES_BY_PROMPT[_PROMPT_TEXTS[0]])
+    lines = _ALREADY_HELPED_LINES_BY_PROMPT.get(
+        prompt_text, _ALREADY_HELPED_LINES_BY_PROMPT[_ALREADY_HELPED_FALLBACK_PROMPT]
+    )
     # 레벨/XP 시스템(2026-09-10) — "헬프 햄미 이벤트 1분 안에 들어온 사람" +3xp(일일
     # 상한 없음, 이벤트 자체가 하루 최대 발생 횟수로 이미 제한돼 있어 추가 캡 불필요).
     await apply_xp_and_check_levelup(user_id, 3, guild_id=guild_id)

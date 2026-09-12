@@ -71,6 +71,28 @@ _SNACK_PURCHASE_LINES = (
     "간식 보따리가 두둑해졌어!! _(흐뭇)_",
     "이거 나중에 꼭 먹을 거야!! _(다짐)_",
 )
+_DRINK_PURCHASE_LINES = (
+    "시원한 게 딱 땡길 것 같아!! _(신남)_",
+    "오예!! 음료 득템!! _(흥분)_",
+    "이거 마시면 완전 상쾌하겠다!! _(설렘)_",
+    "음료 챙겼으니 든든해!! _(뿌듯)_",
+    "이거 드링킹 타임에 마실 거야!! _(신남)_",
+    "짜잔, 음료 손에 넣었다!! _(자랑)_",
+    "이거 마시면 기분 좋아질 것 같아!! _(기대)_",
+    "음료 냄새만 맡아도 시원해!! _(황홀)_",
+    "오호, 좋은 걸 골랐네!! _(만족)_",
+    "이제 목마를 일 없겠다!! _(안심)_",
+    "이거 마실 생각하니 벌써 신나!! _(들뜸)_",
+    "꿀꺽 타임이 기다려져!! _(설렘)_",
+    "음료 하나 더 모았다!! _(으쓱)_",
+    "이거 진짜 잘 산 것 같아!! _(만족)_",
+    "오늘도 음료 부자!! _(자랑)_",
+    "이 음료, 기대되는데?? _(궁금)_",
+    "음료 바구니가 두둑해졌어!! _(흐뭇)_",
+    "이거 나중에 꼭 마실 거야!! _(다짐)_",
+    "시원하게 한 모금 하고 싶어!! _(기대)_",
+    "음료 준비 완료!! _(신남)_",
+)
 _INVESTMENT_PURCHASE_LINES = (
     "오, 이제 동전을 더 많이 벌 수 있겠다!! _(신남)_",
     "짜잔, 투자 성공!! _(뿌듯)_",
@@ -109,9 +131,9 @@ _SAVINGS_START_ELIGIBLE_ITEM_IDS = frozenset(
 # 품목 선택 + 구매 버튼을 합쳤다. "동전"이라는 표시 이름을 "투자"로 바꿨을 뿐 내부
 # kind("coin")·가격 인상 로직·효과(=`/동전` 획득량 증가)는 전부 그대로다. 舊 "기타"
 # (장난 품목, op_permission)는 이 화면에서 아예 안 보이게 뺐다 — 카탈로그에서 지우진
-# 않았지만 이 UI로는 더 이상 도달할 방법이 없다. 2026-09-09 "음료" 카테고리 신설
-# (아직 재고 없음, command/black_market.py의 빈 카테고리 처리를 그대로 이식) —
-# 순서는 간식-음료-투자.
+# 않았지만 이 UI로는 더 이상 도달할 방법이 없다. 2026-09-09 "음료" 카테고리를 UI에
+# 먼저 만들어두고(당시엔 재고 없이 빈 상태) 2026-09-12 "드링킹 타임"(§24) 신설과
+# 함께 실제 품목 5종을 채워 넣었다 — 순서는 간식-음료-투자.
 _CATEGORY_LABELS: dict[str, str] = {"snack": "간식", "beverage": "음료", "coin": "투자"}
 _CATEGORY_ORDER: tuple[str, ...] = ("snack", "beverage", "coin")
 _DEFAULT_CATEGORY = "snack"
@@ -119,6 +141,9 @@ _DEFAULT_CATEGORY = "snack"
 _CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "snack": (
         "**디저트 타임** 이벤트 진행 중 `/사용`을 통해 햄미에게 먹이고 호감도를 얻으세요!"
+    ),
+    "beverage": (
+        "**드링킹 타임** 이벤트 진행 중 `/사용`을 통해 햄미에게 먹이고 호감도를 얻으세요!"
     ),
     "coin": "`/동전` 획득량을 늘리세요! 단, 구매할 때 마다 가격이 2배 상승해요!",
 }
@@ -147,7 +172,7 @@ def _item_block(item, price: int, purchase_count: int) -> str:
     ::_item_block과 동일한 원칙). price는 그 유저 기준 "다음 구매 가격"(투자 품목은
     이미 산 횟수만큼 2배씩 올라 카탈로그 기본값과 다를 수 있다)."""
     note = f" ({item.note})" if item.note else ""
-    if item.kind == "snack":
+    if item.kind in ("snack", "beverage"):
         detail = f"먹일 시 호감도 +{item.effect}{note}"
     else:  # "coin"("투자") — /동전 획득량 증가
         detail = f"`/동전` 획득량 +{item.effect}"
@@ -180,15 +205,16 @@ async def _execute_purchase(
     직후에만 호출되며, 이 시점에 가격을 다시 계산해 그대로 차감한다."""
     counts = await get_purchase_counts(user_id)
     total_cost = _price_from_counts(item, counts)
-    # coin_log 기록용 method(2026-09-11 신규) — item.kind는 "snack"/"coin" 둘 중
-    # 하나만 여기 도달한다("joke"는 _BuyButton에서 이미 걸러져 결제 자체를 안 함).
+    # coin_log 기록용 method(2026-09-11 신규, 2026-09-12 "beverage" 추가) — item.kind는
+    # "snack"/"beverage"/"coin" 중 하나만 여기 도달한다("joke"는 _BuyButton에서 이미
+    # 걸러져 결제 자체를 안 함).
     if not await spend_coins(user_id, total_cost, f"vending_purchase_{item.kind}"):
         return random.choice(INSUFFICIENT_FUNDS_LINES)
 
     # embed.description에 들어가는 문구라 시스템 정중체로 고정한다(2026-09-09 —
     # "받았어!!"/"벌 수 있어!!" 같은 페르소나 말투가 섞여 있던 걸 발견해 정정,
     # command/black_market.py와 동일한 원칙).
-    if item.kind == "snack":
+    if item.kind in ("snack", "beverage"):
         new_qty = await add_snack(user_id, item.id, 1)
         effect_summary = f"{item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
     else:  # "coin"("투자") — /동전 그랜트 보너스 증가
@@ -220,7 +246,12 @@ async def _execute_purchase(
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
 
-    purchase_lines = _SNACK_PURCHASE_LINES if item.kind == "snack" else _INVESTMENT_PURCHASE_LINES
+    if item.kind == "snack":
+        purchase_lines = _SNACK_PURCHASE_LINES
+    elif item.kind == "beverage":
+        purchase_lines = _DRINK_PURCHASE_LINES
+    else:  # "coin"("투자")
+        purchase_lines = _INVESTMENT_PURCHASE_LINES
     text = random.choice(purchase_lines)
     return text, embed
 

@@ -154,6 +154,7 @@ _COIN_METHOD_LABELS: dict[str, str] = {
     "coin": "/동전",
     "level_up_bonus": "레벨업 보너스",
     "vending_purchase_snack": "자판기 구매(간식)",
+    "vending_purchase_beverage": "자판기 구매(음료)",
     "vending_purchase_coin": "자판기 구매(투자)",
     "black_market_purchase": "암시장 구매",
     "admin_co_up": "관리자 지급",

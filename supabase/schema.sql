@@ -10,6 +10,8 @@
 -- 0. 기존 객체 전체 삭제 (전체 리셋)
 -- ------------------------------------------------------------
 
+DROP TABLE IF EXISTS sleep_delay_events CASCADE;
+DROP TABLE IF EXISTS dessert_slot_kind CASCADE;
 DROP TABLE IF EXISTS guild_sub_channels CASCADE;
 DROP TABLE IF EXISTS user_snacks CASCADE;
 DROP TABLE IF EXISTS user_emoji_tags CASCADE;
@@ -28,6 +30,8 @@ DROP TABLE IF EXISTS chat_history CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
+DROP FUNCTION IF EXISTS claim_sleep_delay(date);
+DROP FUNCTION IF EXISTS claim_dessert_slot_kind(date, text, text);
 DROP FUNCTION IF EXISTS claim_coin_daily_use(bigint);
 DROP FUNCTION IF EXISTS set_coins(bigint, bigint);
 DROP FUNCTION IF EXISTS claim_coin_cooldown(bigint, timestamptz);
@@ -135,6 +139,12 @@ CREATE TABLE users (
   -- levels.py의 임계값 테이블로 total_xp에서 매번 계산한다(동기화 버그 방지).
   total_xp                    bigint NOT NULL DEFAULT 0,
 
+  -- H미약(암시장 포션, §24, 2026-09-12 신규) 전용 — NULL 또는 과거 시각이면 보호막
+  -- 없음. 이 시각보다 미래인 동안 add_affection/add_affection_uncapped RPC 내부에서
+  -- 양수 delta는 x2, 음수 delta는 0으로 바뀐다(fl set/fl reset의 set_affection RPC는
+  -- 의도적으로 미적용).
+  affection_shield_until      timestamptz,
+
   -- 동의 전에도 저장되는 최소 식별 기록 (고지 불필요, CLAUDE.md 1-1 참고)
   first_seen_at              timestamptz NOT NULL DEFAULT now(),
 
@@ -202,7 +212,8 @@ CREATE TABLE daily_stats (
   -- (서로 다른 간식 3종) 업적 판정을 이 컬럼 하나로 겸한다.
   dessert_fed_today                 jsonb NOT NULL DEFAULT '{}'::jsonb,
 
-  -- /동전 하루 사용 횟수(신규, 하루 최대 3회) — claim_coin_daily_use()로 원자적 증가.
+  -- /동전 하루 사용 횟수(신규, 하루 최대 10회 — 2026-09-11 3회→10회로 상향) —
+  -- claim_coin_daily_use()로 원자적 증가.
   coin_claims_today                 integer NOT NULL DEFAULT 0,
 
   -- /암시장 "햄미 일정표"를 오늘 처음 사용했는지(2026-09-08 신규) — 첫 사용 시점에만
@@ -530,6 +541,35 @@ CREATE TABLE forbidden_book_entries (
 CREATE INDEX idx_forbidden_book_entries_created_at ON forbidden_book_entries (created_at);
 
 -- ------------------------------------------------------------
+-- 9-8. dessert_slot_kind — "드링킹 타임"(§24, 2026-09-12 신규) 슬롯 종류 확정 기록
+--    디저트 타임 3슬롯(아침/점심/저녁) 각각이 그날 "dessert"(간식)/"drink"(음료)
+--    중 무엇인지를 전역(서버·유저 무관)으로 딱 하루 한 번만 결정한다. 오픈 방송과
+--    /사용 급여 시점 둘 다 claim_dessert_slot_kind()로 "먼저 도착한 쪽이 이긴다"
+--    방식으로 확정하므로 별도 락/캐시가 필요 없다.
+-- ------------------------------------------------------------
+
+CREATE TABLE dessert_slot_kind (
+  stat_date    date NOT NULL,
+  slot          text NOT NULL,   -- 'morning' | 'noon' | 'evening'
+  kind           text NOT NULL,   -- 'dessert' | 'drink'
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (stat_date, slot)
+);
+
+-- ------------------------------------------------------------
+-- 9-9. sleep_delay_events — 쳇바퀴 에너지 드링크(§24, 2026-09-12 신규)의 "그날 취침
+--    30분 지연" 효과를 재시작에도 살아남게 기록한다. delay_date는 "지연되는 그
+--    자정의 날짜"(먹인 날+1일) — events/scheduler.py의 지연-기상 메커니즘
+--    (guild_sleep_state로 복원되는 것)과 동일한 원칙으로, 인메모리 플래그
+--    (_late_sleep_date)를 재시작 시 이 테이블로 복원한다.
+-- ------------------------------------------------------------
+
+CREATE TABLE sleep_delay_events (
+  delay_date    date PRIMARY KEY,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+-- ------------------------------------------------------------
 -- 10. 원자적 호감도 증감 RPC (일일 획득 상한 적용, affection_log 기록)
 --     상승/하락 이벤트 발생 시 애플리케이션은 UPDATE를 직접 하지 말고
 --     이 함수를 호출한다. 행 잠금(FOR UPDATE)으로 동시 요청이 들어와도
@@ -556,20 +596,35 @@ DECLARE
   v_current_gain integer;
   v_applied integer;
   v_new_affection bigint;
+  v_shield_until timestamptz;
+  v_amount integer := p_amount;
 BEGIN
   INSERT INTO daily_stats (user_id, stat_date)
   VALUES (p_user_id, v_stat_date)
   ON CONFLICT (user_id, stat_date) DO NOTHING;
+
+  -- H미약(암시장 포션, §24, 2026-09-12 신규) — 활성 보호막이면 양수는 x2, 음수는
+  -- 0으로 바꾼다(모든 호감도 하락 경로를 이 한 줄로 차단, fl set/fl reset은 별도
+  -- RPC(set_affection)라 미적용). 아래 users 행 UPDATE와 같은 트랜잭션 안에서
+  -- 계속 잠가둔다.
+  SELECT affection_shield_until INTO v_shield_until FROM users WHERE user_id = p_user_id FOR UPDATE;
+  IF v_shield_until IS NOT NULL AND v_shield_until > now() THEN
+    IF v_amount > 0 THEN
+      v_amount := v_amount * 2;
+    ELSIF v_amount < 0 THEN
+      v_amount := 0;
+    END IF;
+  END IF;
 
   SELECT daily_gain INTO v_current_gain
   FROM daily_stats
   WHERE user_id = p_user_id AND stat_date = v_stat_date
   FOR UPDATE;
 
-  IF p_amount > 0 THEN
-    v_applied := LEAST(p_amount, GREATEST(2147483647 - v_current_gain, 0));
+  IF v_amount > 0 THEN
+    v_applied := LEAST(v_amount, GREATEST(2147483647 - v_current_gain, 0));
   ELSE
-    v_applied := p_amount;
+    v_applied := v_amount;
   END IF;
 
   UPDATE daily_stats
@@ -615,37 +670,53 @@ CREATE OR REPLACE FUNCTION add_affection_uncapped(
   p_amount  integer,
   p_method  text DEFAULT NULL
 )
-RETURNS TABLE (new_affection bigint)
+RETURNS TABLE (applied_amount integer, new_affection bigint)
 LANGUAGE plpgsql
 AS $$
 DECLARE
   v_stat_date date := kst_today();
   v_new_affection bigint;
+  v_shield_until timestamptz;
+  v_amount integer := p_amount;
 BEGIN
   INSERT INTO daily_stats (user_id, stat_date)
   VALUES (p_user_id, v_stat_date)
   ON CONFLICT (user_id, stat_date) DO NOTHING;
 
+  -- H미약(암시장 포션, §24, 2026-09-12 신규) — add_affection과 동일한 차단(위 §10
+  -- 참고). 이 함수는 舊에는 p_amount를 절대 변형하지 않아 반환 타입이
+  -- (new_affection)뿐이었지만, 이제 실제 적용량이 p_amount와 달라질 수 있어
+  -- applied_amount도 함께 반환한다(호출부 db/affection.py::add_affection_uncapped가
+  -- 이 값을 그대로 신뢰해야 한다 — 舊에는 호출 전 계산해둔 값을 재사용했었다).
+  SELECT affection_shield_until INTO v_shield_until FROM users WHERE user_id = p_user_id FOR UPDATE;
+  IF v_shield_until IS NOT NULL AND v_shield_until > now() THEN
+    IF v_amount > 0 THEN
+      v_amount := v_amount * 2;
+    ELSIF v_amount < 0 THEN
+      v_amount := 0;
+    END IF;
+  END IF;
+
   UPDATE daily_stats
-  SET daily_net = daily_net + p_amount,
+  SET daily_net = daily_net + v_amount,
       gain_methods = CASE
-        WHEN p_amount > 0 AND p_method IS NOT NULL
+        WHEN v_amount > 0 AND p_method IS NOT NULL
           THEN gain_methods || to_jsonb(p_method)
         ELSE gain_methods
       END
   WHERE user_id = p_user_id AND stat_date = v_stat_date;
 
   UPDATE users
-  SET affection = affection + p_amount
+  SET affection = affection + v_amount
   WHERE user_id = p_user_id
   RETURNING affection INTO v_new_affection;
 
-  IF p_amount <> 0 THEN
+  IF v_amount <> 0 THEN
     INSERT INTO affection_log (user_id, delta, new_value, method)
-    VALUES (p_user_id, p_amount, v_new_affection, p_method);
+    VALUES (p_user_id, v_amount, v_new_affection, p_method);
   END IF;
 
-  RETURN QUERY SELECT v_new_affection;
+  RETURN QUERY SELECT v_amount, v_new_affection;
 END;
 $$;
 
@@ -1256,6 +1327,40 @@ BEGIN
 END;
 $$;
 
+-- "드링킹 타임"(§24, 2026-09-12 신규) — 디저트 타임 3슬롯 각각이 그날 "dessert"/
+-- "drink" 중 무엇인지 전역으로 딱 한 번만 확정한다. "그 (날짜,슬롯) 키가 아직 없을
+-- 때만" 원자적으로 기록하고(claim_dessert_slot과 동일한 idiom), 이미 있으면(다른
+-- 호출이 먼저 확정했으면) 그 커밋된 값을 그대로 반환한다 — 오픈 방송과 /사용 급여
+-- 시점 둘 다 같은 함수를 호출해도 항상 하나의 결과로 수렴한다.
+CREATE OR REPLACE FUNCTION claim_dessert_slot_kind(p_stat_date date, p_slot text, p_kind text)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_kind text;
+BEGIN
+  INSERT INTO dessert_slot_kind (stat_date, slot, kind)
+  VALUES (p_stat_date, p_slot, p_kind)
+  ON CONFLICT (stat_date, slot) DO NOTHING;
+
+  SELECT kind INTO v_kind FROM dessert_slot_kind
+  WHERE stat_date = p_stat_date AND slot = p_slot;
+
+  RETURN v_kind;
+END;
+$$;
+
+-- 쳇바퀴 에너지 드링크(§24, 2026-09-12 신규)의 "그날 취침 30분 지연" 효과를 재시작에도
+-- 살아남게 기록한다 — "이미 그 날짜 기록이 있으면 아무것도 안 함"(ON CONFLICT DO
+-- NOTHING)이라 같은 날 몇 번을 먹여도 지연은 항상 정확히 1회(30분)만 적용된다.
+CREATE OR REPLACE FUNCTION claim_sleep_delay(p_delay_date date)
+RETURNS void
+LANGUAGE sql
+AS $$
+  INSERT INTO sleep_delay_events (delay_date) VALUES (p_delay_date)
+  ON CONFLICT (delay_date) DO NOTHING;
+$$;
+
 -- /동전의 쿨타임 확인+설정을 원자적으로 만든다 — "쿨타임이 지금 끝나 있을 때만"
 -- 원자적으로 새 쿨타임을 설정해 동시 요청으로 인한 이중 지급(TOCTOU)을 막는다.
 CREATE OR REPLACE FUNCTION claim_coin_cooldown(p_user_id bigint, p_until timestamptz)
@@ -1304,10 +1409,11 @@ BEGIN
 END;
 $$;
 
--- /동전의 하루 사용 횟수를 원자적으로 제한한다(하루 최대 3회) — "오늘 아직 3회
--- 미만일 때만" 원자적으로 +1 해서 동시 요청으로 인한 초과 지급(TOCTOU)을 막는다.
--- 오늘 daily_stats 행이 이미 있어야 하므로(ensure_daily_stats로 미리 보장) 조건부
--- UPDATE 하나로 충분(claim_dessert_slot과 동일한 idiom).
+-- /동전의 하루 사용 횟수를 원자적으로 제한한다(하루 최대 10회, 2026-09-11
+-- 3회→10회로 상향) — "오늘 아직 10회 미만일 때만" 원자적으로 +1 해서 동시 요청으로
+-- 인한 초과 지급(TOCTOU)을 막는다. 오늘 daily_stats 행이 이미 있어야 하므로
+-- (ensure_daily_stats로 미리 보장) 조건부 UPDATE 하나로 충분(claim_dessert_slot과
+-- 동일한 idiom).
 CREATE OR REPLACE FUNCTION claim_coin_daily_use(p_user_id bigint)
 RETURNS boolean
 LANGUAGE plpgsql
@@ -1319,7 +1425,7 @@ BEGIN
   SET coin_claims_today = coin_claims_today + 1
   WHERE user_id = p_user_id
     AND stat_date = kst_today()
-    AND coin_claims_today < 3;
+    AND coin_claims_today < 10;
 
   GET DIAGNOSTICS v_rows = ROW_COUNT;
   RETURN v_rows > 0;
@@ -1352,3 +1458,5 @@ ALTER TABLE admin_chat_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_emoji_tags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vending_purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE forbidden_book_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dessert_slot_kind ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sleep_delay_events ENABLE ROW LEVEL SECURITY;

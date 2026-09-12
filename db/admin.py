@@ -23,6 +23,8 @@ KNOWN_TABLES = (
     "vending_purchases",
     "forbidden_book_entries",
     "coin_log",
+    "dessert_slot_kind",
+    "sleep_delay_events",
 )
 
 # 최근 등록순 정렬 기준 컬럼 (테이블마다 created_at이 없는 경우가 있어 따로 정의).
@@ -45,6 +47,8 @@ _ORDER_COLUMN = {
     "vending_purchases": "purchased_at",
     "forbidden_book_entries": "created_at",
     "coin_log": "created_at",
+    "dessert_slot_kind": "created_at",
+    "sleep_delay_events": "created_at",
 }
 
 

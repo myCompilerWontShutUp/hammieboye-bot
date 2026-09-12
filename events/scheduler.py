@@ -19,6 +19,10 @@ WAKE_TIME = time(6, 30)
 # 잤다"는 컨셉으로 그날의 실제 기상 시각을 미룬다.
 DELAYED_WAKE_TIME = time(7, 0)
 
+# 쳇바퀴 에너지 드링크(암시장 포션, §24, 2026-09-12 신규)를 먹이면 그날 밤 취침
+# 시각이 30분 늦춰진다 — DELAYED_WAKE_TIME과 정확히 거울상인 메커니즘.
+DELAYED_SLEEP_START = time(0, 30)
+
 _DailyCallback = Callable[[], Awaitable[None]]
 
 # 테스트 서버 전용 채널 고정 상태. awake/asleep 채널은 실제 시간과 무관하게 그 상태로
@@ -34,6 +38,13 @@ TEST_SYNC_CHANNEL_ID = 1542920725185429677
 # 날짜가 안 맞아 자연히 무효화된다(별도 리셋 로직 불필요).
 _late_wake_date: date | None = None
 
+# 쳇바퀴 에너지 드링크로 그날 밤 취침이 지연됐는지 — mark_late_wake와 달리 "지연되는
+# 그 자정의 날짜"(먹인 날+1일)를 저장한다. 00:00~00:30 사이의 판정 시점엔
+# current_dt.date()가 이미 다음 날이기 때문(먹인 시점에 이미 +1일로 계산해서 넘겨야
+# 함 — command/eat.py::_handle_potion 참고). 재시작 대비 복원은
+# db/sleep_delay.py::get_pending_sleep_delay()가 담당.
+_late_sleep_date: date | None = None
+
 
 def mark_late_wake() -> None:
     """취침 중 맨션 깨움 이벤트(방해금지 모드)가 발동했을 때 호출한다 — 오늘(KST)의
@@ -47,12 +58,26 @@ def is_late_wake_today() -> bool:
     return _late_wake_date == datetime.now(timezone.utc).astimezone(KST).date()
 
 
+def mark_late_sleep(for_date: date | None = None) -> None:
+    """쳇바퀴 에너지 드링크를 먹였을 때 호출한다 — for_date(지연되는 그 자정의
+    날짜, 생략 시 "내일")의 취침 시작 시각을 00:00 대신 00:30으로 늦춘다."""
+    global _late_sleep_date
+    _late_sleep_date = for_date or (datetime.now(timezone.utc).astimezone(KST).date() + timedelta(days=1))
+
+
+def is_late_sleep_today() -> bool:
+    """오늘(KST) 취침 시작이 쳇바퀴 에너지 드링크로 00:30으로 늦춰진 상태인지."""
+    return _late_sleep_date == datetime.now(timezone.utc).astimezone(KST).date()
+
+
 def is_sleep_time(now: datetime | None = None) -> bool:
-    """지금이 한국시간 취침 시간대(00:00~06:30, 방해금지 발동 시 00:00~07:00)인지
-    — 실제 시간 기준, 관리자 오버라이드 미반영."""
+    """지금이 한국시간 취침 시간대(00:00~06:30, 방해금지 발동 시 00:00~07:00, 쳇바퀴
+    에너지 드링크로 지연 시 00:30~06:30/07:00)인지 — 실제 시간 기준, 관리자
+    오버라이드 미반영."""
     current_dt = (now or datetime.now(timezone.utc)).astimezone(KST)
+    sleep_start_boundary = DELAYED_SLEEP_START if _late_sleep_date == current_dt.date() else SLEEP_START
     wake_boundary = DELAYED_WAKE_TIME if _late_wake_date == current_dt.date() else WAKE_TIME
-    return SLEEP_START <= current_dt.time() < wake_boundary
+    return sleep_start_boundary <= current_dt.time() < wake_boundary
 
 
 def is_sleep_time_for(channel_id: int | None = None, now: datetime | None = None) -> bool:

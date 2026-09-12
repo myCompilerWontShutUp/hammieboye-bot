@@ -14,8 +14,10 @@ from typing import Awaitable, Callable
 
 import discord
 
+from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
     INSUFFICIENT_FUNDS_LINES,
+    TIMEOUT_SECONDS,
     ReplayView,
     build_bet_receipt_embed,
     claim_active_or_reject,
@@ -123,64 +125,47 @@ DOUBLE_OR_NOTHING_RULE_TEXT = (
 )
 
 
-class AllInHalfModal(discord.ui.Modal):
-    """더블오어낫띵 전용 시작 판돈 선택 모달(2026-09-10 신규) — 다른 5개 게임과
-    달리 직접 금액을 입력하지 않고, "올인"(보유 동전 전부) 또는 "하프"(절반, 올림)
-    중 정확히 하나만 체크해야 진행된다(체크박스 2개, `BetAmountModal`과 달리
-    상한 자체가 없다 — 슬롯머신·승부예측 전용 MAX_BET_GAMBLING 대상이 아니다).
-    slot.py의 게임 선택 버튼과 이 파일의 `_build_replay_view` 둘 다 공유한다.
+class AllInHalfView(EphemeralAutoDeleteView):
+    """더블오어낫띵 전용 시작 판돈 선택 뷰(2026-09-11 — 舊 체크박스 2개짜리 모달
+    `AllInHalfModal`을 버튼 2개로 교체, 사용자 지시: "둘 중 하나만 누를 수 있게",
+    "경마처럼"). `command/horse_race.py::_PredictionView`의 등수 예측 버튼과 동일한
+    원칙 — 버튼 클릭 자체가 곧 선택이라, 모달의 "체크박스 둘 다 체크"/"둘 다
+    미체크" 같은 무효 상태가 애초에 나올 수 없다(단일 인터랙션 = 단일 선택이라
+    제출 후 검증이 더 이상 필요 없다).
 
-    하프는 내림이 아니라 **올림**으로 계산한다(2026-09-11 사용자 지시) — 내림이면
-    보유 동전이 1개일 때 하프가 0개가 되어 아무것도 못 거는 상태가 생긴다. 올림
-    (`ceil(balance / 2)`)이면 보유 동전이 1개 이상인 한 하프도 항상 최소 1개다.
-    그리고 올림 특성상 `ceil(balance / 2) == balance`가 되는 경우는 balance가 0
-    또는 1일 때뿐이다 — 이때는 하프와 올인 금액이 정확히 같아지므로, 의미 없는
-    선택지를 없애기 위해 하프 체크박스 자체를 아예 보여주지 않는다(사용자 지시:
-    "하프와 올인의 가격이 동일할 경우 하프를 표시하지 않는다")."""
+    하프는 이제 항상 표시한다(2026-09-11 사용자 지시) — 舊에는 올림 계산 특성상
+    하프와 올인 금액이 같아지는 보유 0~1코인 구간에서 하프 버튼 자체를 숨겼었다.
+    하프 금액은 여전히 내림이 아니라 **올림**으로 계산한다(2026-09-11 사용자
+    지시) — 내림이면 보유 동전이 1개일 때 하프가 0개가 되어 아무것도 못 거는
+    상태가 생긴다."""
 
-    _NONE_CHECKED_RESPONSE = "올인 또는 하프 중 하나를 체크해야 진행돼!! _(갸웃)_"
-    _ALL_IN_ONLY_NONE_CHECKED_RESPONSE = "올인을 체크해야 진행돼!! _(갸웃)_"
-    _BOTH_CHECKED_RESPONSE = "올인과 하프 중 하나만 체크해줘!! _(갸웃)_"
-
-    def __init__(self, *, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]) -> None:
-        super().__init__(title="더블오어낫띵 판돈 선택")
+    def __init__(
+        self, *, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
+    ) -> None:
+        super().__init__(timeout=TIMEOUT_SECONDS)
         self._balance = balance
-        self._on_valid = on_valid
         # 올림 나눗셈 — balance가 음수일 일이 없어(잔액) 이 형태로 충분하다.
         self._half_amount = (balance + 1) // 2
-        self._all_in = discord.ui.Checkbox(default=False)
-        self.add_item(
-            discord.ui.Label(
-                text="올인", description=f"보유 동전 전부({balance:,}코인)를 겁니다.", component=self._all_in
-            )
-        )
-        self._half: discord.ui.Checkbox | None = None
-        if self._half_amount != balance:
-            self._half = discord.ui.Checkbox(default=False)
-            self.add_item(
-                discord.ui.Label(
-                    text="하프",
-                    description=f"보유 동전의 절반({self._half_amount:,}코인)을 겁니다.",
-                    component=self._half,
-                )
-            )
+        self._on_valid = on_valid
+        self.all_in.label = f"올인 ({balance:,}코인)"
+        self.half.label = f"하프 ({self._half_amount:,}코인)"
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        if self._half is None:
-            if not self._all_in.value:
-                await interaction.response.send_message(self._ALL_IN_ONLY_NONE_CHECKED_RESPONSE, ephemeral=True)
-                return
-            amount = self._balance
-        else:
-            if self._all_in.value == self._half.value:  # 둘 다 False거나 둘 다 True
-                response = self._BOTH_CHECKED_RESPONSE if self._all_in.value else self._NONE_CHECKED_RESPONSE
-                await interaction.response.send_message(response, ephemeral=True)
-                return
-            amount = self._balance if self._all_in.value else self._half_amount
+    async def _choose(self, interaction: discord.Interaction, amount: int) -> None:
+        if not await reject_if_already_resolved(self, interaction):
+            return
+        self.stop()
         if amount < 1:
             await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
             return
         await self._on_valid(interaction, amount)
+
+    @discord.ui.button(label="올인", style=discord.ButtonStyle.danger)
+    async def all_in(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, self._balance)
+
+    @discord.ui.button(label="하프", style=discord.ButtonStyle.secondary)
+    async def half(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, self._half_amount)
 
 
 def _build_replay_view(user_id: int) -> ReplayView:
@@ -201,7 +186,13 @@ def _build_replay_view(user_id: int) -> ReplayView:
     async def _open_modal(
         interaction: discord.Interaction, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
     ) -> None:
-        await interaction.response.send_modal(AllInHalfModal(balance=balance, on_valid=on_valid))
+        # 舊에는 모달을 열었지만(AllInHalfModal), 이제는 버튼 뷰를 새 ephemeral
+        # 메시지로 보낸다(2026-09-11) — "다시하기"는 공개 메시지의 버튼이라, 모달과
+        # 동일한 사생활 보장을 위해 뷰 자체를 이 유저에게만 보이는 새 메시지로 연다
+        # (공개 메시지를 그대로 편집하면 모두에게 선택 버튼이 보여버린다).
+        view = AllInHalfView(balance=balance, on_valid=on_valid)
+        await interaction.response.send_message(view=view, ephemeral=True)
+        view.interaction = interaction
 
     return ReplayView(user_id, _OWN_COMMAND, _on_replay, open_modal=_open_modal)
 
@@ -286,10 +277,17 @@ class _BoxView(discord.ui.View):
             content = f"## 🎯 도전자: {self.challenger_name}\n{_BOMB_REVEAL_HEADING}\n{random.choice(_BOX_BOMB_LINES)}"
             current = self.before_coins - self.original_bet
             receipt_embed = build_bet_receipt_embed(self.before_coins, self.original_bet, current)
-            replay_view = _build_replay_view(self.user_id)
+            # 잔액이 0이면 "다시하기"를 눌러봤자 올인/하프 둘 다 0코인이라 의미가
+            # 없다 — 이 경우 다시하기 버튼 자체를 띄우지 않는다(2026-09-11 사용자
+            # 지시). ReplayView가 없으니 여기서 직접 mark_inactive로 잠금을 풀어준다
+            # (평소엔 ReplayView.on_timeout이 이 역할을 대신함).
+            replay_view = _build_replay_view(self.user_id) if current > 0 else None
             try:
                 await self.message.edit(content=content, embed=receipt_embed, view=replay_view)
-                replay_view.message = self.message
+                if replay_view is not None:
+                    replay_view.message = self.message
+                else:
+                    mark_inactive(self.user_id)
             except discord.HTTPException:
                 logging.exception("Failed to edit double-or-nothing bomb settlement")
                 mark_inactive(self.user_id)

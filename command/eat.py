@@ -1,4 +1,5 @@
 import random
+from datetime import datetime, timedelta, timezone
 
 import achievements
 from command.black_market_catalog import BlackMarketItem
@@ -6,15 +7,21 @@ from command.black_market_catalog import BY_ID as _BLACK_MARKET_BY_ID
 from command.black_market_catalog import BY_NAME as _BLACK_MARKET_BY_NAME
 from command.vending_catalog import BY_ID as _VENDING_BY_ID
 from command.vending_catalog import BY_NAME as _VENDING_BY_NAME
-from events.announcements import apply_xp_and_check_levelup
-from events.dessert_time import current_slot
+from events.announcements import apply_xp_and_check_levelup, format_xp_notice
+from events.dessert_time import current_slot, get_or_roll_slot_kind
+from events.scheduler import KST, mark_late_sleep
 from db.achievements import award as award_achievement
 from db.affection import add_affection, add_affection_uncapped, format_affection_notice
 from db.daily_stats import claim_dessert_slot, dessert_snack_id, ensure_daily_stats
+from db.sleep_delay import claim_sleep_delay
 from db.snacks import add_snack, consume_snack
-from db.users import get_user, increment_snacks_given
+from db.users import get_user, increment_snacks_given, set_affection_shield_until
 
 _METHOD = "dessert_feed"
+
+# "세계최강울트라킹왕짱간식"(전설) 트리거 품목 — 2026-09-12부로 프리미엄 건조 밀웜
+# 또는 황금 피넛 버터 쉐이크(신규 음료, §24) 둘 중 하나만 먹여도 획득된다(OR 조건).
+_STRONGEST_SNACK_ITEM_IDS = frozenset({"premium_mealworm", "golden_peanut_butter_shake"})
 
 
 def find_by_id(snack_id: str):
@@ -115,14 +122,109 @@ _FEED_SUCCESS_LINES = (
     "{snack} 고마워!! 잘 먹었습니다!! _(감사)_",
     "오늘도 {snack} 덕분에 행복해!! _(만족)_",
 )
+_DRINK_SUCCESS_LINES = (
+    "꿀꺽!! {snack} 완전 시원해!! _(행복)_",
+    "우와, {snack}!! 진짜 맛있다!! _(황홀)_",
+    "{snack} 꿀꺽 잘 마셨어!! _(만족)_",
+    "벌컥벌컥, {snack} 최고야!! _(행복)_",
+    "{snack}!! 이거 완전 좋아해!! _(신남)_",
+    "꿀꺽꿀꺽, {snack} 맛있게 마셨어!! _(뿌듯)_",
+    "{snack} 주다니, 최고의 선물이야!! _(감동)_",
+    "오늘의 음료는 {snack}!! 꿀꺽!! _(행복)_",
+    "{snack} 마시니까 기분이 좋아져!! _(들뜸)_",
+    "꿀꺽, {snack} 진짜 맛있다!! _(황홀)_",
+    "{snack} 완전 시원하게 마셨어!! _(만족)_",
+    "벌컥벌컥벌컥, {snack} 최고!! _(행복)_",
+    "{snack} 줘서 고마워!! 꿀꺽!! _(감사)_",
+    "이야, {snack}!! 오늘 최고의 음료야!! _(신남)_",
+    "{snack} 꿀꺽, 속이 시원해!! _(뿌듯)_",
+    "우와아, {snack} 정말 맛있어!! _(황홀)_",
+    "{snack} 마시니까 행복해!! _(행복)_",
+    "꿀꺽, {snack} 완전 취향저격!! _(들뜸)_",
+    "{snack} 고마워!! 잘 마셨습니다!! _(감사)_",
+    "오늘도 {snack} 덕분에 행복해!! _(만족)_",
+)
+# 슬롯이 디저트(간식 전용)/드링크(음료·포션 전용) 중 하나로 확정된 상태에서 그
+# 카테고리가 아닌 품목을 급여하려 하면 이 문구로 거절한다(2026-09-12, §24 — 재고
+# 자체는 있으니 _NO_SNACK_LINES와는 다른 상황).
+_WRONG_SLOT_KIND_LINES = (
+    "어라, 그건 지금 못 먹을 것 같아!! _(갸웃)_",
+    "그건 지금 시간이랑 안 맞아!! _(고개 저음)_",
+    "지금은 그런 거 먹을 때가 아닌 것 같아!! _(미안)_",
+    "그건 다음 기회에!! 지금은 다른 게 필요해!! _(설명)_",
+    "어?? 그건 지금 안 어울려!! _(갸웃)_",
+    "지금 이 시간엔 그건 좀...!! _(난감)_",
+    "그건 다른 타이밍에 줘야 할 것 같아!! _(단호)_",
+    "지금은 그거 말고 다른 게 당겨!! _(고집)_",
+    "어라, 지금 그건 못 먹겠어!! _(당황)_",
+    "그건 지금 시간이랑 안 맞는 것 같아!! _(갸웃)_",
+    "지금은 그거 받기엔 좀 그래!! _(미안)_",
+    "그건 다음에 다시 줘볼래?? _(부탁)_",
+    "지금 이 타이밍엔 안 맞아!! _(설명)_",
+    "어?? 지금은 그거 아닌 것 같은데?? _(갸웃)_",
+    "그건 지금 말고 나중에!! _(단호)_",
+    "지금은 다른 게 필요한 시간이야!! _(고개 저음)_",
+    "그거 말고 지금 맞는 걸로 줘볼래?? _(제안)_",
+    "어라, 타이밍이 안 맞는 것 같아!! _(당황)_",
+    "지금은 그걸 받을 때가 아니야!! _(미안)_",
+    "그건 다음 시간에!! _(끄덕)_",
+)
 
 
+async def _handle_potion(
+    user_id: int, item: BlackMarketItem, *, guild_id: int | None = None
+) -> tuple[str, int, int, bool]:
+    """암시장 "포션"(§24, 2026-09-12 신규) 전용 — 기존 확률형 괴식(good_delta/
+    bad_delta/double_or_halve)과 완전히 다른 형태로, 확률 없이 품목별로 고정된 특수
+    효과를 부여한다. 3종뿐이라 item.id로 직접 분기한다(악마의 씨앗을 double_or_halve
+    플래그로 특수 처리하는 것과 동일한 원칙 — 품목 수가 적을 때는 개별 분기가
+    카탈로그에 필드를 늘리는 것보다 명확하다). (텍스트, 호감도 델타, 갱신 후 호감도,
+    multiplier_eligible) 4-튜플을 반환해 handle()의 공용 후처리(알림 문구 등)와
+    형태를 맞춘다."""
+    if item.id == "treadmill_energy_drink":
+        result = await add_affection(user_id, 2, _METHOD, guild_id=guild_id)
+        # "그날 취침 30분 지연"의 그날은 이 슬롯이 있는 날의 자정(=다음 날 00:00)을
+        # 가리킨다 — events/scheduler.py::is_sleep_time()이 00:00~00:30 구간을 체크할
+        # 시점엔 current_dt.date()가 이미 다음 날이기 때문(mark_late_sleep 독스트링 참고).
+        tomorrow = datetime.now(timezone.utc).astimezone(KST).date() + timedelta(days=1)
+        await claim_sleep_delay(tomorrow.isoformat())
+        mark_late_sleep(for_date=tomorrow)
+        text = f"{item.name}... 오늘은 늦게 자야겠다!! _(신남)_"
+        return text, result["applied_amount"], result["new_affection"], True
+
+    if item.id == "memory_ade":
+        # 호감도 변화 없음, 대신 경험치 1~100 랜덤(우캡드, 하루 상한 없음 — 업적/이벤트
+        # xp와 동일한 원칙). 이 품목만 예외적으로 획득 경험치를 알린다(format_xp_notice
+        # 독스트링 참고 — 다른 곳에서는 XP 획득을 절대 안 보여준다).
+        xp_gain = random.randint(1, 100)
+        _, _, new_total_xp = await apply_xp_and_check_levelup(
+            user_id, xp_gain, guild_id=guild_id, return_totals=True
+        )
+        current_user = await get_user(user_id)
+        current_affection = current_user["affection"] if current_user is not None else 0
+        text = f"{item.name}... 뭔가 아련한 기분이 들어!! _(몽글)_" + format_xp_notice(xp_gain, new_total_xp)
+        return text, 0, current_affection, False
+
+    # h_potion — 즉시 호감도 변화 없음, 대신 24시간짜리 보호막(획득 x2 + 하락 차단)을
+    # 건다. 실제 배율/차단 로직은 add_affection/add_affection_uncapped RPC 내부에서
+    # affection_shield_until을 직접 읽어 처리한다(db/affection.py 참고) — 여기서는
+    # 만료 시각만 세팅하면 된다.
+    await set_affection_shield_until(user_id, datetime.now(timezone.utc) + timedelta(hours=24))
+    current_user = await get_user(user_id)
+    current_affection = current_user["affection"] if current_user is not None else 0
+    text = f"{item.name}... 왠지 모르게 마음이 몽글몽글해져!! _(수줍)_"
+    return text, 0, current_affection, False
 
 
 async def handle(user_id: int, snack_name: str, *, guild_id: int | None = None) -> str:
     slot = current_slot()
     if slot is None:
         return random.choice(_NOT_DESSERT_TIME_LINES)
+    # 이 슬롯이 오늘 "dessert"(간식)/"drink"(음료·포션) 중 무엇으로 확정됐는지 —
+    # 확정 안 됐으면 지금 50/50으로 굴려서 확정한다(2026-09-12, §24). 오픈 방송이
+    # 이미 먼저 확정해뒀을 확률이 높지만(cron이 슬롯 시작 시각에 발동), 멱등이라
+    # 순서가 어떻든 항상 같은 결과로 수렴한다.
+    slot_kind = await get_or_roll_slot_kind(slot)
 
     stats = await ensure_daily_stats(user_id)
     fed_today = dict(stats.get("dessert_fed_today") or {})
@@ -130,8 +232,14 @@ async def handle(user_id: int, snack_name: str, *, guild_id: int | None = None) 
         return random.choice(_ALREADY_FED_LINES)
 
     item = find_by_name(snack_name)
-    if item is None or item.kind != "snack":
+    if item is None:
         return random.choice(_NO_SNACK_LINES)
+    # 슬롯 배타적 급여(2026-09-12 사용자 확정) — 디저트 타임엔 간식만, 드링킹
+    # 타임엔 음료/포션만 급여 가능(교차 급여 차단).
+    if slot_kind == "dessert" and item.kind != "snack":
+        return random.choice(_WRONG_SLOT_KIND_LINES)
+    if slot_kind == "drink" and item.kind not in ("beverage", "potion"):
+        return random.choice(_WRONG_SLOT_KIND_LINES)
     if not await consume_snack(user_id, item.id):
         return random.choice(_NO_SNACK_LINES)
 
@@ -146,11 +254,15 @@ async def handle(user_id: int, snack_name: str, *, guild_id: int | None = None) 
     fed_today[slot] = item.id
     await increment_snacks_given(user_id)
     # 레벨/XP 시스템(2026-09-10) — "디저트 타임 이벤트" +10xp(슬롯당 1회 제한이 이미
-    # 있어 하루 최대 +30, 추가 상한 불필요).
+    # 있어 하루 최대 +30, 추가 상한 불필요). 드링킹 타임 급여도 동일하게 적용된다.
     await apply_xp_and_check_levelup(user_id, 10, guild_id=guild_id)
 
-    if isinstance(item, BlackMarketItem):
-        # 암시장 확률적 간식 — item.good_chance로 결과를 굴린다(2026-09-09 신규,
+    if isinstance(item, BlackMarketItem) and item.kind == "potion":
+        text, total_delta, current_affection, multiplier_eligible = await _handle_potion(
+            user_id, item, guild_id=guild_id
+        )
+    elif isinstance(item, BlackMarketItem):
+        # 암시장 확률적 간식(괴식) — item.good_chance로 결과를 굴린다(2026-09-09 신규,
         # 기본 50/50이지만 산딸기?는 25%로 예외). 악마의 씨앗(double_or_halve)만
         # 예외로, 고정 델타 대신 "지금 호감도의 2배" 또는 "지금 호감도의 절반으로
         # 감소"를 적용한다(최초 설계는 "0으로 리셋"이었으나 너무 가혹하다는 피드백으로
@@ -177,13 +289,15 @@ async def handle(user_id: int, snack_name: str, *, guild_id: int | None = None) 
         reaction = item.good_reaction if good else item.bad_reaction
         text = f"{item.name} 냠냠... {reaction}"
         multiplier_eligible = False
+        total_delta = result["applied_amount"]
+        current_affection = result["new_affection"]
     else:
         result = await add_affection(user_id, item.effect, _METHOD, guild_id=guild_id)
-        text = random.choice(_FEED_SUCCESS_LINES).format(snack=item.name)
+        success_lines = _FEED_SUCCESS_LINES if item.kind == "snack" else _DRINK_SUCCESS_LINES
+        text = random.choice(success_lines).format(snack=item.name)
         multiplier_eligible = True
-
-    total_delta = result["applied_amount"]
-    current_affection = result["new_affection"]
+        total_delta = result["applied_amount"]
+        current_affection = result["new_affection"]
 
     # 2026-09-10부로 업적 달성 알림은 award() 내부에서 별도 글로벌 방송으로 처리된다
     # (호감도 보너스도 폐지) — 여기서는 조건이 맞을 때 부여만 시도하고 인라인 문구는
@@ -191,7 +305,7 @@ async def handle(user_id: int, snack_name: str, *, guild_id: int | None = None) 
     if len({dessert_snack_id(v) for v in fed_today.values()}) == 3:
         await award_achievement(user_id, achievements.three_meals_a_day.ID, guild_id=guild_id)
 
-    if item.id == "premium_mealworm":
+    if item.id in _STRONGEST_SNACK_ITEM_IDS:
         await award_achievement(user_id, achievements.strongest_snack_ever.ID, guild_id=guild_id)
 
     if total_delta != 0:

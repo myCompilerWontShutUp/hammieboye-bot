@@ -26,11 +26,24 @@ class VendingItem:
 # 값(joke 품목 제외 — op 권한은 999,999,999 그대로 유지, 결제 자체를 안 해서 원래도
 # //100 환산이 안 쓰였다).
 ITEMS: tuple[VendingItem, ...] = (
-    VendingItem("sunflower_seed", "해바라기 씨", 5, "snack", 1, code="5zhssk4k"),
+    # 2026-09-12 사용자 지시로 3종 재조정 — 해바라기 씨 5->3코인(호감도 유지), 민들레 꽃
+    # 69->169코인(호감도 유지), 프리미엄 건조 밀웜 호감도 33->80(가격 유지). "드링킹
+    # 타임"(§24) 신설과 함께 이 조정된 가격/호감도를 그대로 미러링하는 "음료" 5종도
+    # 아래에 새로 추가한다.
+    VendingItem("sunflower_seed", "해바라기 씨", 3, "snack", 1, code="5zhssk4k"),
     VendingItem("almond", "아몬드", 22, "snack", 2, code="u0i0h6kd"),
-    VendingItem("dandelion", "민들레 꽃", 69, "snack", 5, code="b8g4js9u"),
+    VendingItem("dandelion", "민들레 꽃", 169, "snack", 5, code="b8g4js9u"),
     VendingItem("frozen_yolk", "동결된 노른자", 740, "snack", 19, code="z7fqtf3z"),
-    VendingItem("premium_mealworm", "프리미엄 건조 밀웜", 10_001, "snack", 33, code="mxb34cjm"),
+    VendingItem("premium_mealworm", "프리미엄 건조 밀웜", 10_001, "snack", 80, code="mxb34cjm"),
+    # "음료" 품목(2026-09-12 신규, §24) — "드링킹 타임" 슬롯에서만 급여 가능(디저트
+    # 타임 슬롯에서는 급여 불가). 위 간식 5종을 가격/호감도 그대로 1:1 미러링한다(효과
+    # 로직도 간식과 완전히 동일 — command/eat.py가 "snack"/"beverage" 둘 다 같은 방식
+    # 으로 처리, 문구 풀만 마신다는 어감으로 분리).
+    VendingItem("cool_water", "시원한 물", 3, "beverage", 1, code="14byw531"),
+    VendingItem("pumpkin_seed_latte", "호박씨 라떼", 22, "beverage", 2, code="0wopfkqo"),
+    VendingItem("cornflower_dew_tea", "수레국화 이슬 차", 169, "beverage", 5, code="sjbz5swq"),
+    VendingItem("soft_jelly_milk_tea", "말랑 젤리 밀크티", 740, "beverage", 19, code="wuwycxf9"),
+    VendingItem("golden_peanut_butter_shake", "황금 피넛 버터 쉐이크", 10_001, "beverage", 80, code="hk3110ti"),
     # "coin" 품목(2026-09-05, 舊 "capacity" — 동전 보유 상한 폐지와 함께 용도 전환)은
     # 이제 /동전의 기본 지급량(1개)에 더해지는 보너스를 늘린다. 2026-09-08 3종 -> 5종
     # 재편(舊 돼지 저금통 -> 쪼꼬미 금고 개명+재조정, 舊 햄미 계좌 개설 -> 햄미 볼주머니

@@ -64,6 +64,32 @@ SNACK_ITEMS: tuple[BlackMarketItem, ...] = (
         code="ob173yyt",
     ),
 )
+# "포션" 카테고리(2026-09-12 신규, §24) — 기존 "간식"(good/bad 확률형)과 완전히 다른
+# 형태로, 확률 없이 햄미에게 하루/24시간짜리 고정 특수 효과를 부여한다. good_delta/
+# bad_delta/double_or_halve 계열은 안 쓰고 description만 채운다(_item_block()의 else
+# 분기가 이미 description을 그대로 렌더링). 실제 효과는 command/eat.py::_handle_potion()이
+# item.id별로 하드코딩 분기한다 — "드링킹 타임" 슬롯에서만 /사용으로 급여 가능(디저트
+# 타임 슬롯에서는 급여 불가).
+POTION_ITEMS: tuple[BlackMarketItem, ...] = (
+    BlackMarketItem(
+        "treadmill_energy_drink", "쳇바퀴 에너지 드링크", 27, "potion",
+        description="먹이면 호감도 +2를 주고, 그날 햄미의 취침 시각을 30분 늦춥니다"
+        "(하루 최대 1번만 적용, 여러 명이 줘도 30분만 늦춰집니다).",
+        code="wjxhkm1u",
+    ),
+    BlackMarketItem(
+        "memory_ade", "추억이 담긴 에이드", 1_580, "potion",
+        description="호감도 변화는 없지만 경험치 1~100을 무작위로 지급합니다"
+        "(이 아이템만 예외적으로 획득한 경험치를 알려줍니다).",
+        code="f1nog458",
+    ),
+    BlackMarketItem(
+        "h_potion", "H미약", 3_000, "potion",
+        description="즉시 효과는 없지만, 준 시점부터 24시간 동안 그 사람이 얻는 모든 "
+        "호감도가 2배가 되고 호감도가 전혀 떨어지지 않습니다.",
+        code="cylm75ly",
+    ),
+)
 # "도구" 카테고리(2026-09-08 신규) — 금서/햄미 일정표는 command/forbidden_book.py·
 # command/hammie_schedule.py가 각자 전용 흐름으로 처리하고, 여기 price/name만
 # 카탈로그 진입점으로 쓰인다. 관리자 권한은 순수 장난 품목(is_joke=True).
@@ -84,6 +110,6 @@ TOOL_ITEMS: tuple[BlackMarketItem, ...] = (
     ),
 )
 
-ITEMS: tuple[BlackMarketItem, ...] = SNACK_ITEMS + TOOL_ITEMS
+ITEMS: tuple[BlackMarketItem, ...] = SNACK_ITEMS + POTION_ITEMS + TOOL_ITEMS
 BY_ID: dict[str, BlackMarketItem] = {item.id: item for item in ITEMS}
 BY_NAME: dict[str, BlackMarketItem] = {item.name: item for item in ITEMS}

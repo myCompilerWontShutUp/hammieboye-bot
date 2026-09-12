@@ -60,6 +60,20 @@ async def set_coin_cooldown(user_id: int, until: datetime) -> dict:
     return rows[0]
 
 
+async def set_affection_shield_until(user_id: int, until: datetime) -> dict:
+    """H미약(암시장 포션, §24) 전용 — 24시간 호감도 보호막 만료 시각을 그냥 덮어쓴다
+    (set_plastic_cooldown/set_coin_cooldown과 동일한 패턴). 재급여 시 TOCTOU를 걱정할
+    필요가 없다 — "덮어써서 24시간 연장"이 곧 의도된 동작이라 조건부 UPDATE(RPC) 없이
+    단순 UPDATE로 충분하다. 실제 하락 차단/획득 2배 로직은 add_affection/
+    add_affection_uncapped RPC 내부(supabase/schema.sql)에서 이 컬럼을 직접 읽는다."""
+    rows = await update(
+        "users",
+        {"user_id": f"eq.{user_id}"},
+        {"affection_shield_until": until.isoformat()},
+    )
+    return rows[0]
+
+
 async def claim_coin_cooldown(user_id: int, until: datetime) -> bool:
     """쿨타임이 지금 끝나 있을 때(NULL 또는 만료)만 원자적으로 새 쿨타임을 설정한다
     (/동전의 쿨타임 확인+설정 TOCTOU를 조건부 UPDATE로 보장). 실패(False)면 아직 쿨타임

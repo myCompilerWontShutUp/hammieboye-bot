@@ -53,10 +53,12 @@ async def handle(interaction: discord.Interaction, user_id: int, item_name: str)
             await interaction.edit_original_response(content=result)
         return
 
-    # 그 외(간식)는 舊 /먹어와 동일하게 공개 응답 — 자판기/암시장 카탈로그 어느
-    # 쪽이든 command/eat.py::handle()이 이미 둘 다 조회한다.
+    # 그 외(간식/음료/포션)는 舊 /먹어와 동일하게 공개 응답 — 자판기/암시장 카탈로그
+    # 어느 쪽이든 command/eat.py::handle()이 이미 둘 다 조회한다. 실제 디저트/드링킹
+    # 타임 슬롯 유효성 검사는 전부 eat.py::handle()에 위임한다(2026-09-12 "beverage"/
+    # "potion" kind 추가, §24).
     await interaction.response.defer()
-    if item is None or item.kind != "snack":
+    if item is None or item.kind not in ("snack", "beverage", "potion"):
         await interaction.edit_original_response(content=_UNUSABLE_ITEM_MESSAGE)
         return
     guild_id = interaction.guild.id if interaction.guild else None

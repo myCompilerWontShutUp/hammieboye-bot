@@ -331,21 +331,30 @@ INSUFFICIENT_FUNDS_LINES = (
 )
 
 
-def format_coin_notice(delta: int, new_coins: int, *, bonus_label: str | None = None) -> str:
+def format_coin_notice(
+    delta: int, new_coins: int, *, multiplier: int = 1, bonus_reason: str | None = None
+) -> str:
     """동전 변화량 알림 — format_affection_notice(db/affection.py)와 동일한 원칙(델타+
     변화 전후 값)을 동전에 적용한 버전. /동전·/내기·/도박이 공유. delta==0이면 빈
     문자열(호출부가 그냥 이어 붙이면 되게). 2026-09-06부터 "(현재 N)" 대신
-    "(전 → 후)"로 보여준다. bonus_label(2026-09-10 신규, 예: "x2배 (동전 행운
-    당첨)")을 넘기면 델타 뒤에 그대로 붙인다 — /동전의 2배/5배 보너스처럼 델타
-    자체에서 배율을 역산하기 어려운 경우(날짜 배율과 중첩될 수 있어서) 호출부가
-    이미 아는 배율을 직접 표시 문구로 넘기게 한다(호감도 쪽 날짜 배율 분해와
-    달리 델타를 나눠서 추정하지 않음)."""
+    "(전 → 후)"로 보여준다.
+
+    multiplier(2026-09-12부로 호감도와 동일하게 "기본값 x 배수" 형태로 분해 —
+    舊에는 이미 배율이 곱해진 델타 총합 뒤에 "x5배 (동전 초대박 당첨)" 같은
+    사전 조합 문자열을 그냥 붙이기만 해서, 사용자가 실제로 보는 게 호감도의
+    "10 x 2배 (주말 이벤트)" 분해 형식과 달라 보인다는 지적이 있었다) > 1이고
+    bonus_reason이 있으면 "동전 {델타//배수} x {배수}배 ({사유}) (전 → 후)"로
+    분해해서 보여준다 — /동전의 배율은 (기본지급+coin_grant_bonus) x 배율로
+    계산돼 델타가 항상 배수로 정확히 나누어떨어지므로(날짜 배율이 추가로 곱해져도
+    정수 배수라 마찬가지) 호감도처럼 나머지 걱정 없이 안전하게 역산 가능하다."""
     if delta == 0:
         return ""
     sign = "+" if delta > 0 else ""
     before = new_coins - delta
-    suffix = f" {bonus_label}" if bonus_label else ""
-    return f"\n🪙 동전 {sign}{delta}{suffix} ({before} → {new_coins})"
+    if multiplier > 1 and bonus_reason and delta % multiplier == 0:
+        base = delta // multiplier
+        return f"\n🪙 동전 {base} x {multiplier}배 ({bonus_reason}) ({before} → {new_coins})"
+    return f"\n🪙 동전 {sign}{delta} ({before} → {new_coins})"
 
 
 # 배팅 정산 임베드(build_bet_receipt_embed) 전용 색 — /내기·/도박 6개 게임이 전부
