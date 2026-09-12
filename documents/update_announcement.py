@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.5.4",
-        commit_hash="PENDING",
+        commit_hash="dfb7cdd",
         date="2026-09-13",
         changes=(
             "`/암시장`의 쳇바퀴 에너지 드링크·추억이 담긴 에이드·H미약 설명이 더 "
