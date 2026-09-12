@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.5.1",
-        commit_hash="429e6f0",
+        commit_hash="c44ac3f",
         date="2026-09-12",
         changes=(
             "하루 세 번의 간식 시간 중 일부가 무작위로 음료를 먹이는 시간으로 바뀌는 "
@@ -46,6 +46,8 @@ ENTRIES: tuple[UpdateEntry, ...] = (
             "`/자판기`의 해바라기 씨 가격이 낮아지고, 민들레 꽃 가격과 프리미엄 건조 "
             "밀웜의 효과가 조정되었습니다.",
             "특정 전설 업적을 얻을 수 있는 새로운 방법이 생겼습니다.",
+            "`/동전`이 특별한 날(주말·기념일·생일) 배율만 적용됐을 때 그 이유가 "
+            "표시되지 않던 문제가 수정되었습니다.",
         ),
     ),
     UpdateEntry(

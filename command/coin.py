@@ -7,6 +7,8 @@ from db.affection import add_affection, format_affection_notice
 from db.daily_stats import claim_coin_daily_use, ensure_daily_stats, update_daily_stats
 from db.users import claim_coin_cooldown, get_user
 from db.wallet import add_coins
+from events.scheduler import KST
+from events.special_days import get_event_label, get_multiplier
 
 # 성공 시엔 쿨타임이 흐르지 않는 /페트병과 달리, /동전은 호출할 때마다 무조건 쿨타임이
 # 시작된다(실패 개념 자체가 없음 — 매번 지급). 10분이라 /페트병(30초)보다 길다
@@ -286,18 +288,27 @@ async def handle(user_id: int) -> str:
     # 그다음 구간이면 2배, 나머지는 평소 지급(코드 상단 주석 참고).
     roll = random.random()
     if roll < level.quintuple_drop_chance:
-        multiplier, bonus_reason, text_pool = _SUPER_BONUS_MULTIPLIER, "초대박 당첨", _SUPER_BONUS_GRANT_MESSAGES
+        drop_multiplier, bonus_reason, text_pool = _SUPER_BONUS_MULTIPLIER, "초대박 당첨", _SUPER_BONUS_GRANT_MESSAGES
     elif roll < level.quintuple_drop_chance + level.double_drop_chance:
-        multiplier, bonus_reason, text_pool = _BONUS_MULTIPLIER, "대박 당첨", _BONUS_GRANT_MESSAGES
+        drop_multiplier, bonus_reason, text_pool = _BONUS_MULTIPLIER, "대박 당첨", _BONUS_GRANT_MESSAGES
     else:
-        multiplier, bonus_reason, text_pool = 1, None, _GRANT_MESSAGES
-    amount = base_amount * multiplier
+        drop_multiplier, bonus_reason, text_pool = 1, None, _GRANT_MESSAGES
+    amount = base_amount * drop_multiplier
     result = await add_coins(user_id, amount, method=_METHOD, apply_day_multiplier=True)
 
+    # add_coins가 apply_day_multiplier=True로 오늘의 주말/기념일/생일 배율(§3-6)을
+    # 내부에서 한 번 더 곱해서 반영한다 — 알림 문구가 그 배율까지 정확히 설명하려면
+    # 여기서도 같은 날짜로 동일한 배율을 다시 계산해 표시용 factors에 넣어야 한다
+    # (2026-09-12 발견 — 舊에는 드롭 보너스 배율만 표시에 반영해서, 주말인데 드롭
+    # 보너스가 안 터진 경우 "기본값의 2배가 아무 설명 없이" 들어오는 것처럼 보였다).
+    today = datetime.now(timezone.utc).astimezone(KST).date()
+    day_multiplier = get_multiplier(today)
+    factors = [(drop_multiplier, bonus_reason or "")]
+    if day_multiplier > 1:
+        factors.append((day_multiplier, get_event_label(today)))
+
     text = random.choice(text_pool)
-    text += format_coin_notice(
-        result["applied_amount"], result["new_coins"], multiplier=multiplier, bonus_reason=bonus_reason
-    )
+    text += format_coin_notice(result["applied_amount"], result["new_coins"], factors=factors)
     if result["achievement_notice"]:
         text += f"\n{result['achievement_notice']}"
     return text

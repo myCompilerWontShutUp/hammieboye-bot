@@ -332,28 +332,37 @@ INSUFFICIENT_FUNDS_LINES = (
 
 
 def format_coin_notice(
-    delta: int, new_coins: int, *, multiplier: int = 1, bonus_reason: str | None = None
+    delta: int, new_coins: int, *, factors: list[tuple[int, str]] | None = None
 ) -> str:
     """동전 변화량 알림 — format_affection_notice(db/affection.py)와 동일한 원칙(델타+
     변화 전후 값)을 동전에 적용한 버전. /동전·/내기·/도박이 공유. delta==0이면 빈
     문자열(호출부가 그냥 이어 붙이면 되게). 2026-09-06부터 "(현재 N)" 대신
     "(전 → 후)"로 보여준다.
 
-    multiplier(2026-09-12부로 호감도와 동일하게 "기본값 x 배수" 형태로 분해 —
-    舊에는 이미 배율이 곱해진 델타 총합 뒤에 "x5배 (동전 초대박 당첨)" 같은
-    사전 조합 문자열을 그냥 붙이기만 해서, 사용자가 실제로 보는 게 호감도의
-    "10 x 2배 (주말 이벤트)" 분해 형식과 달라 보인다는 지적이 있었다) > 1이고
-    bonus_reason이 있으면 "동전 {델타//배수} x {배수}배 ({사유}) (전 → 후)"로
-    분해해서 보여준다 — /동전의 배율은 (기본지급+coin_grant_bonus) x 배율로
-    계산돼 델타가 항상 배수로 정확히 나누어떨어지므로(날짜 배율이 추가로 곱해져도
-    정수 배수라 마찬가지) 호감도처럼 나머지 걱정 없이 안전하게 역산 가능하다."""
+    factors(2026-09-12 신규, 호감도와 동일하게 "기본값 x 배수" 형태로 분해)는
+    [(배수, 사유), ...] 목록 — /동전은 서로 독립적인 배율 두 개(레벨별 x2/x5 확률
+    보너스, 날짜 타입 x2/x3 주말·기념일 배율)가 동시에 곱해질 수 있어서 리스트로
+    받는다. **舊 버그**: 처음엔 배율 인자를 하나만 받아서(드롭 보너스만) 날짜 배율이
+    함께 곱해진 실제 delta를 그 하나의 배수로 역산했다 — 나누어떨어지긴 하지만
+    "기본값"으로 표시되는 숫자가 실제로는 이미 날짜 배율까지 곱해진 값이라, 예를
+    들어 드롭 보너스 없이 주말이라서 2배가 된 경우 "동전 +N"으로 아무 설명 없이
+    표시돼 사용자가 "왜 항상 기본값의 2배가 들어오지?"라고 오해하는 문제가 있었다.
+    이제 모든 활성 배율(배수>1인 것만)을 하나로 묶어 "동전 {진짜 기본값} x {총
+    배수}배 ({사유1} + {사유2}) (전 → 후)"로 보여준다 — 총 배수로 나눠도 항상 정수인
+    이유는 각 배율이 정수이고 최초 amount(기본지급+coin_grant_bonus)에 순서대로
+    곱해지기만 하기 때문."""
     if delta == 0:
         return ""
     sign = "+" if delta > 0 else ""
     before = new_coins - delta
-    if multiplier > 1 and bonus_reason and delta % multiplier == 0:
-        base = delta // multiplier
-        return f"\n🪙 동전 {base} x {multiplier}배 ({bonus_reason}) ({before} → {new_coins})"
+    active = [(m, r) for m, r in (factors or []) if m > 1]
+    total_multiplier = 1
+    for m, _ in active:
+        total_multiplier *= m
+    if total_multiplier > 1 and delta % total_multiplier == 0:
+        base = delta // total_multiplier
+        reason_label = " + ".join(r for _, r in active)
+        return f"\n🪙 동전 {base} x {total_multiplier}배 ({reason_label}) ({before} → {new_coins})"
     return f"\n🪙 동전 {sign}{delta} ({before} → {new_coins})"
 
 
