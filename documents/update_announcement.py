@@ -34,7 +34,7 @@ class UpdateEntry:
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
         version="1.5.3",
-        commit_hash="PENDING",
+        commit_hash="89fb467",
         date="2026-09-13",
         changes=(
             "`/도박`의 더블오어낫띵에서 판돈(올인/하프)을 고르는 방식이 버튼에서 "
