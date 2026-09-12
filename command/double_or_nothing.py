@@ -14,10 +14,8 @@ from typing import Awaitable, Callable
 
 import discord
 
-from core.base import EphemeralAutoDeleteView
 from command.economy_common import (
     INSUFFICIENT_FUNDS_LINES,
-    TIMEOUT_SECONDS,
     ReplayView,
     build_bet_receipt_embed,
     claim_active_or_reject,
@@ -112,8 +110,7 @@ _CASHOUT_LINES = (
 DOUBLE_OR_NOTHING_RULE_TEXT = (
     "📦 더블오어낫띵\n\n"
     "- 시작 판돈은 직접 입력하지 않고 \"올인\"(보유 동전 전부) 또는 \"하프\"(절반, "
-    "홀수면 올림) 중 하나를 선택합니다(둘의 금액이 같으면 하프는 선택지에서 "
-    "빠집니다).\n"
+    "홀수면 올림) 중 하나를 선택합니다.\n"
     "- 상자를 열면 50% 확률로 판돈이 2배가 되고, 50% 확률로 폭탄을 만나 판돈을 "
     "전부 잃습니다.\n"
     "- 판돈이 2배가 되면 \"한 판 더\"로 계속 도전하거나 \"여기까지\"로 그 자리에서 "
@@ -125,47 +122,41 @@ DOUBLE_OR_NOTHING_RULE_TEXT = (
 )
 
 
-class AllInHalfView(EphemeralAutoDeleteView):
-    """더블오어낫띵 전용 시작 판돈 선택 뷰(2026-09-11 — 舊 체크박스 2개짜리 모달
-    `AllInHalfModal`을 버튼 2개로 교체, 사용자 지시: "둘 중 하나만 누를 수 있게",
-    "경마처럼"). `command/horse_race.py::_PredictionView`의 등수 예측 버튼과 동일한
-    원칙 — 버튼 클릭 자체가 곧 선택이라, 모달의 "체크박스 둘 다 체크"/"둘 다
-    미체크" 같은 무효 상태가 애초에 나올 수 없다(단일 인터랙션 = 단일 선택이라
-    제출 후 검증이 더 이상 필요 없다).
-
-    하프는 이제 항상 표시한다(2026-09-11 사용자 지시) — 舊에는 올림 계산 특성상
-    하프와 올인 금액이 같아지는 보유 0~1코인 구간에서 하프 버튼 자체를 숨겼었다.
-    하프 금액은 여전히 내림이 아니라 **올림**으로 계산한다(2026-09-11 사용자
-    지시) — 내림이면 보유 동전이 1개일 때 하프가 0개가 되어 아무것도 못 거는
-    상태가 생긴다."""
+class AllInHalfModal(discord.ui.Modal):
+    """더블오어낫띵 시작 판돈 선택 모달(2026-09-12 — 舊 버튼 뷰 `AllInHalfView`를
+    다시 모달로 되돌림, 사용자 지시: "/도박의 다른 게임(슬롯머신·승부예측)은
+    전부 모달→시작 구조인데 더블오어낫띵만 버튼이라 일관성이 없다"). `RadioGroup`
+    (§26의 구매 수량 모달·`_RankPickModal`과 동일한 컴포넌트)으로 "올인"/"하프"
+    중 정확히 하나만 고르게 해, 그 이전(2026-09-09) 체크박스 2개짜리 모달 시절의
+    무효 상태(둘 다 체크/둘 다 미체크)는 재발하지 않는다 — 옵션의 `value`를
+    금액이 아니라 `"all_in"`/`"half"` 고정 문자열로 둬서, 올인과 하프 금액이
+    우연히 같아져도(보유 0~1코인 구간) 두 옵션 모두 항상 그대로 보여줄 수 있다
+    (舊 버튼 시절 "하프도 언제나 표시" 요구사항 그대로 유지). 하프 금액은 여전히
+    내림이 아니라 **올림**으로 계산한다 — 내림이면 보유 동전이 1개일 때 하프가
+    0개가 되어 아무것도 못 거는 상태가 생긴다."""
 
     def __init__(
         self, *, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
     ) -> None:
-        super().__init__(timeout=TIMEOUT_SECONDS)
-        self._balance = balance
+        super().__init__(title="더블오어낫띵 판돈 선택")
+        self._on_valid = on_valid
+        self._all_in_amount = balance
         # 올림 나눗셈 — balance가 음수일 일이 없어(잔액) 이 형태로 충분하다.
         self._half_amount = (balance + 1) // 2
-        self._on_valid = on_valid
-        self.all_in.label = f"올인 ({balance:,}코인)"
-        self.half.label = f"하프 ({self._half_amount:,}코인)"
+        self._radio = discord.ui.RadioGroup(
+            options=[
+                discord.RadioGroupOption(label=f"올인 ({self._all_in_amount:,}코인)", value="all_in"),
+                discord.RadioGroupOption(label=f"하프 ({self._half_amount:,}코인)", value="half"),
+            ]
+        )
+        self.add_item(discord.ui.Label(text="시작 판돈을 골라줘!!", component=self._radio))
 
-    async def _choose(self, interaction: discord.Interaction, amount: int) -> None:
-        if not await reject_if_already_resolved(self, interaction):
-            return
-        self.stop()
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        amount = self._all_in_amount if self._radio.value == "all_in" else self._half_amount
         if amount < 1:
             await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
             return
         await self._on_valid(interaction, amount)
-
-    @discord.ui.button(label="올인", style=discord.ButtonStyle.danger)
-    async def all_in(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._choose(interaction, self._balance)
-
-    @discord.ui.button(label="하프", style=discord.ButtonStyle.secondary)
-    async def half(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._choose(interaction, self._half_amount)
 
 
 def _build_replay_view(user_id: int) -> ReplayView:
@@ -186,13 +177,10 @@ def _build_replay_view(user_id: int) -> ReplayView:
     async def _open_modal(
         interaction: discord.Interaction, balance: int, on_valid: Callable[[discord.Interaction, int], Awaitable[None]]
     ) -> None:
-        # 舊에는 모달을 열었지만(AllInHalfModal), 이제는 버튼 뷰를 새 ephemeral
-        # 메시지로 보낸다(2026-09-11) — "다시하기"는 공개 메시지의 버튼이라, 모달과
-        # 동일한 사생활 보장을 위해 뷰 자체를 이 유저에게만 보이는 새 메시지로 연다
-        # (공개 메시지를 그대로 편집하면 모두에게 선택 버튼이 보여버린다).
-        view = AllInHalfView(balance=balance, on_valid=on_valid)
-        await interaction.response.send_message(view=view, ephemeral=True)
-        view.interaction = interaction
+        # 2026-09-12부로 다른 두 게임(슬롯머신/승부예측)의 다시하기와 동일하게
+        # 모달을 직접 연다 — 모달은 원본 인터랙션(다시하기 버튼 클릭)에 대한 첫
+        # 응답으로 자연스럽게 열려서 사생활 보장(본인만 봄)이 그냥 따라온다.
+        await interaction.response.send_modal(AllInHalfModal(balance=balance, on_valid=on_valid))
 
     return ReplayView(user_id, _OWN_COMMAND, _on_replay, open_modal=_open_modal)
 
@@ -379,7 +367,7 @@ class _DoubleOrNothingChoiceView(discord.ui.View):
 async def start_round(
     interaction: discord.Interaction, user_id: int, bet: int, *, is_replay: bool = False
 ) -> None:
-    """모달에서 유효한 배팅액을 받은 뒤 첫 상자를 새 공개 메시지로 연다 —
+    """AllInHalfModal에서 유효한 배팅액을 받은 뒤 첫 상자를 새 공개 메시지로 연다 —
     command/slot.py::_GambleSelectView의 "더블오어낫띵" 버튼과 다시하기가 공유하는
     진입점.
 
@@ -391,9 +379,9 @@ async def start_round(
 
     # bet.py::_start_round와 동일한 이유(2026-09-12) — spend_coins/get_user 등 여러
     # Supabase 왕복이 3초 응답 제한을 넘겨 "Unknown interaction"으로 이어질 수 있어
-    # 느린 작업 전에 먼저 defer로 응답을 확정한다. 이 함수는 모달(다시하기)뿐 아니라
-    # AllInHalfView 버튼 클릭(신규 진입)에서도 호출되는데, 버튼 인터랙션도 동일한
-    # 3초 제한을 받으므로 원칙은 같다.
+    # 느린 작업 전에 먼저 defer로 응답을 확정한다. 이 함수는 신규 진입(AllInHalfModal
+    # 제출)·다시하기(같은 모달 재사용) 양쪽에서 호출되는데, 모두 모달 제출 인터랙션이라
+    # 동일한 3초 제한을 받으므로 원칙은 같다.
     await interaction.response.defer(ephemeral=True)
 
     if not await spend_coins(user_id, bet, "double_or_nothing_stake"):

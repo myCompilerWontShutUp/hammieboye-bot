@@ -33,6 +33,15 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.5.3",
+        commit_hash="PENDING",
+        date="2026-09-13",
+        changes=(
+            "`/도박`의 더블오어낫띵에서 판돈(올인/하프)을 고르는 방식이 버튼에서 "
+            "다른 게임과 같은 팝업창(모달) 방식으로 변경되었습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.5.2",
         commit_hash="bc0930b",
         date="2026-09-12",
