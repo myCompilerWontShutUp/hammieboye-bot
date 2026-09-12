@@ -26,7 +26,7 @@ from db.users import get_user
 from db.wallet import add_coins, spend_coins
 from events.scheduler import KST, format_footer_time
 
-# CTA 문구("너도 {own_command}로 직접 해볼 수 있어!!")와 ReplayView에 그대로 넘긴다 —
+# CTA 문구("너도 `{own_command}`로 직접 해볼 수 있어!!")와 ReplayView에 그대로 넘긴다 —
 # economy_common.reject_if_wrong_user_with_cta/ReplayView가 /내기·/도박 공용이라 자기
 # 커맨드 이름을 매번 받는다.
 _OWN_COMMAND = "/내기"

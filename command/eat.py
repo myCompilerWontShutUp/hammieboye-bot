@@ -170,6 +170,77 @@ _WRONG_SLOT_KIND_LINES = (
     "그건 다음 시간에!! _(끄덕)_",
 )
 
+# 포션 3종의 급여 반응 문구(2026-09-13) — 원래 각각 하드코딩된 문장 1개씩이었는데,
+# 다른 모든 반응 문구(_FEED_SUCCESS_LINES 등)와 달리 유일하게 고정 메시지였다.
+# 다른 풀들과 동일하게 20개씩으로 맞췄다 — 효과 설명(호감도 변화 없음/즉시 효과
+# 없음 등 부가 시스템 설명)은 넣지 않고 그 순간의 반응만 담는다.
+_TREADMILL_ENERGY_DRINK_LINES = (
+    "{item} 원샷!! 오늘 밤은 잠이 안 올 것 같아!! _(신남)_",
+    "우와, {item} 마시니까 완전 힘이 나!! _(들뜸)_",
+    "{item} 짜릿해!! 밤새 쳇바퀴 돌릴 기세야!! _(흥분)_",
+    "{item} 마시니까 잠이 확 깨!! _(신남)_",
+    "{item} 최고!! 왠지 오늘 밤은 길어질 것 같아!! _(들뜸)_",
+    "짜릿짜릿, {item} 덕분에 기운이 넘쳐!! _(흥분)_",
+    "{item} 마시고 나니까 눈이 말똥말똥해!! _(신남)_",
+    "{item} 덕분에 오늘 밤 왠지 쌩쌩할 것 같아!! _(들뜸)_",
+    "{item} 한 모금에 잠이 싹 달아났어!! _(놀람)_",
+    "{item}의 에너지, 오늘 밤새 갈 수 있을 것 같아!! _(자신감)_",
+    "{item} 마시니까 완전 쌩쌩해졌어!! _(신남)_",
+    "{item} 덕분에 오늘은 평소보다 늦게까지 놀아야겠다!! _(들뜸)_",
+    "{item} 정말 시원하고 짜릿해!! _(흥분)_",
+    "{item} 마시니까 졸릴 틈이 없어!! _(신남)_",
+    "{item} 최고!! 밤이 더 길게 느껴져!! _(들뜸)_",
+    "짜릿한 {item}, 오늘 밤은 특별할 것 같아!! _(신남)_",
+    "{item} 마시니까 눈이 번쩍 뜨여!! _(놀람)_",
+    "{item}이 준 이 힘, 오늘 밤 늦게까지 갈 수 있을 것 같아!! _(자신감)_",
+    "{item} 원기 충전 완료!! _(들뜸)_",
+    "{item} 짜릿해!! 오늘 밤은 잠이 안 오겠다!! _(흥분)_",
+)
+_MEMORY_ADE_LINES = (
+    "{item} 한 모금... 왠지 아련한 기분이 들어!! _(몽글)_",
+    "{item} 마시니까 옛날 생각이 스쳐가!! _(아련)_",
+    "이상하게 {item} 마시니 마음이 몽글몽글해져!! _(몽글)_",
+    "{item}... 뭔가 그리운 느낌이야!! _(아련)_",
+    "{item} 한 모금에 추억이 스쳐지나가!! _(몽글)_",
+    "왠지 {item} 마시니까 코끝이 찡해!! _(아련)_",
+    "{item}... 알 수 없는 그리움이 몰려와!! _(몽글)_",
+    "{item} 마시니까 마음 한켠이 따뜻해져!! _(몽글)_",
+    "{item} 마시니 뭔가 떠오를 듯 말 듯해!! _(아련)_",
+    "{item}... 옛 기억이 아른거리는 것 같아!! _(몽글)_",
+    "왠지 모르게 {item} 마시니 눈시울이 뜨거워져!! _(아련)_",
+    "{item} 한 모금, 마음이 살짝 몽글해졌어!! _(몽글)_",
+    "이상하게 {item} 마시니까 옛 생각이 나!! _(아련)_",
+    "{item}... 뭔가 소중한 걸 떠올린 기분이야!! _(몽글)_",
+    "{item} 마시니까 마음이 몽글몽글, 따뜻해져!! _(몽글)_",
+    "왠지 {item} 마시고 나니 그리운 마음이 들어!! _(아련)_",
+    "{item}... 알 수 없이 아련한 기분이 스쳐가!! _(몽글)_",
+    "{item} 마시니까 마음이 몽글몽글해진 것 같아!! _(몽글)_",
+    "{item} 한 모금에 뭔가 뭉클해져!! _(아련)_",
+    "{item}... 왠지 마음이 몽글몽글, 아련해져!! _(몽글)_",
+)
+_H_POTION_LINES = (
+    "{item}... 왠지 모르게 마음이 몽글몽글해져!! _(수줍)_",
+    "{item} 마시니까 기분이 몽글몽글, 포근해져!! _(수줍)_",
+    "이상하게 {item} 마시고 나니 마음이 따뜻해져!! _(수줍)_",
+    "{item}... 왠지 모든 게 다 좋게 느껴져!! _(몽글)_",
+    "{item} 한 모금에 마음이 사르르 녹아!! _(수줍)_",
+    "왠지 {item} 마시니까 세상이 다정하게 느껴져!! _(몽글)_",
+    "{item}... 마음이 몽글몽글, 사랑스러워져!! _(수줍)_",
+    "{item} 마시니까 왠지 다 이해가 되는 기분이야!! _(몽글)_",
+    "{item} 마시고 나니 마음이 몽글몽글 편안해져!! _(수줍)_",
+    "{item}... 왠지 모르게 포근한 기분이 들어!! _(몽글)_",
+    "이상하게 {item} 마시니까 마음이 몽글해졌어!! _(수줍)_",
+    "{item} 한 모금에 왠지 다 사랑스러워 보여!! _(몽글)_",
+    "{item}... 마음 한켠이 몽글몽글 따뜻해져!! _(수줍)_",
+    "왠지 {item} 마시니까 기분이 몽글몽글해!! _(몽글)_",
+    "{item} 마시고 나니 세상이 다 예뻐 보여!! _(수줍)_",
+    "{item}... 왠지 모르게 마음이 사르르 녹아내려!! _(몽글)_",
+    "{item} 마시니까 마음이 몽글몽글, 몽실몽실해져!! _(수줍)_",
+    "{item} 한 모금에 왠지 다 괜찮게 느껴져!! _(몽글)_",
+    "{item}... 마음이 몽글몽글, 왠지 다정해져!! _(수줍)_",
+    "{item} 마시니까 왠지 모두가 좋아 보여!! _(몽글)_",
+)
+
 
 async def _handle_potion(
     user_id: int, item: BlackMarketItem, *, guild_id: int | None = None
@@ -189,7 +260,7 @@ async def _handle_potion(
         tomorrow = datetime.now(timezone.utc).astimezone(KST).date() + timedelta(days=1)
         await claim_sleep_delay(tomorrow.isoformat())
         mark_late_sleep(for_date=tomorrow)
-        text = f"{item.name}... 오늘은 늦게 자야겠다!! _(신남)_"
+        text = random.choice(_TREADMILL_ENERGY_DRINK_LINES).format(item=item.name)
         return text, result["applied_amount"], result["new_affection"], True
 
     if item.id == "memory_ade":
@@ -202,7 +273,7 @@ async def _handle_potion(
         )
         current_user = await get_user(user_id)
         current_affection = current_user["affection"] if current_user is not None else 0
-        text = f"{item.name}... 뭔가 아련한 기분이 들어!! _(몽글)_" + format_xp_notice(xp_gain, new_total_xp)
+        text = random.choice(_MEMORY_ADE_LINES).format(item=item.name) + format_xp_notice(xp_gain, new_total_xp)
         return text, 0, current_affection, False
 
     # h_potion — 즉시 호감도 변화 없음, 대신 24시간짜리 보호막(획득 x2 + 하락 차단)을
@@ -212,7 +283,7 @@ async def _handle_potion(
     await set_affection_shield_until(user_id, datetime.now(timezone.utc) + timedelta(hours=24))
     current_user = await get_user(user_id)
     current_affection = current_user["affection"] if current_user is not None else 0
-    text = f"{item.name}... 왠지 모르게 마음이 몽글몽글해져!! _(수줍)_"
+    text = random.choice(_H_POTION_LINES).format(item=item.name)
     return text, 0, current_affection, False
 
 

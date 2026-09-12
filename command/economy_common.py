@@ -90,16 +90,16 @@ def mark_inactive(user_id: int) -> None:
 
 
 _ALREADY_PLAYING_LINES = (
-    "잠깐, 아직 {command}{josa} 안 끝났어!! 그것부터 마무리해줘!! _(단호)_",
-    "어라, {command} 진행 중이잖아!! 다 끝내고 다시 와줘!! _(갸웃)_",
-    "지금 {command} 하고 있는 거 안 잊었지?? 그거부터!! _(웃음)_",
-    "판이 아직 안 끝났어!! {command} 먼저 마무리해줘!! _(단호)_",
-    "동시에 두 판은 안 돼!! {command}{josa} 끝나야 새로 할 수 있어!! _(장난)_",
-    "{command} 판이 아직 진행 중이야!! 거기부터 끝내줘!! _(안내)_",
-    "이미 시작한 {command}{josa} 있잖아!! 그거 먼저!! _(단호)_",
-    "하나씩 하자!! {command} 마무리하고 다시 불러줘!! _(웃음)_",
-    "아직 {command} 결과가 안 나왔어!! 기다려줘!! _(안내)_",
-    "지금 진행 중인 {command}{josa} 있어서 못 열어줘!! _(미안)_",
+    "잠깐, 아직 `{command}`{josa} 안 끝났어!! 그것부터 마무리해줘!! _(단호)_",
+    "어라, `{command}` 진행 중이잖아!! 다 끝내고 다시 와줘!! _(갸웃)_",
+    "지금 `{command}` 하고 있는 거 안 잊었지?? 그거부터!! _(웃음)_",
+    "판이 아직 안 끝났어!! `{command}` 먼저 마무리해줘!! _(단호)_",
+    "동시에 두 판은 안 돼!! `{command}`{josa} 끝나야 새로 할 수 있어!! _(장난)_",
+    "`{command}` 판이 아직 진행 중이야!! 거기부터 끝내줘!! _(안내)_",
+    "이미 시작한 `{command}`{josa} 있잖아!! 그거 먼저!! _(단호)_",
+    "하나씩 하자!! `{command}` 마무리하고 다시 불러줘!! _(웃음)_",
+    "아직 `{command}` 결과가 안 나왔어!! 기다려줘!! _(안내)_",
+    "지금 진행 중인 `{command}`{josa} 있어서 못 열어줘!! _(미안)_",
 )
 
 
@@ -170,7 +170,7 @@ async def reject_if_wrong_user_with_cta(
     누구든 own_command를 실행하면(자동 등록되므로) 그 자리에서 바로 즐길 수 있다."""
     if interaction.user.id == user_id:
         return True
-    cta = f"너도 {own_command}{josa(own_command, '으로', '로')} 직접 해볼 수 있어!!"
+    cta = f"너도 `{own_command}`{josa(own_command, '으로', '로')} 직접 해볼 수 있어!!"
     message = f"{random.choice(NOT_YOUR_GAME_LINES)}\n{cta}"
     await interaction.response.send_message(message, ephemeral=True)
     return False

@@ -33,6 +33,16 @@ class UpdateEntry:
 # 않는다. 작성 스타일은 tools/update_log_persona.py 참고.
 ENTRIES: tuple[UpdateEntry, ...] = (
     UpdateEntry(
+        version="1.5.4",
+        commit_hash="PENDING",
+        date="2026-09-13",
+        changes=(
+            "`/암시장`의 쳇바퀴 에너지 드링크·추억이 담긴 에이드·H미약 설명이 더 "
+            "명확해졌습니다.",
+            "이 세 품목을 먹였을 때 나오는 반응이 더 다양해졌습니다.",
+        ),
+    ),
+    UpdateEntry(
         version="1.5.3",
         commit_hash="89fb467",
         date="2026-09-13",

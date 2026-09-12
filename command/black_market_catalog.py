@@ -73,20 +73,18 @@ SNACK_ITEMS: tuple[BlackMarketItem, ...] = (
 POTION_ITEMS: tuple[BlackMarketItem, ...] = (
     BlackMarketItem(
         "treadmill_energy_drink", "쳇바퀴 에너지 드링크", 27, "potion",
-        description="먹이면 호감도 +2를 주고, 그날 햄미의 취침 시각을 30분 늦춥니다"
-        "(하루 최대 1번만 적용, 여러 명이 줘도 30분만 늦춰집니다).",
+        description="먹이면 호감도 +2를 주고, 그날 햄미의 취침 시각을 30분 늦춥니다.",
         code="wjxhkm1u",
     ),
     BlackMarketItem(
         "memory_ade", "추억이 담긴 에이드", 1_580, "potion",
-        description="호감도 변화는 없지만 경험치 1~100을 무작위로 지급합니다"
-        "(이 아이템만 예외적으로 획득한 경험치를 알려줍니다).",
+        description="먹이면 경험치 1~100을 무작위로 지급합니다.",
         code="f1nog458",
     ),
     BlackMarketItem(
         "h_potion", "H미약", 3_000, "potion",
-        description="즉시 효과는 없지만, 준 시점부터 24시간 동안 그 사람이 얻는 모든 "
-        "호감도가 2배가 되고 호감도가 전혀 떨어지지 않습니다.",
+        description="준 시점부터 24시간 동안 그 사람이 얻는 모든 호감도가 2배가 되고 "
+        "호감도가 전혀 떨어지지 않습니다.",
         code="cylm75ly",
     ),
 )
