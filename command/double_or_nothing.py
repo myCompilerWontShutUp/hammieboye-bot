@@ -389,10 +389,17 @@ async def start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
+    # bet.py::_start_round와 동일한 이유(2026-09-12) — spend_coins/get_user 등 여러
+    # Supabase 왕복이 3초 응답 제한을 넘겨 "Unknown interaction"으로 이어질 수 있어
+    # 느린 작업 전에 먼저 defer로 응답을 확정한다. 이 함수는 모달(다시하기)뿐 아니라
+    # AllInHalfView 버튼 클릭(신규 진입)에서도 호출되는데, 버튼 인터랙션도 동일한
+    # 3초 제한을 받으므로 원칙은 같다.
+    await interaction.response.defer(ephemeral=True)
+
     if not await spend_coins(user_id, bet, "double_or_nothing_stake"):
         if not is_replay:
             mark_inactive(user_id)
-        await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
+        await interaction.followup.send(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
 
     # 배팅이 성립한 시점부터 "진행 중"으로 표시한다 — 정산 후 "다시하기" 버튼이
@@ -411,5 +418,5 @@ async def start_round(
         f"## 💰 현재 판돈: {bet:,}코인"
     )
     view = _BoxView(user_id, challenger_name, bet, bet, before_coins)
-    await interaction.response.send_message(content=content, view=view)
-    view.message = await interaction.original_response()
+    view.message = await interaction.channel.send(content=content, view=view)
+    await interaction.delete_original_response()

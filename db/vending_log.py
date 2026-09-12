@@ -12,6 +12,20 @@ async def record_purchase(user_id: int, item_id: str, price: int, count: int = 1
     await insert("vending_purchases", rows)
 
 
+async def record_purchase_batch(user_id: int, item_id: str, prices: list[int]) -> None:
+    """단가가 서로 다른 벌크 구매를 정확히 기록한다(2026-09-12 신규, 구매 수량
+    1/5/10 선택 기능 전용) — 투자 카테고리는 구매마다 가격이 2배씩 올라 한 번에
+    여러 개를 살 때 각 단위의 실제 가격이 서로 다르다. record_purchase(count=N)는
+    전 행에 같은 price 하나만 쓰므로 이 경우엔 못 쓰고, prices 리스트를 그대로
+    행별로 심는다. get_purchase_counts/count_purchases는 행 수만 세고 price 컬럼을
+    전혀 안 읽으므로(§21-1) 이 로그의 정확성은 순수 감사(audit) 목적일 뿐 가격
+    인상 계산에는 영향을 주지 않는다."""
+    if not prices:
+        return
+    rows = [{"user_id": user_id, "item_id": item_id, "price": price} for price in prices]
+    await insert("vending_purchases", rows)
+
+
 async def remove_purchases(user_id: int, item_id: str, count: int) -> int:
     """이 유저의 이 품목 구매 기록을 최대 count개 지운다(관리자 itm remove 전용) —
     보유량보다 많이 지우려 하면 있는 만큼만 지우고 실제로 지운 개수를 반환한다."""

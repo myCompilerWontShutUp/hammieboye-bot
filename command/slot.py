@@ -476,10 +476,15 @@ async def _start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
+    # bet.py::_start_round와 동일한 이유(2026-09-12) — spend_coins/get_user 등 여러
+    # Supabase 왕복이 3초 응답 제한을 넘겨 "Unknown interaction"으로 이어질 수 있어
+    # 느린 작업 전에 먼저 defer로 응답을 확정한다.
+    await interaction.response.defer(ephemeral=True)
+
     if not await spend_coins(user_id, bet, "slot_stake"):
         if not is_replay:
             mark_inactive(user_id)
-        await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
+        await interaction.followup.send(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
 
     # 배팅이 성립한 시점부터 "진행 중"으로 표시한다(2026-09-09) — 정산 후
@@ -503,8 +508,8 @@ async def _start_round(
     embed = _build_embed(view.grid)
     receipt_embed = build_bet_receipt_embed(before_coins, bet, None)
 
-    await interaction.response.send_message(content=content, embeds=[receipt_embed, embed], view=view)
-    view.message = await interaction.original_response()
+    view.message = await interaction.channel.send(content=content, embeds=[receipt_embed, embed], view=view)
+    await interaction.delete_original_response()
 
 
 class _GambleSelectView(EphemeralAutoDeleteView):

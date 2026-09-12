@@ -68,6 +68,13 @@ class _ForbiddenBookModal(discord.ui.Modal):
         self.add_item(discord.ui.Label(text="내용 (최대 100자)", component=self.content_input))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # get_entries_for_user/keyword_taken/consume_snack/add_entry까지 최대 4번의
+        # Supabase 왕복이 순차로 이어진다 — 전부 끝난 뒤에야 처음 응답하면 Discord의
+        # 3초 제한을 넘길 수 있다(vending.py::_on_confirm과 동일한 이유, 2026-09-12).
+        # 느린 작업 전에 먼저 defer로 응답을 확정해두고, 결과는 edit_original_response로
+        # 그 자리에 채운다.
+        await interaction.response.defer(ephemeral=True)
+
         keyword = self.keyword_input.value.strip()
         content = self.content_input.value.strip()
 
@@ -75,22 +82,19 @@ class _ForbiddenBookModal(discord.ui.Modal):
         # 바뀌었을 수 있는 경합을 방어한다(재고 소진/한도 도달/키워드 중복 전부).
         current_entries = await get_entries_for_user(self._user_id)
         if len(current_entries) >= MAX_PER_USER:
-            await interaction.response.send_message(
-                _LIMIT_REACHED_TEMPLATE.format(max=MAX_PER_USER, list_text=_format_list(current_entries)),
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content=_LIMIT_REACHED_TEMPLATE.format(max=MAX_PER_USER, list_text=_format_list(current_entries)),
             )
             return
         if await keyword_taken(keyword):
-            await interaction.response.send_message(_DUPLICATE_KEYWORD_MESSAGE, ephemeral=True)
+            await interaction.edit_original_response(content=_DUPLICATE_KEYWORD_MESSAGE)
             return
         if not await consume_snack(self._user_id, ITEM_ID):
-            await interaction.response.send_message(_RACE_FAILURE_MESSAGE, ephemeral=True)
+            await interaction.edit_original_response(content=_RACE_FAILURE_MESSAGE)
             return
 
         await add_entry(self._user_id, keyword, content)
-        await interaction.response.send_message(
-            _SUCCESS_TEMPLATE.format(keyword=keyword), ephemeral=True
-        )
+        await interaction.edit_original_response(content=_SUCCESS_TEMPLATE.format(keyword=keyword))
 
 
 class _ConsentView(EphemeralAutoDeleteView):

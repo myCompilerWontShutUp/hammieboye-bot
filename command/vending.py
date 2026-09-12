@@ -8,6 +8,7 @@ import achievements
 from core.base import clear_on_timeout, reject_if_wrong_invoker
 from core.korean import josa
 from command.economy_common import (
+    DEFAULT_PURCHASE_QUANTITIES,
     INSUFFICIENT_FUNDS_LINES,
     VENDING_EMBED_COLOR,
     PurchaseConfirmModal,
@@ -18,7 +19,7 @@ from events.scheduler import KST, format_footer_time
 from db.achievements import award as award_achievement
 from db.snacks import add_snack
 from db.users import get_user
-from db.vending_log import get_purchase_counts, record_purchase
+from db.vending_log import get_purchase_counts, record_purchase, record_purchase_batch
 from db.wallet import increase_coin_grant_bonus, spend_coins
 
 # "자판기에 머가 있을까??" 류 — 자판기 응답은 항상 이 한 줄로 먼저 시작한다.
@@ -159,10 +160,20 @@ def _category_items(kind: str) -> list:
     return [item for item in ITEMS if item.kind == kind]
 
 
-def _price_from_counts(item, counts: dict[str, int]) -> int:
+def _bulk_price(item, count: int, quantity: int) -> int:
+    """`count`개를 이미 산 상태에서 `quantity`개를 한 번에 더 살 때의 총 가격
+    (2026-09-12 신규, 수량 1/5/10 선택 기능 전용). 투자 카테고리는 구매마다 가격이
+    정확히 2배씩 오르므로 단순 `단가 x quantity`가 아니라 등비수열 합
+    (`base*2^count + base*2^(count+1) + ... + base*2^(count+quantity-1)
+    = base * 2^count * (2^quantity - 1)`)이어야 한다 — 그 외 카테고리(간식/음료,
+    가격 고정)는 단순 곱으로 충분하다."""
     if item.kind != "coin":
-        return item.price
-    return item.price * (_COIN_PRICE_MULTIPLIER ** counts.get(item.id, 0))
+        return item.price * quantity
+    return item.price * (_COIN_PRICE_MULTIPLIER ** count) * (_COIN_PRICE_MULTIPLIER ** quantity - 1)
+
+
+def _price_from_counts(item, counts: dict[str, int]) -> int:
+    return _bulk_price(item, counts.get(item.id, 0), 1)
 
 
 def _item_block(item, price: int, purchase_count: int) -> str:
@@ -199,12 +210,14 @@ async def _build_shop_embed(kind: str, counts: dict[str, int]) -> discord.Embed:
 
 
 async def _execute_purchase(
-    user_id: int, item, *, guild_id: int | None = None
+    user_id: int, item, quantity: int, *, guild_id: int | None = None
 ) -> str | tuple[str, discord.Embed]:
     """실제 결제+지급을 실행하고 결과 텍스트(+영수증 embed)를 만든다 — 모달 제출
-    직후에만 호출되며, 이 시점에 가격을 다시 계산해 그대로 차감한다."""
+    직후에만 호출되며, 이 시점에 가격을 다시 계산해 그대로 차감한다(2026-09-12부로
+    quantity가 1이 아닐 수 있다 — 투자 카테고리는 등비수열 합으로 정확히 계산)."""
     counts = await get_purchase_counts(user_id)
-    total_cost = _price_from_counts(item, counts)
+    count = counts.get(item.id, 0)
+    total_cost = _bulk_price(item, count, quantity)
     # coin_log 기록용 method(2026-09-11 신규, 2026-09-12 "beverage" 추가) — item.kind는
     # "snack"/"beverage"/"coin" 중 하나만 여기 도달한다("joke"는 _BuyButton에서 이미
     # 걸러져 결제 자체를 안 함).
@@ -215,16 +228,23 @@ async def _execute_purchase(
     # "받았어!!"/"벌 수 있어!!" 같은 페르소나 말투가 섞여 있던 걸 발견해 정정,
     # command/black_market.py와 동일한 원칙).
     if item.kind in ("snack", "beverage"):
-        new_qty = await add_snack(user_id, item.id, 1)
-        effect_summary = f"{item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
-    else:  # "coin"("투자") — /동전 그랜트 보너스 증가
-        new_bonus = await increase_coin_grant_bonus(user_id, item.effect)
+        new_qty = await add_snack(user_id, item.id, quantity)
         effect_summary = (
-            f"`/동전` 획득량이 {item.effect}만큼 늘어나 이제 한 번에 {1 + new_bonus}개씩 "
+            f"{item.name}{josa(item.name, '을', '를')} {quantity}개 받았습니다. (보유: {new_qty}개)"
+        )
+        # 단가가 고정이라 record_purchase의 count 인자(전 행 동일 price)로 충분하다.
+        await record_purchase(user_id, item.id, item.price, count=quantity)
+    else:  # "coin"("투자") — /동전 그랜트 보너스 증가
+        total_effect = item.effect * quantity
+        new_bonus = await increase_coin_grant_bonus(user_id, total_effect)
+        effect_summary = (
+            f"`/동전` 획득량이 {total_effect}만큼 늘어나 이제 한 번에 {1 + new_bonus}개씩 "
             "받을 수 있습니다."
         )
-
-    await record_purchase(user_id, item.id, total_cost)
+        # 투자 카테고리는 구매마다 단가가 2배씩 달라 record_purchase의 "전 행 동일
+        # price"로는 감사 로그가 부정확해진다 — 실제 단가별로 정확히 기록한다.
+        unit_prices = [item.price * (_COIN_PRICE_MULTIPLIER ** (count + k)) for k in range(quantity)]
+        await record_purchase_batch(user_id, item.id, unit_prices)
 
     user = await get_user(user_id)
     current_coins = user["coins"]
@@ -238,7 +258,7 @@ async def _execute_purchase(
 
     embed = discord.Embed(title="🛒 구매 완료!!", color=VENDING_EMBED_COLOR)
     embed.description = (
-        f"- 품목: {item.name}\n"
+        f"- 품목: {item.name} x{quantity}\n"
         f"- 기존 금액: {before_coins:,}코인\n"
         f"- 사용 금액: {total_cost:,}코인\n"
         f"- 현재 금액: {current_coins:,}코인\n"
@@ -319,29 +339,49 @@ class _BuyButton(discord.ui.Button):
             return
 
         counts = await get_purchase_counts(view.user_id)
-        price = _price_from_counts(item, counts)
+        count = counts.get(item.id, 0)
         user = await get_user(view.user_id)
         before = user["coins"] if user is not None else 0
 
-        # 잔액이 모자라면 모달 자체를 열지 않는다(2026-09-09 — 이전엔 모달을 일단
-        # 띄워 "구매 후 잔액"이 음수로 보이다가 실제 결제 시점(_execute_purchase의
-        # spend_coins)에야 실패했다).
-        if before < price:
+        # is_one_time 품목(§14-11 예약 플래그, 2026-09-12부터 실제로 쓰임)은 수량
+        # 선택지 자체를 1개로 고정해 여러 개를 살 수 없게 한다.
+        quantities = (1,) if item.is_one_time else DEFAULT_PURCHASE_QUANTITIES
+
+        def compute_total(qty: int, *, _item=item, _count=count) -> int:
+            return _bulk_price(_item, _count, qty)
+
+        # 잔액이 최소 수량(1개)조차 못 채우면 모달 자체를 열지 않는다(2026-09-09 —
+        # 이전엔 모달을 일단 띄워 "구매 후 잔액"이 음수로 보이다가 실제 결제 시점
+        # (_execute_purchase의 spend_coins)에야 실패했다).
+        if before < compute_total(quantities[0]):
             await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
             return
 
-        async def _on_confirm(modal_interaction: discord.Interaction) -> None:
+        async def _on_confirm(modal_interaction: discord.Interaction, quantity: int) -> None:
+            # _execute_purchase가 get_purchase_counts/spend_coins/add_snack 또는
+            # increase_coin_grant_bonus/record_purchase/get_user까지 Supabase 왕복을
+            # 5~6번 순차로 거친다 — 이 전부가 끝난 뒤에야 처음 응답하면 Discord의 3초
+            # 제한을 넘겨 "Unknown interaction"으로 이어질 수 있다(2026-09-12 실사용
+            # 중 재현). 느린 작업 전에 먼저 defer로 응답을 확정해두고, 결과는
+            # edit_original_response로 그 자리에 채운다.
+            await modal_interaction.response.defer(ephemeral=True)
             origin_guild_id = modal_interaction.guild.id if modal_interaction.guild else None
-            result = await _execute_purchase(view.user_id, item, guild_id=origin_guild_id)
+            result = await _execute_purchase(view.user_id, item, quantity, guild_id=origin_guild_id)
             if isinstance(result, tuple):
                 text, embed = result
-                await modal_interaction.response.send_message(content=text, embed=embed, ephemeral=True)
+                await modal_interaction.edit_original_response(content=text, embed=embed)
                 await _refresh_shop_message(view)
             else:
-                await modal_interaction.response.send_message(result, ephemeral=True)
+                await modal_interaction.edit_original_response(content=result)
 
         await interaction.response.send_modal(
-            PurchaseConfirmModal(item_name=item.name, before=before, price=price, on_confirm=_on_confirm)
+            PurchaseConfirmModal(
+                item_name=item.name,
+                before=before,
+                quantities=quantities,
+                compute_total=compute_total,
+                on_confirm=_on_confirm,
+            )
         )
 
 

@@ -7,6 +7,7 @@ import discord
 from core.base import clear_on_timeout, reject_if_wrong_invoker
 from core.korean import josa
 from command.economy_common import (
+    DEFAULT_PURCHASE_QUANTITIES,
     INSUFFICIENT_FUNDS_LINES,
     PurchaseConfirmModal,
     reject_if_wrong_user_with_cta,
@@ -191,27 +192,29 @@ async def _build_shop_embed(kind: str, counts: dict[str, int]) -> discord.Embed:
     return embed
 
 
-async def _execute_purchase(user_id: int, item) -> str | tuple[str, discord.Embed]:
+async def _execute_purchase(user_id: int, item, quantity: int) -> str | tuple[str, discord.Embed]:
     """결제+지급 실행 — 결과(호감도 증감)는 이 자리에서 정해지지 않는다. 암시장은
     간식을 인벤토리에 넣어줄 뿐이고, 실제 50/50 굴림은 나중에 /사용(디저트 타임)으로
-    먹였을 때 일어난다(command/eat.py 참고)."""
-    if not await spend_coins(user_id, item.price, "black_market_purchase"):
+    먹였을 때 일어난다(command/eat.py 참고). 암시장은 가격 인상이 없어(2026-09-12,
+    수량 1/5/10 선택 기능) 총 가격은 단순히 단가 x quantity다."""
+    total_cost = item.price * quantity
+    if not await spend_coins(user_id, total_cost, "black_market_purchase"):
         return random.choice(INSUFFICIENT_FUNDS_LINES)
 
-    new_qty = await add_snack(user_id, item.id, 1)
-    await record_purchase(user_id, item.id, item.price)
+    new_qty = await add_snack(user_id, item.id, quantity)
+    await record_purchase(user_id, item.id, item.price, count=quantity)
 
     user = await get_user(user_id)
     current_coins = user["coins"]
-    before_coins = current_coins + item.price
+    before_coins = current_coins + total_cost
 
     embed = discord.Embed(title="🌙 은밀한 거래 완료!!", color=discord.Color.dark_purple())
     embed.description = (
-        f"- 품목: {item.name}\n"
+        f"- 품목: {item.name} x{quantity}\n"
         f"- 기존 금액: {before_coins:,}코인\n"
-        f"- 사용 금액: {item.price:,}코인\n"
+        f"- 사용 금액: {total_cost:,}코인\n"
         f"- 현재 금액: {current_coins:,}코인\n"
-        f"- {item.name}{josa(item.name, '을', '를')} 받았습니다. (보유: {new_qty}개)"
+        f"- {item.name}{josa(item.name, '을', '를')} {quantity}개 받았습니다. (보유: {new_qty}개)"
     )
     embed.set_footer(text=format_footer_time(datetime.now(KST)))
     if item.kind == "snack":
@@ -280,24 +283,40 @@ class _BuyButton(discord.ui.Button):
         user = await get_user(view.user_id)
         before = user["coins"] if user is not None else 0
 
-        # 잔액이 모자라면 모달 자체를 열지 않는다(2026-09-09 — 이전엔 모달을 일단
-        # 띄워 "구매 후 잔액"이 음수로 보이다가 실제 결제 시점(_execute_purchase의
-        # spend_coins)에야 실패했다).
-        if before < item.price:
+        # is_one_time 품목(§14-11 예약 플래그)은 수량 선택지를 1개로 고정한다
+        # (command/vending.py::_BuyButton.callback과 동일한 원칙, 2026-09-12).
+        quantities = (1,) if item.is_one_time else DEFAULT_PURCHASE_QUANTITIES
+
+        def compute_total(qty: int, *, _item=item) -> int:
+            return _item.price * qty
+
+        # 잔액이 최소 수량(1개)조차 못 채우면 모달 자체를 열지 않는다(2026-09-09 —
+        # 이전엔 모달을 일단 띄워 "구매 후 잔액"이 음수로 보이다가 실제 결제 시점
+        # (_execute_purchase의 spend_coins)에야 실패했다).
+        if before < compute_total(quantities[0]):
             await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
             return
 
-        async def _on_confirm(modal_interaction: discord.Interaction) -> None:
-            result = await _execute_purchase(view.user_id, item)
+        async def _on_confirm(modal_interaction: discord.Interaction, quantity: int) -> None:
+            # command/vending.py::_on_confirm과 동일한 이유(2026-09-12) — 느린
+            # _execute_purchase 전에 먼저 defer로 응답을 확정해둔다.
+            await modal_interaction.response.defer(ephemeral=True)
+            result = await _execute_purchase(view.user_id, item, quantity)
             if isinstance(result, tuple):
                 text, embed = result
-                await modal_interaction.response.send_message(content=text, embed=embed, ephemeral=True)
+                await modal_interaction.edit_original_response(content=text, embed=embed)
                 await _refresh_shop_message(view)
             else:
-                await modal_interaction.response.send_message(result, ephemeral=True)
+                await modal_interaction.edit_original_response(content=result)
 
         await interaction.response.send_modal(
-            PurchaseConfirmModal(item_name=item.name, before=before, price=item.price, on_confirm=_on_confirm)
+            PurchaseConfirmModal(
+                item_name=item.name,
+                before=before,
+                quantities=quantities,
+                compute_total=compute_total,
+                on_confirm=_on_confirm,
+            )
         )
 
 

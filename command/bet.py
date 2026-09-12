@@ -327,10 +327,18 @@ async def _start_round(
     if not is_replay and not await claim_active_or_reject(interaction, user_id, _OWN_COMMAND):
         return
 
+    # claim_active_or_reject까지는 순수 인메모리 확인이라 빠르지만, 그 뒤로는
+    # spend_coins/get_user 등 Supabase 왕복이 여러 번 이어진다 — Discord의 3초
+    # 응답 제한을 넘기면 응답 자체가 "Unknown interaction"으로 죽으므로(2026-09-12
+    # 실사용 중 재현), 느린 작업을 시작하기 전에 먼저 defer로 응답을 확정해둔다
+    # (ephemeral — 실패 시엔 이 자리에 그대로 실패 문구를, 성공 시엔 새 공개
+    # 메시지를 channel.send로 따로 올리고 이 자리는 지운다).
+    await interaction.response.defer(ephemeral=True)
+
     if not await spend_coins(user_id, bet, _STAKE_METHOD[game_kind]):
         if not is_replay:
             mark_inactive(user_id)
-        await interaction.response.send_message(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
+        await interaction.followup.send(random.choice(INSUFFICIENT_FUNDS_LINES), ephemeral=True)
         return
 
     # 배팅이 실제로 성립한 시점부터 "진행 중"으로 표시한다(2026-09-09) — 정산 후
@@ -365,8 +373,8 @@ async def _start_round(
         )
         content = f"{challenger_line}\n1~20 사이 숫자를 하나 골라봐!! (기회 3번) _(두근)_"
 
-    await interaction.response.send_message(content=content, embed=receipt_embed, view=view)
-    view.message = await interaction.original_response()
+    view.message = await interaction.channel.send(content=content, embed=receipt_embed, view=view)
+    await interaction.delete_original_response()
 
 
 class _OddEvenView(discord.ui.View):
